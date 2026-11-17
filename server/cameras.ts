@@ -166,7 +166,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     events: grant.has('events'),
     capture: grant.has('capture') && bridge.canCapture(remote),
     mediaAllowed: grant.has('media.live'),
-    preview: bridgePreview || media.length > 0 || (grant.has('media.live') && bridge.canCapture(remote)),
+    preview: bridgePreview,
     bridgePreview,
     viaProxy: proxy && grant.has('media.live'),
     media,

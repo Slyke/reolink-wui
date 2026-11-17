@@ -4,7 +4,7 @@ A self-hosted SvelteKit and Node interface for powered standalone Reolink camera
 
 ## Run locally
 
-Use Node 24, a current reolink-bridge bridge, and an MQTT 5 broker if you want captures or MQTT events. Run these commands from this directory on Linux or WSL.
+Use Node 24, Reolink Bridge, and an MQTT 5 broker. Run these commands from this directory on Linux or WSL.
 
 ```sh
 npm ci
@@ -30,7 +30,7 @@ See the [deployment guide](./docs/deployment.md) for TLS, service layout, identi
 ```sh
 npm run check
 npm run build
-npm test                                # includes local Mosquitto when installed
+npm test                                # requires local Mosquitto on PATH
 npx playwright install chromium
 npm run test:browser                    # checks both layouts with the built app
 ```

@@ -4,10 +4,11 @@
   import { api, errorText, t, UiError, url } from '$lib/api.js';
   import { cameraStatus, type Camera, type CameraEvent } from '$lib/models.js';
   import { matchesPreviewAlert } from '../../../../shared/playback.js';
-  import { defaultEventRetention } from '../../../../shared/events.js';
+  import { defaultEventRetention, maxFeedGapReports, type FeedGap } from '../../../../shared/events.js';
   import { useWorkspace } from '$lib/workspace.js';
   import type { InventoryState } from '../../../../shared/upstreams.js';
   import CameraPanel from '$lib/CameraPanel.svelte';
+  import FeedGapNotice from '$lib/FeedGapNotice.svelte';
 
   const workspace = useWorkspace();
   let cameras = $state<Camera[]>([]);
@@ -15,7 +16,9 @@
   let selected = $state('');
   let loading = $state(true);
   let error = $state('');
-  let feed = $state(false), gap = $state(false);
+  let feed = $state(false);
+  let gaps = $state<FeedGap[]>([]);
+  let browserGap: Extract<FeedGap, { cause: 'browser-connection' }> | undefined;
   let events = $state<CameraEvent[]>([]);
   let historyError = $state(false);
   let historyRevision = $state(0);
@@ -28,6 +31,15 @@
   let loadSequence = 0;
   let active = false;
   const camera = $derived(cameras.find(item => item.id === selected));
+  const feedReady = $derived(feed && !gaps.some(gap => gap.cause === 'bridge-connection' && gap.recoveredAt === undefined));
+  const noteGap = (gap: FeedGap) => {
+    gaps = [...gaps.filter(previous => previous.id !== gap.id), gap].slice(-maxFeedGapReports);
+  };
+  const refreshFeed = () => {
+    gaps = gaps.filter(gap => (gap.cause === 'bridge-connection' || gap.cause === 'browser-connection') && gap.recoveredAt === undefined);
+    historyRevision++;
+    void loadCameras();
+  };
 
   $effect(() => {
     const id = camera?.capabilities.events ? camera.id : undefined;
@@ -91,15 +103,27 @@
     clearTimeout(refreshTimer);
     refreshTimer = undefined;
     loadSequence++;
+    browserGap = undefined;
     feed = false;
   };
   const connect = () => {
     stopFeed();
     source = new EventSource(url('/api/v1/events'));
-    source.onopen = () => { feed = true; historyRevision++; scheduleRefresh(); };
+    source.onopen = () => {
+      feed = true;
+      if (browserGap) {
+        noteGap({ ...browserGap, recoveredAt: Date.now() });
+        browserGap = undefined;
+      }
+      historyRevision++;
+      scheduleRefresh();
+    };
     source.onerror = () => {
       feed = false;
-      gap = true;
+      if (!browserGap) {
+        browserGap = { cause: 'browser-connection', id: crypto.randomUUID(), detectedAt: Date.now() };
+        noteGap(browserGap);
+      }
       cameras = cameras.map(item => ({ ...item, availability: { ...item.availability, online: undefined, stale: true } }));
     };
     source.onmessage = event => {
@@ -114,13 +138,16 @@
       } else if (message.kind === 'access-changed') {
         cameras = [];
         events = [];
+        gaps = [];
         stopFeed();
         void workspace.refreshSession().then(() => {
           if (active) { connect(); scheduleRefresh(); }
         });
       } else {
-        if (message.kind === 'gap' || message.kind === 'feed') gap = true;
-        if (message.kind === 'gap') historyRevision++;
+        if (message.kind === 'gap') {
+          noteGap(message.details ?? { cause: 'unknown', id: crypto.randomUUID(), detectedAt: Date.now() });
+          historyRevision++;
+        }
         scheduleRefresh();
       }
     };
@@ -131,7 +158,7 @@
     connect();
     void loadCameras();
     // An account with zero grants has no per-camera stream events to trigger a refresh.
-    const poll = setInterval(() => { if (!camera || !feed) scheduleRefresh(); }, 4000);
+    const poll = setInterval(() => { if (!camera || !feedReady) scheduleRefresh(); }, 4000);
     return () => {
       active = false;
       clearInterval(poll);
@@ -145,14 +172,11 @@
 
 <div class="row between">
   <h1>{t('monitor')}</h1>
-  <span class="pill" data-status={feed ? 'online' : 'stale'}>{t(feed ? 'feed-live' : 'feed-down')}</span>
+  <span class="pill" data-status={feedReady ? 'online' : 'stale'}>{t(feedReady ? 'feed-live' : 'feed-down')}</span>
 </div>
 {#if error}<p class="error" role="alert">{error}</p>{/if}
-{#if gap}
-  <div class="panel row between notice" role="status">
-    <p>{t('feed-gap')}</p>
-    <button onclick={() => { gap = false; void loadCameras(); }}>{t('refresh')}</button>
-  </div>
+{#if gaps.length}
+  <FeedGapNotice {gaps} {cameras} onrefresh={refreshFeed} />
 {/if}
 {#if loading}
   <p role="status">{t('loading')}</p>

@@ -52,7 +52,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
       bridges: [...runtime.bridges.values()].map(bridge => ({
         id: bridge.config.id, label: bridge.config.label, connected: bridge.feedReady,
         refreshedAt: bridgeRows.find(row => row.id === bridge.config.id)?.refreshed_at,
-        enrollment: bridge.has('enrollment'), callbacks: !!bridge.config.callbacks
+        enrollment: bridge.has('enrollment'), callbacks: !!bridge.config.callbacks && bridge.has('callbacks')
       })),
       cameras: cameras.flatMap(row => {
         const bridge = runtime.bridges.get(row.bridge_id);
@@ -266,7 +266,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
     await runtime.admin({ request });
     const bridge = getBridge({ id: request.params.bridge });
     const before = Date.now();
-    const response = await bridge.callbacks({ id: randomUUID(), op: 'callbacks_list' });
+    const response = await bridge.callbacks({ action: 'list', correlation: request.id });
     if (!response.ok) throw new Failure('COMMAND_REJECTED', 422);
     await runtime.ops.reconcile({ camera: 'bridge:' + bridge.config.id, group: 'callbacks', before });
     return { callbacks: callbackData(response.callbacks, await cameraMapping(bridge.config.id)), destinations: Object.keys(bridge.config.callbacks ?? {}) };
@@ -286,7 +286,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
       input: body, correlation: request.id, serialized: true, reconcileGroup: 'callbacks', execute: async () => {
         let command: Parameters<typeof bridge.callbacks>[0];
         if (body.action === 'remove') {
-          command = { id: body.operationId, op: 'callbacks_remove', callback_id: body.id };
+          command = { action: 'remove', id: body.id, correlation: request.id };
         } else {
           const destination = bridge.config.callbacks?.[body.destination];
           if (!(destination instanceof URL)) throw new Failure('CALLBACK_INVALID', 422);
@@ -297,7 +297,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
             cameras.push(row.remote_id);
           }
           command = {
-            id: body.operationId, op: 'callbacks_' + body.action,
+            action: body.action, correlation: request.id,
             callback: { id: body.id, url: destination.href, cameras, events: [...new Set(body.events)] }
           };
         }

@@ -74,10 +74,7 @@
     } catch (err) { error = errorText(err); }
     finally { liveBusy = false; }
   };
-  const refreshLive = () => {
-    if (playback) void startLive();
-    else manualFrameRequest++;
-  };
+  const refreshLive = () => { manualFrameRequest++; };
 
   const snapshot = async () => {
     busy = true; error = ''; message = '';
@@ -155,7 +152,6 @@
       {:else}
         {#key camera.capabilities.preview}
           <CameraPreview camera={camera.id} name={camera.name ?? t('camera-noun')} enabled={camera.capabilities.preview}
-            intervalMs={camera.previewIntervalMs} bridgePreview={camera.capabilities.bridgePreview && !camera.capabilities.viaProxy}
             refreshRequest={manualFrameRequest + alertFrameRequest} />
         {/key}
       {/if}
@@ -173,7 +169,9 @@
           {:else}
             <button class="primary" disabled={!canStream || !mediaOnline || liveBusy} onclick={startLive}>{t(liveBusy ? 'pending' : 'live-start')}</button>
           {/if}
-          <button disabled={liveBusy || (!playback && !camera.capabilities.preview)} onclick={refreshLive}>{t('live-refresh')}</button>
+          {#if !playback}
+            <button disabled={!camera.capabilities.preview} onclick={refreshLive}>{t('live-refresh')}</button>
+          {/if}
         {/if}
         {#if camera.capabilities.capture}
           <button disabled={!online || busy} onclick={snapshot}>{t(busy ? 'pending' : 'snapshot')}</button>

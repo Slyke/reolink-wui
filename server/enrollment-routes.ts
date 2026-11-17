@@ -40,7 +40,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
   const progress = async ({ bridge, endpoint, data, correlation }: {
     bridge: Bridge; endpoint: string; data?: unknown; correlation: string
   }) => {
-    const response = await bridge.app({ path: endpoint, data, method: data === undefined ? 'GET' : 'POST', admin: true, correlation });
+    const response = await bridge.api({ path: endpoint, data, method: data === undefined ? 'GET' : 'POST', admin: true, correlation });
     const value = shape({ response, body: await jsonResponse({ response }) });
     let cameraId: string | undefined;
     if (value.remote && bridge.includes(value.remote)) {
@@ -63,7 +63,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
   api.get<{ Params: { bridge: string } }>(path + '/admin/bridges/:bridge/enrollment-targets', async request => {
     await runtime.admin({ request });
     const bridge = bridgeFor(request.params.bridge);
-    const response = await bridge.app({ path: '/enrollment-targets', admin: true, correlation: request.id });
+    const response = await bridge.api({ path: '/enrollment-targets', admin: true, correlation: request.id });
     const result = record(await jsonResponse({ response }));
     if (!response.ok || !Array.isArray(result.targets)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
     return { targets: result.targets.filter(value => typeof value === 'string' && segment.test(value)).slice(0, 64) };

@@ -6,10 +6,10 @@ import type { Runtime } from './runtime.js';
 import { input, uuid } from './runtime.js';
 import { camerasFor, audit, type Account, type CameraRef } from './db.js';
 import { minPreviewIntervalMs, maxPreviewIntervalMs, previewAlerts } from '../shared/playback.js';
-import { available } from './cameras.js';
-import type { BridgeUpdate } from './bridge.js';
+import { available, type CameraEvent } from './cameras.js';
+import { maxFeedGapReports, maxFeedGapSamples, type FeedGap } from '../shared/events.js';
 import { Failure } from './errors.js';
-import { Playback, playbackStreams, rtspProxyUrl } from './playback.js';
+import { bridgePreview, Playback, playbackStreams, rtspProxyUrl } from './playback.js';
 import { sendOutcome } from './camera-routes.js';
 
 const previewQuery = z.strictObject({ refresh: z.literal('true').optional() });
@@ -20,6 +20,10 @@ const playbackFields = {
 };
 
 const eventFilter = z.strictObject({ camera: uuid.optional(), type: z.string().max(120).optional() });
+type LiveUpdate = { kind: 'feed' }
+  | { kind: 'state'; camera: string }
+  | ({ kind: 'event'; camera: string } & CameraEvent);
+type DeliveryGap = Extract<FeedGap, { cause: 'delivery-backlog' }>;
 
 export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
   let subscriptions = 0;
@@ -44,21 +48,60 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
     const stream = new PassThrough({ highWaterMark: 16_384 });
     subscriptions++;
     const send = (payload: unknown) => {
-      if (!stream.write('data: ' + JSON.stringify(payload) + '\n\n')) stream.destroy();
+      if (!stream.destroyed && !stream.write('data: ' + JSON.stringify(payload) + '\n\n')) stream.destroy();
     };
-    const updates: { bridge: string; update: BridgeUpdate }[] = [];
-    let gap = false;
+    const updates: LiveUpdate[] = [];
+    const gapReports = new Map<string, FeedGap>();
+    let deliveryGap: DeliveryGap | undefined;
     let lastPing = Date.now();
     let timer: ReturnType<typeof setTimeout>;
-    const subscriptionsForBridge = [...runtime.bridges].filter(([id]) => rows.some(row => row.bridge_id === id)).map(([id, bridge]) => (
-      bridge.observe(update => {
-        if (updates.length >= 128) {
-          gap = true;
-          updates.length = 0;
+
+    const reportGap = (details: FeedGap) => {
+      gapReports.delete(details.id);
+      gapReports.set(details.id, details);
+      if (gapReports.size > maxFeedGapReports) gapReports.delete(gapReports.keys().next().value!);
+    };
+    const enqueue = (update: LiveUpdate) => {
+      if (updates.length >= 128) {
+        for (const skipped of updates) {
+          if (skipped.kind !== 'event') continue;
+          const { camera, observedAt, event } = skipped;
+          deliveryGap ??= {
+            id: randomUUID(), cause: 'delivery-backlog', detectedAt: Date.now(),
+            firstObservedAt: observedAt, lastObservedAt: observedAt, droppedEvents: 0, samples: []
+          };
+          deliveryGap.droppedEvents++;
+          deliveryGap.firstObservedAt = Math.min(deliveryGap.firstObservedAt, observedAt);
+          deliveryGap.lastObservedAt = Math.max(deliveryGap.lastObservedAt, observedAt);
+          if (deliveryGap.samples.length < maxFeedGapSamples) deliveryGap.samples.push({ camera, observedAt, type: event.type });
         }
-        updates.push({ bridge: id, update });
-      })
-    ));
+        updates.length = 0;
+      }
+      updates.push(update);
+    };
+
+    const eventBridges = new Set(rows.filter(row => row.permissions.includes('events')).map(row => row.bridge_id));
+    const subscriptionsForBridge = [...runtime.bridges].filter(([id]) => rows.some(row => row.bridge_id === id)).map(([id, bridge]) => {
+      const showBridgeGaps = eventBridges.has(id);
+      if (showBridgeGaps && bridge.feedGap) reportGap(bridge.feedGap);
+      return bridge.observe(update => {
+        if (update.kind === 'gap') {
+          if (showBridgeGaps) reportGap(update.details);
+          return;
+        }
+        if (update.kind === 'feed') return enqueue({ kind: 'feed' });
+        const mapped = byBridge.get(id + '/' + update.camera);
+        if (!mapped) return;
+        if (update.kind === 'event' && mapped.grants.has('events')
+          && (!filter.type || [update.topic, update.entry.event.vendorTopic].includes(filter.type))) {
+          enqueue({ kind: 'event', camera: mapped.camera, ...update.entry });
+        } else if (update.kind === 'snapshot' && mapped.grants.has('view')) {
+          if (['state/settings', 'state/ptz', 'rules'].includes(update.topic)
+            || (update.topic.startsWith('state/') && !mapped.grants.has('events'))) return;
+          enqueue({ kind: 'state', camera: mapped.camera });
+        }
+      });
+    });
     const tick = async () => {
       if (stream.destroyed) return;
       const current = await runtime.auth.session({ request });
@@ -68,23 +111,13 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
         stream.end();
         return;
       }
-      if (gap) {
-        send({ kind: 'gap' });
-        gap = false;
+      if (deliveryGap) {
+        reportGap(deliveryGap);
+        deliveryGap = undefined;
       }
-      for (const { bridge, update } of updates.splice(0)) {
-        if (update.kind === 'feed') { send({ kind: 'feed' }); continue; }
-        const mapped = byBridge.get(bridge + '/' + update.camera);
-        if (!mapped) continue;
-        if (update.kind === 'event' && mapped.grants.has('events')
-          && (!filter.type || [update.topic, update.entry.event.vendorTopic].includes(filter.type))) {
-          send({ kind: 'event', camera: mapped.camera, ...update.entry });
-        } else if (update.kind === 'snapshot' && mapped.grants.has('view')) {
-          if (['state/settings', 'state/ptz', 'rules'].includes(update.topic)
-            || (update.topic.startsWith('state/') && !mapped.grants.has('events'))) continue;
-          send({ kind: 'state', camera: mapped.camera });
-        }
-      }
+      for (const details of gapReports.values()) send({ kind: 'gap', details });
+      gapReports.clear();
+      for (const update of updates.splice(0)) send(update);
       if (Date.now() - lastPing > 12_000) {
         stream.write(': keep-alive\n\n');
         lastPing = Date.now();
@@ -151,15 +184,14 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
     const { bridge, row } = await signedCamera({ request, id: request.params.id });
     const { refresh } = input({ schema: previewQuery, value: request.query });
     const tag = request.headers['if-none-match'];
-    const { frame, etag, capturedAt } = await playback.preview({
+    const { frame, etag, capturedAt } = await bridgePreview({
       bridge, row, correlation: request.id, refresh: refresh === 'true',
       ifNoneMatch: typeof tag === 'string' && tag.length <= 512 ? tag : undefined
     });
-    const current = await signedCamera({ request, id: row.id });
-    if (current.row.rtsp_proxy !== row.rtsp_proxy) throw new Failure('MEDIA_UNAVAILABLE', 409);
+    await signedCamera({ request, id: row.id });
     if (etag) reply.header('etag', etag);
     if (capturedAt) reply.header('x-preview-captured-at', capturedAt);
-    return frame ? reply.type(frame.type).send(frame.bytes) : reply.code(304).send();
+    return frame ? reply.type('image/jpeg').send(frame) : reply.code(304).send();
   });
 
   api.post<{ Params: { id: string } }>(path + '/cameras/:id/media-sessions', async (request, reply) => {

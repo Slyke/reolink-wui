@@ -18,20 +18,24 @@ For trusted header modes configure `auth.ingress = { issuer, peers, secret, iden
 
 ## Bridges
 
-Configure one record per private bridge. Select `commands` and `events` independently. Use `capture: "mqtt"` for MQTT captures. Set `mqtt.cameraIds` to the exact broker topic IDs and leave the bridge-wide `cameraIds` empty to discover all cameras via WebSocket. When `mqtt.cameraIds` is omitted, the bridge-wide list supplies the MQTT scope. Give the broker identity access to the configured camera topics and command results, and permission to publish their command requests. A local bridge test uses its own broker and fixtures. Prefer one scoped bridge service token per WUI deployment rather than using a legacy full access token. An MQTT endpoint with no assigned command, event or capture role is used for authenticated broker connectivity in Status. It does not subscribe or publish. See [the private bridge WUI contract](https://github.com/Slyke/reolink-bridge/blob/master/docs/wui.md).
+Configure one record per bridge. Set `http` for the bridge API and `mqtt` for events and retained state. Choose `commands: "http"` or `commands: "mqtt"` and set `capture: "mqtt"` for on-demand image capture. The broker identity needs read access to each camera's event and state topics and command results. For MQTT commands or captures it also needs write access to each camera's command requests. [Bridge HTTP API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md)
 
-Configure the inventory scan interval under **Settings → Private bridges**. It defaults to 10 seconds and accepts 1 through 86400. The scan polls WUI v1 inventory endpoints and syncs reported cameras. A legacy bridge sends state on WebSocket subscription and as camera snapshots change. After adding a camera to a legacy bridge's config, restart the bridge so the WUI can reconnect and discover it. An explicit bridge camera allowlist limits discovery. The **Refreshed at** timestamp in Settings records the last manual inventory refresh.
+WUI queries `GET /api/inventory` and subscribes to the exact topics for active cameras. With neither camera list configured, new cameras are picked up once the bridge activates them and the broker ACL permits access. Use `cameraIds` to restrict the visible cameras. `mqtt.cameraIds` limits MQTT subscriptions and also supplies the visible scope if `cameraIds` is omitted. For an older bridge without the HTTP inventory endpoint, enter the exact camera IDs.
+
+Configure the inventory scan interval under **Settings → Private bridges**. It defaults to 10 seconds and accepts 1 through 86400. The **Refreshed at** timestamp in Settings records the last manual inventory refresh.
+
+When updating an earlier WUI configuration, set `events: "mqtt"` and remove `ws`. Move any `extensions.adminToken` and `extensions.relay` values into `http` and remove `extensions`. Use the existing bridge HTTP bearer token, or configure a restricted service token with `api.commands: true` if the WUI runs commands over HTTP.
 
 For MQTT TLS over an authenticated tunnel that provides only the broker leaf certificate, set `mqtt.ca` to the explicitly trusted certificate and `mqtt.allowPartialTrustChain: true`. The client still verifies the hostname and certificate validity. With an issuer CA available, configure that CA and leave partial trust disabled.
 
 ## Enrollment and callbacks
 
-Enrollment requires a reolink-bridge build with WUI v1 enabled. In the bridge's private `wui` config, set distinct `serviceToken` and `adminToken` values, a persistent `storageDirectory`, and a named target with the device host, Baichuan port, and camera ID. For an initialized camera, put its credential in the bridge target's `importPassword`. Configure the WUI bridge record as follows. [Bridge configuration and example](https://github.com/Slyke/reolink-bridge/blob/master/docs/wui.md)
+In the bridge's `api` config, set `adminToken`, a persistent `storageDirectory`, and a named target with the device host, Baichuan port, and camera ID. For an initialized camera, put its credential in the bridge target's `importPassword`. Use a dedicated admin token alongside the HTTP token in the WUI bridge record. [Bridge configuration](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#authorization-and-enrollment)
 
 ```json5
-extensions: {
+http: {
   url: "https://bridge.example.invalid:8080",
-  token: "${file:bridge-service.token}",
+  token: "${file:bridge-http.token}",
   adminToken: "${file:bridge-admin.token}",
   ca: "${file:bridge-ca.pem}",
 },
@@ -39,30 +43,28 @@ extensions: {
 
 Restart the configured services and open **Settings → Enrollment**. Enter or scan the printed UID or serial, select a bridge and named target, and choose **Import** for an initialized camera or **Initialize** for a supported factory device. Use the Wi-Fi join QR for supported Wi-Fi models. After verification, restart reolink-bridge to activate the device and refresh inventory.
 
-For callbacks, prepare a receiver that accepts event JSON via HTTP POST and returns a 2xx response. Add the exact URL to the WUI bridge record, for example `callbacks: { alerts: "https://alerts.example.invalid/events" }`. On a WUI v1 bridge add the same URL to `wui.callbackDestinations` and use the instance-wide service token for WebSocket callback access. Restart the configured services and open **Settings → Bridge callbacks**. Choose the bridge and approved receiver, then add a callback ID and optional event and camera filters. [Bridge callback payloads and filters](https://github.com/Slyke/reolink-bridge/blob/master/docs/interfaces.md#manage-downstream-callbacks)
+For callbacks, prepare a receiver that accepts event JSON via HTTP POST and returns a 2xx response. Add the exact URL to the WUI bridge record, for example `callbacks: { alerts: "https://alerts.example.invalid/events" }`. Allow the same URL in `api.callbackDestinations` on the bridge. Use the bridge HTTP token or a service token with bridge-wide scope. Restart the configured services and open **Settings → Bridge callbacks**. Choose the bridge and approved receiver, then add a callback ID and optional event and camera filters. [Bridge callback payloads and filters](https://github.com/Slyke/reolink-bridge/blob/master/docs/interfaces.md#manage-downstream-callbacks)
 
 On Kubernetes, use top-level bridge `callbacks` entries in a ConfigMap and restart reolink-bridge to apply them. Editing callbacks from the WUI requires the bridge config file to be in a writable persistent directory, because the bridge replaces the file atomically.
 
 ## Camera playback
 
-Open **Settings → Camera settings**, choose a camera, and save its **Playback** source. **Direct camera** reads the device through reolink-bridge. On supported cameras, `capture: "mqtt"` provides snapshot previews.
+Dashboard and Monitor read cached JPEGs from Reolink Bridge every two seconds. The bridge sets the capture interval and can persist the latest frame in Valkey. **Refresh live view** requests a fresh bridge preview. **Refresh on alert** can request the same refresh when an authorized detection starts. **Take snapshot** independently requests a fresh PNG from the camera through the bridge’s configured MQTT capture path. [Bridge preview settings](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#background-camera-previews)
 
-For continuous video, deploy a reolink-bridge build with WUI v1 and FFmpeg. Add a service token and a media profile to the bridge's JSON5 config. This example uses the substream on the bridge camera ID `lumus`.
+**Bridge camera relay** is the default source for continuous video. Use a reolink-bridge build with the HTTP media API and FFmpeg. Add a preview entry and video profile to the bridge configuration. This example uses the substream on the camera with ID `lumus`.
 
 ```json5
-wui: {
-  serviceToken: "${WUI_BRIDGE_SERVICE_TOKEN}",
+api: {
+  previews: { cameras: { lumus: {} } },
   media: { lumus: { port: 554, streams: ["sub"] } },
 },
 ```
 
-The relay reads RTSP/TCP using the existing camera host and credentials. The port must be reachable from the bridge and the selected stream must use H.264. Put the token value in the bridge's secret environment and in a protected WUI token file. In the corresponding WUI bridge record, configure `extensions.url` with the bridge HTTPS endpoint, `extensions.token` with the token reference, `extensions.ca` with the TLS trust reference, and `extensions.relay: true`. After restarting both services, select **Direct camera** in the camera's Playback settings. The Monitor offers **Start live stream** when the profile is advertised. [Bridge WUI v1 configuration](https://github.com/Slyke/reolink-bridge/blob/master/docs/wui.md)
+The relay reads H.264 over RTSP/TCP with the configured camera credentials. In the WUI bridge record set `http` to the bridge HTTPS endpoint, bearer token, and TLS trust reference. When the bridge advertises a video profile, WUI enables relay playback by default. Set `http.relay: false` to disable that playback path. [Bridge video and preview API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md)
 
-**RTSP proxy** accepts a credential-free private TCP restream URL reachable from the WUI API. For Frigate, use `rtsp://frigate-host:8554/stream-name` with its configured go2rtc stream name. The API needs FFmpeg in its PATH. The container includes FFmpeg. [Frigate RTSP setup](https://docs.frigate.video/configuration/restream/)
+For an external video source, open **Settings → Camera settings → Playback** and select **RTSP proxy**. Enter a credential-free private RTSP/TCP restream URL that the WUI API can reach. For Frigate, use `rtsp://frigate-host:8554/stream-name` with the configured go2rtc stream name. The API container includes FFmpeg. [Frigate RTSP setup](https://docs.frigate.video/configuration/restream/)
 
-For bridge-cached previews, configure `wui.previews.cameras` on Reolink Bridge and configure the WUI bridge’s `extensions` service token and HTTPS URL. Dashboard and Monitor check for a changed image every two seconds. The bridge sets the capture interval and can retain the most recent successful JPEG in Valkey. [Bridge preview settings](https://github.com/Slyke/reolink-bridge/blob/master/docs/wui.md#background-camera-previews)
-
-For other preview sources, set the frame preview interval in milliseconds in the same Playback settings. It defaults to 5000 ms and accepts intervals from 50 ms. Dashboard and Monitor start the delay after each frame arrives. **Refresh on alert** can request a frame when an authorized detection starts. Monitor's **Refresh live view** fetches a frame immediately or reconnects the active stream. **Start live stream** opens the selected continuous source. Browsers receive frames and streams through the authenticated WUI API.
+Each WUI API process shares one upstream video connection per camera and stream quality while authorized viewers are watching. Viewer grants and session expiry apply to each viewer independently.
 
 ## Event history
 

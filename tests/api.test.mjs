@@ -1,21 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { once } from 'node:events';
-import { createServer } from 'node:net';
 import { crc32, deflateSync } from 'node:zlib';
-import { connectAsync } from 'mqtt';
-import { launch, fixtureBridge, eventually, uuid, publicOrigin, serviceToken } from './support.mjs';
+import { launch, fixtureBridge, fixtureBroker, eventually, uuid, publicOrigin, serviceToken } from './support.mjs';
 import { configSchema } from '../dist/server/config.js';
 
 const envPg = process.env.WUI_TEST_POSTGRES;
 const dbs = [undefined, ...(envPg ? [{ driver:'postgres', url:envPg, tls:false }] : [])];
 
+const expectMediaClosed = async reader => {
+  try {
+    while (!(await reader.read()).done) { /* Drain frames queued before closing. */ }
+  } catch (error) {
+    // A revoked viewer's response can close before a final HTTP chunk is sent.
+    assert.equal(error.cause?.code,'UND_ERR_SOCKET');
+  }
+};
+
 for (const database of dbs) test('authorization, operations and live revocation: ' + (database?.driver ?? 'sqlite'), async t => {
-  const bridge = await fixtureBridge();
+  const bridge = await fixtureBridge({ previewCameras:['alpha'] });
   t.after(() => bridge.close());
   const { app, runtime, incoming, seed, signIn } = await launch({ bridges: [{ ...bridge.config, cameraIds: [] }], database });
   t.after(() => { app.server.closeAllConnections(); return app.close(); });
@@ -24,7 +29,7 @@ for (const database of dbs) test('authorization, operations and live revocation:
   const viewer = await seed({ username:'observer-' + userSuffix });
   const allowed = await signIn('operator-' + userSuffix);
   const denied = await signIn('observer-' + userSuffix);
-  await eventually(() => runtime.bridges.get('lab').feedReady);
+  await eventually(() => runtime.bridges.get('lab').state('beta').has('info'));
   const admin = await incoming({ path:'/admin', headers:allowed });
   const camera = admin.json().cameras.find(row => row.label === 'Loading dock').id;
   const other = admin.json().cameras.find(row => row.label === 'Second camera').id;
@@ -70,9 +75,8 @@ for (const database of dbs) test('authorization, operations and live revocation:
   assert.equal(status.statusCode, 200);
   assert.deepEqual(status.json().upstreams, [{
     id:'lab', label:'Fixture bridge', connections:[
-      { id:'http', transport:'HTTP', uses:['commands'], state:'online' },
-      { id:'ws', transport:'WS', uses:['events', 'callbacks'], state:'online' },
-      { id:'extensions', transport:'HTTP', uses:['extensions'], state:'online' }
+      { id:'http', transport:'HTTP', uses:['api','commands','callbacks'], state:'online' },
+      { id:'mqtt', transport:'MQTT', uses:['events'], state:'online' }
     ]
   }]);
   assert.equal((await grant(owner, 'none')).json().reason, 'ACCESS_DENIED');
@@ -148,18 +152,38 @@ for (const database of dbs) test('authorization, operations and live revocation:
   assert.equal(preview.statusCode, 200, preview.body);
   assert.equal(preview.headers['content-type'], 'image/jpeg');
   assert.equal(preview.rawPayload.readUInt16BE(0), 0xffd8);
-  const media = await incoming({ path:'/cameras/' + camera + '/media-sessions', method:'POST', headers:denied,
-    payload:{ operationId:uuid(),stream:'main' } });
-  assert.equal(media.statusCode,200,media.body);
-  const mediaUrl = media.json().data.url;
+  const lease = async headers => {
+    const response = await incoming({ path:'/cameras/' + camera + '/media-sessions', method:'POST', headers,
+      payload:{ operationId:uuid(),stream:'main' } });
+    assert.equal(response.statusCode,200,response.body);
+    return response.json().data.url;
+  };
+  const mediaUrl = await lease(denied);
   assert.equal((await incoming({ path:mediaUrl.slice('/api/v1'.length),headers:allowed })).statusCode,403);
-  const stream = await fetch(origin+mediaUrl,{headers:denied,signal:open.signal});
-  assert.equal(stream.status,200);
-  const reader = stream.body.getReader();
-  assert.ok(Buffer.from((await reader.read()).value).toString().includes('Content-Type: image/jpeg'));
+  const secondUrl = await lease(allowed);
+  const readMedia = async (path, headers) => {
+    const response = await fetch(origin+path,{
+      headers, signal:AbortSignal.any([open.signal,AbortSignal.timeout(8000)])
+    });
+    assert.equal(response.status,200);
+    return response.body.getReader();
+  };
+  const [reader, second] = await Promise.all([readMedia(mediaUrl,denied),readMedia(secondUrl,allowed)]);
+  for (const input of [reader,second]) {
+    assert.match(Buffer.from((await input.read()).value).toString(),/^--wui\r\nContent-Type: image\/jpeg/);
+  }
+  const laterUrl = await lease(allowed);
+  const later = await readMedia(laterUrl,allowed);
+  assert.match(Buffer.from((await later.read()).value).toString(),/^--wui\r\nContent-Type: image\/jpeg/);
+  await later.cancel();
+  assert.equal(bridge.counts().mediaOpened,1);
   assert.equal((await grant(viewer,'none')).statusCode,200);
   assert.deepEqual((await incoming({ path:'/status', headers:denied })).json(), { upstreams: [] });
-  await eventually(() => bridge.counts().mediaOpened === 2 && bridge.counts().mediaClosed === 2);
+  await expectMediaClosed(reader);
+  assert.equal((await second.read()).done,false);
+  assert.equal(bridge.counts().mediaClosed,0);
+  assert.equal((await incoming({path:secondUrl.slice('/api/v1'.length),method:'DELETE',headers:allowed})).statusCode,204);
+  await eventually(() => bridge.counts().mediaOpened === 1 && bridge.counts().mediaClosed === 1);
   assert.match(Buffer.from((await eventReader.read()).value).toString(), /access-changed/);
   assert.equal((await eventReader.read()).done,true);
   assert.equal((await incoming({ path:'/cameras/' + camera, headers:denied })).statusCode,403);
@@ -168,10 +192,10 @@ for (const database of dbs) test('authorization, operations and live revocation:
   assert.equal((await incoming({ path:'/admin',headers:allowed })).statusCode,401);
 });
 
-test('WebSocket loss reports unknown and blocks a repeat while state reconnects', async t => {
+test('HTTP reply loss reports unknown while the MQTT feed reconnects', async t => {
   const bridge = await fixtureBridge();
   t.after(() => bridge.close());
-  const { app, runtime, incoming, seed, signIn } = await launch({ bridges:[{...bridge.config,commands:'ws'}] });
+  const { app, runtime, incoming, seed, signIn } = await launch({ bridges:[bridge.config] });
   t.after(() => app.close());
   await seed({username:'operator',admin:true});
   const headers = await signIn('operator');
@@ -188,11 +212,73 @@ test('WebSocket loss reports unknown and blocks a repeat while state reconnects'
   const unhealthy = await app.inject('/readyz');
   assert.equal(unhealthy.statusCode,500);
   assert.deepEqual(Object.keys(unhealthy.json()).sort(), ['buildDate','buildHash','correlationId','ok','service','version']);
-  await eventually(() => runtime.bridges.get('lab').feedReady);
+  const interruption = await eventually(() => runtime.bridges.get('lab').feedGap);
+  assert.equal(interruption?.cause,'bridge-connection');
+  assert.equal(interruption.transport,'MQTT');
+  assert.equal(interruption.failure,'transport');
+  assert.equal(interruption.recoveredAt,undefined);
+  await bridge.reconnect();
+  await eventually(() => {
+    const upstream = runtime.bridges.get('lab');
+    return upstream.feedReady && upstream.state('alpha').get('availability')?.online;
+  });
+  assert.equal(runtime.bridges.get('lab').feedGap,undefined);
   assert.equal((await send(op)).json().outcome,'unknown');
   assert.equal((await send(uuid())).json().errorKey,'RECONCILE_REQUIRED');
   assert.equal(bridge.counts().writes,1);
   assert.equal((await app.inject('/livez')).statusCode,200);
+});
+
+test('live delivery reports count only skipped alerts visible to the subscriber', async t => {
+  const bridge = await fixtureBridge();
+  t.after(() => bridge.close());
+  const { app, runtime, incoming, seed, signIn, base } = await launch({
+    bridges:[bridge.config], eventHistory:{ backend:'memory', retention:400 }
+  });
+  const connection = new AbortController();
+  t.after(() => { connection.abort(); app.server.closeAllConnections(); return app.close(); });
+  const viewer = await seed({ username:'gap-viewer' });
+  const headers = await signIn('gap-viewer');
+  await eventually(() => runtime.bridges.get('lab').feedReady);
+  const [camera] = await runtime.sql.query('SELECT id FROM cameras WHERE remote_id=$1','alpha');
+  await runtime.sql.query('INSERT INTO grants VALUES ($1,$2,$3)',viewer,camera.id,JSON.stringify(['view','events']));
+  const origin = await app.listen({host:'127.0.0.1',port:0});
+  const response = await fetch(origin+base+'/events',{
+    headers, signal:AbortSignal.any([connection.signal,AbortSignal.timeout(8000)])
+  });
+  assert.equal(response.status,200);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let pending = '';
+  const next = async () => {
+    let end;
+    while ((end = pending.indexOf('\n\n')) === -1) {
+      const { value, done } = await reader.read();
+      assert.ok(!done);
+      pending += value;
+    }
+    const frame = JSON.parse(pending.slice(6,end));
+    pending = pending.slice(end+2);
+    return frame;
+  };
+  assert.equal((await next()).kind,'connected');
+  for (let index = 0; index < 132; index++) bridge.event('beta','privateEvent');
+  bridge.event('alpha','motion');
+  const visible = await next();
+  assert.equal(visible.kind,'event');
+  assert.equal(visible.event.type,'motion');
+
+  for (let index = 0; index < 132; index++) bridge.event('alpha','person');
+  const report = await next();
+  assert.equal(report.kind,'gap');
+  assert.equal(report.details.cause,'delivery-backlog');
+  assert.equal(report.details.droppedEvents,128);
+  assert.ok(report.details.firstObservedAt <= report.details.lastObservedAt);
+  assert.equal(report.details.samples.length,8);
+  assert.ok(report.details.samples.every(item => item.camera === camera.id && item.type === 'person'));
+  assert.doesNotMatch(JSON.stringify(report),/privateEvent/);
+  const history = await incoming({ path:'/cameras/'+camera.id+'/events',headers });
+  assert.equal(history.statusCode,200);
+  assert.equal(history.json().events.filter(item => item.event.type === 'person').length,132);
 });
 
 test('invalid combined authentication and database declarations are rejected', () => {
@@ -219,20 +305,8 @@ const png = () => {
 };
 
 test('MQTT 5 capture uses exact topics and validates PNG; broker runs only on loopback', async t => {
-  const available = spawn('mosquitto',['-h'],{stdio:'ignore'});
-  try { await once(available,'exit'); } catch { t.skip('Mosquitto unavailable'); return; }
-  const lease = createServer().listen(0,'127.0.0.1');
-  await once(lease,'listening');
-  const port = lease.address().port;
-  await new Promise(resolve => lease.close(resolve));
-  const directory = await mkdtemp(join(tmpdir(),'wui-mqtt-'));
-  const settings = join(directory,'mosquitto.conf');
-  await writeFile(settings,'listener ' + port + ' 127.0.0.1\nallow_anonymous true\npersistence false\n');
-  const broker = spawn('mosquitto',['-c',settings],{stdio:'ignore'});
-  t.after(async () => { if (broker.exitCode === null) { broker.kill(); await once(broker,'exit'); } await rm(directory,{recursive:true,force:true}); });
-  const server = 'mqtt://127.0.0.1:' + port;
-  const client = await connectAsync(server,{protocolVersion:5,connectTimeout:2000,reconnectPeriod:75});
-  t.after(() => client.endAsync(true));
+  const { client, url: server, close } = await fixtureBroker();
+  t.after(close);
   const root = 'fixture/cam';
   const bytes = png();
   let captures = 0;
@@ -253,7 +327,7 @@ test('MQTT 5 capture uses exact topics and validates PNG; broker runs only on lo
   t.after(() => bridge.close());
   const { app,runtime,incoming,seed,signIn } = await launch({ bridges:[{
     id:'mqtt',label:'Local MQTT',commands:'mqtt',events:'mqtt',capture:'mqtt',mqtt:{url:server,baseTopic:'fixture',cameraIds:['cam']}
-  }, { ...bridge.config, cameraIds: [], mqtt: { url:server, baseTopic:'fixture' } }] });
+  }, bridge.config] });
   t.after(() => app.close());
   await seed({username:'operator',admin:true});
   const headers = await signIn('operator');
@@ -264,7 +338,7 @@ test('MQTT 5 capture uses exact topics and validates PNG; broker runs only on lo
     const rows = upstreams.flatMap(upstream => upstream.connections.filter(connection => connection.transport === 'MQTT'));
     return rows.length === 2 && rows.every(row => row.state === 'online') && rows;
   });
-  assert.deepEqual(connections.map(row => row.uses), [['commands','events','capture'], ['connectivity']]);
+  assert.deepEqual(connections.map(row => row.uses), [['events','commands','capture'], ['events']]);
   const read = () => incoming({path:'/cameras/'+camera+'/snapshots',method:'POST',headers,payload:{operationId:uuid()}});
   const snapshot = await read();
   assert.equal(snapshot.statusCode,200,snapshot.body);
@@ -273,18 +347,11 @@ test('MQTT 5 capture uses exact topics and validates PNG; broker runs only on lo
   valid = false;
   assert.equal((await read()).json().reason,'SNAPSHOT_INVALID');
   valid = true;
-  const preview = () => incoming({ path:'/cameras/'+camera+'/preview', headers });
-  const pair = await Promise.all([preview(), preview()]);
-  for (const frame of pair) {
-    assert.equal(frame.statusCode,200);
-    assert.deepEqual(frame.rawPayload,bytes);
-  }
+  assert.equal((await incoming({ path:'/cameras/'+camera+'/preview',headers })).statusCode,422);
+  assert.equal((await incoming({ path:'/cameras/'+camera+'/preview?refresh=true',headers })).statusCode,422);
+  assert.equal(captures,2);
+  assert.equal((await read()).statusCode,200);
   assert.equal(captures,3);
-  assert.equal((await preview()).statusCode,200);
-  assert.equal(captures,3);
-  const refreshed = await incoming({ path:'/cameras/'+camera+'/preview?refresh=true', headers });
-  assert.equal(refreshed.statusCode,200);
-  assert.equal(captures,4);
 });
 
 test('bridge cached preview forwards conditional JPEG reads with camera authorization', async t => {
@@ -301,6 +368,11 @@ test('bridge cached preview forwards conditional JPEG reads with camera authoriz
   const camera = cameras.find(item => item.name === 'Loading dock');
   assert.equal(camera.capabilities.bridgePreview,true);
   const path = '/cameras/' + camera.id + '/preview';
+  const changedSource = await incoming({
+    path:'/cameras/' + camera.id + '/playback', method:'PUT', headers,
+    payload:{ operationId:uuid(),source:'proxy',proxyUrl:'rtsp://127.0.0.1:8554/fixture' }
+  });
+  assert.equal(changedSource.statusCode,200);
   assert.equal((await incoming({ path,headers:viewer })).statusCode,403);
   assert.equal(bridge.previewRequests.length,0);
   const initial = await incoming({ path,headers });
@@ -382,8 +454,8 @@ for (const eventHistory of historyBackends) test('camera history limits, restart
   assert.deepEqual((await read(next,alpha,nextHeaders)).json(), {limit:3,events:[]});
 });
 
-if (process.env.WUI_TEST_RTSP) test('per-camera RTSP source serves both preview and continuous media', async t => {
-  const bridge = await fixtureBridge();
+if (process.env.WUI_TEST_RTSP) test('RTSP override streams video and leaves preview reads on the bridge', async t => {
+  const bridge = await fixtureBridge({ previewCameras:['alpha'] });
   t.after(() => bridge.close());
   const { app, incoming, seed, signIn } = await launch({bridges:[bridge.config]});
   t.after(() => app.close());
@@ -404,6 +476,7 @@ if (process.env.WUI_TEST_RTSP) test('per-camera RTSP source serves both preview 
   assert.equal(preview.headers['content-type'],'image/jpeg');
   assert.equal(preview.rawPayload.readUInt16BE(0),0xffd8);
   assert.equal(preview.rawPayload.readUInt16BE(preview.rawPayload.length-2),0xffd9);
+  assert.equal(bridge.previewRequests.length,1);
   const session = await incoming({
     path:prefix+'/media-sessions', method:'POST', headers, payload:{operationId:uuid(),stream:'main'}
   });
@@ -412,7 +485,9 @@ if (process.env.WUI_TEST_RTSP) test('per-camera RTSP source serves both preview 
   const connection = new AbortController();
   t.after(() => connection.abort());
   try {
-    const response = await fetch(origin+session.json().data.url,{headers,signal:connection.signal});
+    const response = await fetch(origin+session.json().data.url,{
+      headers,signal:AbortSignal.any([connection.signal,AbortSignal.timeout(10_000)])
+    });
     assert.equal(response.status,200);
     const media = response.body.getReader();
     const jpegStart = Buffer.from([0xff,0xd8]);
@@ -425,10 +500,7 @@ if (process.env.WUI_TEST_RTSP) test('per-camera RTSP source serves both preview 
     assert.match(part.toString('latin1'), /Content-type: image\/jpeg/i);
     assert.ok(part.includes(jpegStart));
     assert.equal((await set({source:'direct'})).statusCode,200);
-    const disconnected = async () => {
-      while (!(await media.read()).done) { /* Drain bytes from the previous source. */ }
-    };
-    await disconnected();
+    await expectMediaClosed(media);
   } finally {
     connection.abort();
   }
@@ -437,7 +509,7 @@ if (process.env.WUI_TEST_RTSP) test('per-camera RTSP source serves both preview 
 test('inventory interval controls scheduled discovery independently of readiness checks', async t => {
   const bridge=await fixtureBridge();
   t.after(() => bridge.close());
-  bridge.reportInventory(['alpha','beta']);
+  await bridge.reportInventory(['alpha','beta']);
   const {app, runtime, incoming, seed, signIn} = await launch({bridges:[{...bridge.config,cameraIds:[]}]});
   t.after(() => app.close());
   await seed({username:'inventory-admin',admin:true});
@@ -453,14 +525,14 @@ test('inventory interval controls scheduled discovery independently of readiness
   assert.equal((await change(0)).statusCode,400);
   assert.equal((await change(86401)).statusCode,400);
   assert.equal((await change(86400)).statusCode,200);
-  bridge.reportInventory(['alpha','beta','new-camera']);
+  await bridge.reportInventory(['alpha','beta','new-camera']);
   await eventually(async () => (await app.inject('/readyz')).statusCode === 200);
   assert.equal(bridge.counts().inventoryReads,1);
   assert.ok(!(await incoming({path:'/admin',headers})).json().cameras.some(camera => camera.label === 'new-camera'));
   assert.equal((await change(1)).statusCode,200);
   await eventually(async () => {
     const camera=await runtime.sql.query('SELECT id FROM cameras WHERE remote_id=$1','new-camera');
-    return camera.length===1;
+    return camera.length===1 && runtime.bridges.get('lab').state('new-camera').get('availability')?.online === true;
   });
   const updated=(await incoming({path:'/admin',headers})).json();
   assert.ok(updated.cameras.some(camera => camera.label === 'new-camera'));

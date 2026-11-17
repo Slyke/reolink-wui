@@ -127,7 +127,7 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
       checkOnline(context);
       if (!bridge.has('v1')) throw new Failure('UNSUPPORTED', 422);
       const before = Date.now();
-      const response = await bridge.app({ path: '/cameras/' + row.remote_id + '/settings/' + key, correlation: request.id });
+      const response = await bridge.api({ path: '/cameras/' + row.remote_id + '/settings/' + key, correlation: request.id });
       if (!response.ok) {
         await response.body?.cancel();
         throw new Failure(response.status === 422 ? 'UNSUPPORTED' : 'BRIDGE_UNAVAILABLE', response.status === 422 ? 422 : 502);

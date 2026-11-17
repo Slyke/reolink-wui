@@ -16,11 +16,10 @@
   bridges: [
     // {
     //   id: "bridge", label: "Private bridge", cameraIds: [],
-    //   commands: "http", events: "ws", capture: "mqtt",
-    //   http: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_SERVICE_TOKEN}", ca: "${file:bridge-ca.pem}" },
-    //   ws: { url: "wss://bridge.example.invalid:8080/ws", token: "${BRIDGE_SERVICE_TOKEN}", ca: "${file:bridge-ca.pem}" },
-    //   mqtt: { url: "mqtts://broker.example.invalid:8883", baseTopic: "cameras", cameraIds: ["entrance"], username: "${BROKER_USERNAME}", password: "${BROKER_PASSWORD}" },
-    //   extensions: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_SERVICE_TOKEN}", adminToken: "${BRIDGE_ADMIN_TOKEN}", ca: "${file:bridge-ca.pem}", relay: true },
+    //   commands: "http", events: "mqtt", capture: "mqtt",
+    //   // For credential administration, also configure http.adminToken.
+    //   http: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_HTTP_TOKEN}", ca: "${file:bridge-ca.pem}" },
+    //   mqtt: { url: "mqtts://broker.example.invalid:8883", baseTopic: "cameras", username: "${BROKER_USERNAME}", password: "${BROKER_PASSWORD}" },
     //   callbacks: { alerts: "https://alerts.example.invalid/events" },
     // },
   ],

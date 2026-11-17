@@ -86,7 +86,6 @@
         </div>
         {#key camera.capabilities.preview}
           <CameraPreview camera={camera.id} {name} enabled={camera.capabilities.preview}
-            intervalMs={camera.previewIntervalMs} bridgePreview={camera.capabilities.bridgePreview && !camera.capabilities.viaProxy}
             refreshRequest={frameRequests[camera.id] ?? 0} />
         {/key}
       </a>

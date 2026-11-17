@@ -3,7 +3,12 @@ import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { once } from 'node:events';
-import { WebSocketServer } from 'ws';
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer as tcp } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { connect } from 'mqtt';
 import { api } from '../dist/server/api.js';
 import { passwordHash } from '../dist/server/auth.js';
 import { configSchema } from '../dist/server/config.js';
@@ -72,10 +77,46 @@ const caps = {
 
 const jpeg = Buffer.from('/9j/4AAQSkZJRgABAgAAAQABAAD//gARTGF2YzU4LjEzNC4xMDAA/9sAQwAIBAQEBAQFBQUFBQUGBgYGBgYGBgYGBgYGBwcHCAgIBwcHBgYHBwgICAgJCQkICAgICQkKCgoMDAsLDg4OEREU/8QATAABAQAAAAAAAAAAAAAAAAAAAAcBAQEAAAAAAAAAAAAAAAAAAAUHEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAEAAQAwEiAAIRAAMRAP/aAAwDAQACEQMRAD8AjgC/i3//2Q==', 'base64');
 const mediaFrame = Buffer.concat([
-  Buffer.from('--wui\r\nContent-Type: image/jpeg\r\nContent-Length: ' + jpeg.length + '\r\n\r\n'),
+  Buffer.from('--reolink-frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + jpeg.length + '\r\n\r\n'),
   jpeg,
   Buffer.from('\r\n')
 ]);
+
+export const fixtureBroker = async () => {
+  const lease = tcp().listen(0, '127.0.0.1');
+  await once(lease, 'listening');
+  const port = lease.address().port;
+  await new Promise(resolve => lease.close(resolve));
+  const directory = await mkdtemp(join(tmpdir(), 'wui-bridge-mqtt-'));
+  const config = join(directory, 'mosquitto.conf');
+  await writeFile(config, 'listener ' + port + ' 127.0.0.1\nallow_anonymous true\npersistence false\n');
+  const url = 'mqtt://127.0.0.1:' + port;
+  const client = connect(url, { protocolVersion:5, connectTimeout:2000, reconnectPeriod:75 });
+  client.on('error', () => {}); // The broker can be stopped deliberately by tests.
+  let broker;
+  const start = async () => {
+    broker = spawn('mosquitto', ['-c', config], { stdio:'ignore' });
+    const failed = new Promise((_, reject) => {
+      broker.once('error', reject);
+      broker.once('exit', code => reject(new Error('Mosquitto exited during startup (' + code + ')')));
+    });
+    await Promise.race([eventually(() => client.connected, 4000), failed]);
+  };
+  const stop = async () => {
+    if (broker?.pid && broker.exitCode === null && broker.signalCode === null) {
+      broker.kill();
+      await once(broker, 'exit');
+    }
+  };
+  const close = async () => {
+    await client.endAsync(true);
+    await stop();
+    await rm(directory, { recursive:true, force:true });
+  };
+  try { await start(); }
+  catch (error) { await close(); throw error; }
+  return { client, url, start, stop, close };
+};
 
 export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
   const previewRequests = [];
@@ -84,7 +125,7 @@ export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
   let motion = true;
   let sensitivity = 40;
   let brightness = 5;
-  let inventory;
+  let inventory = ['alpha','beta'];
   let inventoryReads = 0;
   const ai = { ai_person:{sensitivity:76,delay_seconds:2}, ai_pet:{sensitivity:60,delay_seconds:0} };
   let lose = false;
@@ -94,8 +135,8 @@ export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
   const correlations = [];
   const requests = [];
   const callbacks = [];
-  const snapshots = () => ['alpha', 'beta'].flatMap(camera_id => [
-    { camera_id, topic: 'info', payload: { baichuan: { name: camera_id === 'alpha' ? 'Loading dock' : 'Second camera', model: 'Fixture model', vendor: { secret: serviceToken } } } },
+  const snapshots = () => inventory.flatMap(camera_id => [
+    { camera_id, topic: 'info', payload: { baichuan: { name: ({ alpha:'Loading dock', beta:'Second camera' })[camera_id] ?? camera_id, model: 'Fixture model', vendor: { secret: serviceToken } } } },
     { camera_id, topic: 'capabilities', payload: caps },
     { camera_id, topic: 'availability', payload: { online: true, updated_at: new Date().toISOString() } },
     { camera_id, topic: 'state/settings', payload: {
@@ -130,25 +171,48 @@ export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
       result: { position: { pan: 12, tilt: 5, zoom: {position: 8} }, stopped: true, presets: [{id: 2, name:'Default'}] }
     };
   };
+  const broker = await fixtureBroker();
+  const baseTopic = 'fixture';
+  const publishSnapshots = () => Promise.all(snapshots().map(({ camera_id, topic, payload }) =>
+    broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic, JSON.stringify(payload), { qos:1, retain:true })
+  ));
+  await publishSnapshots();
+  const read = async req => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    return JSON.parse(Buffer.concat(chunks));
+  };
   const server = createServer(async (req,res) => {
     if (req.url === '/livez') return res.end('{}');
     if (req.headers.authorization !== 'Bearer ' + serviceToken) { res.statusCode=401; return res.end('{}'); }
     if (req.url.endsWith('/command/exec')) {
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
       correlations.push(req.headers['x-correlation-id']);
-      return res.end(JSON.stringify(command(JSON.parse(Buffer.concat(chunks)))));
+      const result = command(await read(req));
+      if (lose) {
+        lose = false;
+        await broker.stop();
+        return res.destroy();
+      }
+      return res.end(JSON.stringify(result));
     }
-    if (req.url.endsWith('/contract')) return res.end(JSON.stringify({
-      version:1, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']}, previewCameras, enrollment:false, inventory:!!inventory
+    if (req.url === '/api/contract') return res.end(JSON.stringify({
+      version:1, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      previewCameras, enrollment:false, inventory:true, callbacks:true
     }));
-    if (req.url.endsWith('/inventory')) {
+    if (req.url === '/api/inventory') {
       inventoryReads++;
-      return res.end(JSON.stringify({ cameras:(inventory ?? []).map(id => ({ id })) }));
+      return res.end(JSON.stringify({ cameras:inventory.map(id => ({ id, active:true })) }));
+    }
+    if (/^\/api\/callbacks(?:\/[^/]+)?$/.test(req.url)) {
+      const id = req.url.split('/')[3];
+      if (req.method === 'POST') callbacks.push(await read(req));
+      if (req.method === 'PUT') callbacks.splice(callbacks.findIndex(entry => entry.id === id), 1, await read(req));
+      if (req.method === 'DELETE') callbacks.splice(callbacks.findIndex(entry => entry.id === id), 1);
+      return res.end(JSON.stringify({ ok:true, correlation_id:req.headers['x-correlation-id'], callbacks }));
     }
     if (req.url.endsWith('/settings/motion')) return res.end(JSON.stringify({ values:{ motion_detection:{enabled:motion,sensitivity} } }));
     if (req.url.endsWith('/settings/spotlight')) return res.end(JSON.stringify({ values:{ spotlight:{brightness} } }));
-    const preview = /^\/api\/wui\/v1\/cameras\/([^/]+)\/preview(\?refresh=true)?$/.exec(req.url);
+    const preview = /^\/api\/cameras\/([^/]+)\/preview(\?refresh=true)?$/.exec(req.url);
     if (preview && previewCameras.includes(preview[1])) {
       const etag = '"' + createHash('sha256').update(previewJpeg).digest('hex') + '"';
       const unchanged = req.headers['if-none-match'] === etag;
@@ -162,43 +226,23 @@ export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
     if (req.url.endsWith('/settings/leds')) return res.end(JSON.stringify({ values:{ leds:{status_led:led,ir_mode:'auto'} } }));
     if (/\/media\/(main|sub)$/.test(req.url)) {
       mediaOpened++;
-      res.writeHead(200, { 'content-type': 'multipart/x-mixed-replace; boundary=wui' });
-      res.write(mediaFrame);
+      res.writeHead(200, { 'content-type': 'multipart/x-mixed-replace; boundary=reolink-frame' });
+      res.write(mediaFrame.subarray(0, 5));
+      const first = globalThis.setTimeout(() => res.write(mediaFrame.subarray(5)), 20);
       const timer = setInterval(() => res.write(mediaFrame), 125);
-      res.once('close', () => { mediaClosed++; clearInterval(timer); });
+      res.once('close', () => { mediaClosed++; clearTimeout(first); clearInterval(timer); });
       return;
     }
     res.statusCode = 404;
     res.end('{}');
-  });
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  wss.on('connection', (socket, req) => {
-    if (req.headers.authorization !== 'Bearer ' + serviceToken) { socket.close(); return; }
-    socket.on('message', data => {
-      const body = JSON.parse(data.toString());
-      const { id } = body;
-      if (body.op === 'subscribe' || body.op === 'snapshot') {
-        socket.send(JSON.stringify({ id, ok:true, snapshots:snapshots().filter(item => !body.cameras?.length || body.cameras.includes(item.camera_id)) }));
-      } else if (body.op === 'control') {
-        const result = command(body);
-        if (lose) { lose = false; socket.terminate(); }
-        else socket.send(JSON.stringify(result));
-      } else if (body.op.startsWith('callbacks_')) {
-        if (body.op === 'callbacks_add') callbacks.push(body.callback);
-        if (body.op === 'callbacks_update') callbacks.splice(callbacks.findIndex(entry => entry.id===body.callback.id),1,body.callback);
-        if (body.op === 'callbacks_remove') callbacks.splice(callbacks.findIndex(entry => entry.id===body.callback_id),1);
-        socket.send(JSON.stringify({ id, ok:true, correlation_id:uuid(), callbacks }));
-      }
-    });
   });
   server.listen(0,'127.0.0.1');
   await once(server,'listening');
   const root = 'http://127.0.0.1:' + server.address().port;
   return {
     config: {
-      id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http', events:'ws',
-      http:{url:root,token:serviceToken}, ws:{url:root.replace('http:', 'ws:')+'/ws',token:serviceToken},
-      extensions:{url:root,token:serviceToken,relay:true}, callbacks:{fixture:root+'/callback'}
+      id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http',
+      http:{url:root,token:serviceToken}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
     },
     correlations, requests, previewRequests,
     changePreview: () => {
@@ -207,19 +251,23 @@ export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
     },
     counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads }),
     lose: () => { lose = true; },
-    reportInventory: cameras => { inventory = cameras; },
+    reportInventory: async cameras => {
+      inventory = cameras;
+      await publishSnapshots();
+    },
     setReportedLevels: levels => { brightness = levels.brightness; sensitivity = levels.sensitivity; },
-    detection: (camera_id, type, active) => wss.clients.forEach(socket => socket.send(JSON.stringify({
-      op:'snapshot', snapshot:{camera_id, topic:'state/'+type, payload:{active}}
-    }))),
-    event: (camera_id, type, details = {}) => wss.clients.forEach(socket => socket.send(JSON.stringify({
-      op:'event', event:{ camera_id, type, active:true, received_at:new Date().toISOString(), source:'onvif', vendor:{password:serviceToken}, ...details }
-    }))),
-    close: () => new Promise(resolve => {
-      wss.clients.forEach(socket => socket.terminate());
-      wss.close();
+    disconnect: broker.stop,
+    reconnect: async () => { await broker.start(); await publishSnapshots(); },
+    detection: (camera, type, active) => broker.client.publish(
+      baseTopic+'/'+camera+'/state/'+type, JSON.stringify({active}), { retain:true }
+    ),
+    event: (camera_id, type, details = {}) => broker.client.publish(
+      baseTopic+'/'+camera_id+'/events',
+      JSON.stringify({ camera_id, type, active:true, received_at:new Date().toISOString(), source:'onvif', vendor:{password:serviceToken}, ...details })
+    ),
+    close: async () => {
       server.closeAllConnections();
-      server.close(() => resolve());
-    })
+      await Promise.all([broker.close(), new Promise(resolve => server.close(resolve))]);
+    }
   };
 };

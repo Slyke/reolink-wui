@@ -31,7 +31,7 @@ const expectHover = async (page, button) => {
 for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
     page.setDefaultTimeout(6000);
-    const bridge = await fixtureBridge({ previewCameras:['beta'] });
+    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'] });
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
     const apiPort = await reserve();
@@ -97,6 +97,25 @@ for (const mode of ['browser','proxy']) {
       await expect(page.getByRole('heading',{name:'Loading dock'})).toBeVisible();
       await expect(page.getByText('Event feed connected')).toBeVisible();
       expect(observed.some(item => new URL(item.url).pathname === prefix + '/v1/events')).toBe(true);
+      const moreInfo = page.getByRole('button',{name:'More info',exact:true});
+      await runtime.bridges.get('lab').refreshInventory();
+      await expect(moreInfo).toHaveCount(0);
+      await bridge.disconnect();
+      await moreInfo.click();
+      const gapDetails = page.getByRole('dialog',{name:'Event feed details'});
+      await expect(gapDetails.getByRole('heading',{name:'Bridge event connection interrupted'})).toBeVisible();
+      await expect(gapDetails.getByText('Fixture bridge · MQTT',{exact:true})).toBeVisible();
+      await expect(gapDetails.getByText(/affected event IDs and counts are unknown/)).toBeVisible();
+      await page.mouse.click(2,2);
+      await expect(gapDetails).toBeHidden();
+      await bridge.reconnect();
+      await eventually(() => {
+        const upstream = runtime.bridges.get('lab');
+        return upstream.feedReady && upstream.state('alpha').get('availability')?.online;
+      });
+      await expect(page.getByText('Event feed connected')).toBeVisible();
+      await page.getByRole('button',{name:'Refresh',exact:true}).click();
+      await expect(moreInfo).toHaveCount(0);
       bridge.event('alpha','motion',{
         rule_id:'rule-4',
         objects:[{class:'person',confidence:0.91,tracking_id:'42',bounding_box:{
@@ -217,16 +236,12 @@ for (const mode of ['browser','proxy']) {
       await manualFrame;
       const liveResponse = () => page.waitForResponse(response => new URL(response.url()).pathname.startsWith(prefix+'/v1/media/')
         && response.headers()['content-type']?.includes('multipart/x-mixed-replace'));
-      let streamResponse = liveResponse();
+      const streamResponse = liveResponse();
       await liveView.getByRole('button',{name:'Start live stream'}).click();
       await streamResponse;
       const live = liveView.getByRole('img',{name:'Live camera video'});
       await expect.poll(() => live.evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
-      const previousStream = await live.getAttribute('src');
-      streamResponse = liveResponse();
-      await liveView.getByRole('button',{name:'Refresh live view'}).click();
-      await streamResponse;
-      await expect(live).not.toHaveAttribute('src',previousStream);
+      await expect(liveView.getByRole('button',{name:'Refresh live view'})).toHaveCount(0);
       await liveView.getByRole('button',{name:'Stop live stream'}).click();
       await expect(liveView.getByRole('img',{name:/camera preview$/})).toBeVisible();
       await page.getByRole('link',{name:'Settings',exact:true}).click();
@@ -361,17 +376,13 @@ for (const mode of ['browser','proxy']) {
       await source.selectOption('proxy');
       await page.getByRole('textbox',{name:'RTSP restream URL'}).fill('rtsp://127.0.0.1:8554/sample');
       const playback = page.getByRole('region',{name:'Playback',exact:true});
-      const interval = playback.getByRole('spinbutton',{name:'Frame preview interval (ms)'});
       const alertMode = playback.getByRole('combobox',{name:'Refresh on alert'});
-      await expect(interval).toHaveValue('5000');
-      await expect(interval).toHaveAttribute('min','50');
-      await interval.fill('120');
+      await expect(playback.getByText(/check the bridge’s cached preview every 2 seconds/)).toBeVisible();
       await alertMode.selectOption('person');
       await playback.getByRole('button',{name:'Save changes'}).click();
       await expect(playback.getByText('Playback settings saved.')).toBeVisible();
       await page.reload();
       await expect(source).toHaveValue('proxy');
-      await expect(interval).toHaveValue('120');
       await expect(alertMode).toHaveValue('person');
       await source.selectOption('direct');
       await playback.getByRole('button',{name:'Save changes'}).click();
@@ -392,7 +403,7 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('link',{name:'Dashboard',exact:true}).click();
       await dashboardFeed;
       await expect.poll(() => frameTimings.length).toBeGreaterThanOrEqual(2);
-      expect(frameTimings[1].start - frameTimings[0].end).toBeGreaterThanOrEqual(115);
+      expect(frameTimings[1].start - frameTimings[0].end).toBeGreaterThanOrEqual(1900);
       const dashboardAlert = page.waitForRequest(forcedPreview);
       bridge.event('alpha','person');
       await dashboardAlert;
@@ -407,9 +418,9 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('link',{name:'Status',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/status');
       const upstreamTable = page.getByRole('table');
-      await expect(upstreamTable.getByRole('row').filter({hasText:'Inventory and events'})).toContainText('WS');
+      await expect(upstreamTable.getByRole('row').filter({hasText:'Events and camera state'})).toContainText('MQTT');
       await expect(upstreamTable.getByRole('row').filter({hasText:'Commands'})).toContainText('HTTP');
-      await expect(upstreamTable.getByText('Online',{exact:true})).toHaveCount(3);
+      await expect(upstreamTable.getByText('Online',{exact:true})).toHaveCount(2);
 
       await page.goto(publicOrigin+'/settings/enrollment');
       await page.getByLabel('Device UID').fill('TESTWUI001');

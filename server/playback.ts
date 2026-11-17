@@ -1,14 +1,11 @@
-
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { Readable } from 'node:stream';
+import { once } from 'node:events';
+import { PassThrough, Readable } from 'node:stream';
+import { setTimeout as wait } from 'node:timers/promises';
 import { z } from 'zod';
-import { defaultPreviewIntervalMs } from '../shared/playback.js';
 import type { Bridge } from './bridge.js';
-import { available } from './cameras.js';
 import type { CameraRef } from './db.js';
 import { Failure } from './errors.js';
-import { validatePng } from './png.js';
 import { responseBytes } from './net.js';
 
 const multipartType = 'multipart/x-mixed-replace; boundary=wui';
@@ -21,177 +18,213 @@ export const rtspProxyUrl = z.string().max(2048).url().transform(value => new UR
 );
 
 type Profile = { bridge: Bridge; row: CameraRef };
-type Frame = { bytes: Buffer; type: 'image/jpeg' | 'image/png' };
-type PreviewResult = { frame?: Frame; etag?: string; capturedAt?: string };
-type Preview = { source: string | null; finishedAt?: number; frame: Promise<Frame> };
+type MediaProfile = Profile & { stream: string; correlation: string };
+type MediaSource = { input: Readable; boundary: string; close: () => void | Promise<void> };
+type SharedStream = {
+  source: string | null;
+  controller: AbortController;
+  viewers: Set<PassThrough>;
+  latest?: Buffer;
+  done: Promise<void>;
+};
+type PreviewResult = { frame?: Buffer; etag?: string; capturedAt?: string };
 
 export const playbackStreams = ({ bridge, row }: Profile) => row.rtsp_proxy ? ['main'] : bridge.streams(row.remote_id);
 
-const readJpeg = async ({ stream }: { stream: Readable }) => {
-  let header = Buffer.alloc(0);
-  let length: number | undefined;
-  let remaining = 0;
-  const chunks: Buffer[] = [];
-  for await (const raw of stream) {
-    let data: Buffer = raw;
-    if (length === undefined) {
-      header = Buffer.concat([header, data]);
-      const split = header.indexOf('\r\n\r\n');
-      if (split === -1 && header.length <= 1024) continue;
-      if (split < 0 || split > 1024 || !header.subarray(0, 7).equals(Buffer.from('--wui\r\n'))) throw cannotPlay();
-      const fields = header.toString('ascii', 7, split);
-      length = Number(/^content-length:\s*(\d+)\s*$/im.exec(fields)?.[1]);
-      if (!Number.isSafeInteger(length) || length < 4 || length > frameBytes || !/^content-type:\s*image\/jpeg\s*$/im.test(fields)) {
-        throw cannotPlay();
-      }
-      remaining = length;
-      data = header.subarray(split + 4);
-    }
-    const frame = data.subarray(0, remaining);
-    chunks.push(frame);
-    remaining -= frame.length;
-    if (remaining === 0) {
-      const bytes = Buffer.concat(chunks, length);
-      if (bytes.readUInt16BE(0) !== 0xffd8 || bytes.readUInt16BE(bytes.length - 2) !== 0xffd9) throw cannotPlay();
-      return bytes;
+const isJpeg = (bytes: Buffer) =>
+  bytes.length >= 4 && bytes.readUInt16BE(0) === 0xffd8 && bytes.readUInt16BE(bytes.length - 2) === 0xffd9;
+
+export const bridgePreview = async ({ bridge, row, correlation, refresh, ifNoneMatch }: Profile & {
+  correlation: string; refresh: boolean; ifNoneMatch?: string
+}): Promise<PreviewResult> => {
+  if (!bridge.hasPreview(row.remote_id)) throw new Failure('MEDIA_UNAVAILABLE', 422);
+  const response = await bridge.api({
+    path: '/cameras/' + row.remote_id + '/preview', search: refresh ? '?refresh=true' : undefined,
+    correlation, ifNoneMatch, signal: AbortSignal.timeout(refresh ? 40_000 : 4_000)
+  });
+  const etag = response.headers.get('etag') ?? '';
+  const timestamp = response.headers.get('x-preview-captured-at') ?? '';
+  const capturedAt = timestamp.length <= 40 && Number.isFinite(Date.parse(timestamp)) ? timestamp : undefined;
+  if (/^"[0-9a-f]{64}"$/.test(etag)) {
+    if (response.status === 304 && ifNoneMatch) return { etag, capturedAt };
+    if (response.ok && response.headers.get('content-type') === 'image/jpeg') {
+      const frame = await responseBytes({ response, limit: 8 * 1024 * 1024 });
+      if (isJpeg(frame)) return { frame, etag, capturedAt };
     }
   }
+  if (!response.bodyUsed) await response.body?.cancel().catch(() => {});
+  if (response.status === 503) throw new Failure('MEDIA_UNAVAILABLE', 503);
   throw cannotPlay();
 };
 
+async function* jpegParts({ input, boundary }: MediaSource): AsyncGenerator<Buffer> {
+  const delimiter = '--' + boundary + '\r\n';
+  let header: Buffer = Buffer.alloc(0);
+  let remaining = 0;
+  let length = 0;
+  let chunks: Buffer[] = [];
+  for await (const raw of input) {
+    let data: Buffer = raw;
+    while (data.length > 0) {
+      if (remaining === 0) {
+        const buffer = header.length ? Buffer.concat([header, data]) : data;
+        // FFmpeg inserts CRLF between parts and may split the boundary across chunks.
+        const start = buffer.subarray(0, 2).equals(Buffer.from('\r\n')) ? 2 : 0;
+        const end = buffer.indexOf('\r\n\r\n', start);
+        if (end === -1 && buffer.length <= 1024) {
+          header = buffer;
+          break;
+        }
+        const fields = buffer.toString('ascii', start, end);
+        length = Number(/^content-length:\s*(\d+)\s*$/im.exec(fields)?.[1]);
+        if (end < 0 || end > 1024 || !fields.startsWith(delimiter)
+          || !/^content-type:\s*image\/jpeg\s*$/im.test(fields)
+          || !Number.isSafeInteger(length) || length < 4 || length > frameBytes) throw cannotPlay();
+        remaining = length;
+        header = Buffer.alloc(0);
+        data = buffer.subarray(end + 4);
+        if (data.length === 0) break;
+      }
+      const body = data.subarray(0, remaining);
+      chunks.push(body);
+      remaining -= body.length;
+      data = data.subarray(body.length);
+      if (remaining === 0) {
+        const jpeg = Buffer.concat(chunks, length);
+        if (!isJpeg(jpeg)) throw cannotPlay();
+        chunks = [];
+        yield Buffer.concat([Buffer.from('--wui\r\nContent-Type: image/jpeg\r\nContent-Length: ' + length + '\r\n\r\n'), jpeg, Buffer.from('\r\n')]);
+      }
+    }
+  }
+  if (remaining !== 0) throw cannotPlay();
+}
+
 export class Playback {
-  private readonly previews = new Map<string, Preview>();
-  private pendingPreviews = 0;
+  private readonly streams = new Map<string, SharedStream>();
   private proxyProcesses = 0;
 
-  async open({ bridge, row, stream, signal, correlation, still = false }: Profile & {
-    stream: string; signal: AbortSignal; correlation: string; still?: boolean
-  }) {
+  async open({ signal, ...profile }: MediaProfile & { signal: AbortSignal }) {
+    const { bridge, row, stream } = profile;
     if (!playbackStreams({ bridge, row }).includes(stream)) throw new Failure('MEDIA_UNAVAILABLE', 422);
-    if (row.rtsp_proxy) {
-      return { type: multipartType, stream: await this.restream({ source: row.rtsp_proxy, signal, still }) };
+    const key = row.id + '/' + stream;
+    let active = this.streams.get(key);
+    while (active && (active.controller.signal.aborted || active.source !== row.rtsp_proxy)) {
+      active.controller.abort();
+      await active.done;
+      active = this.streams.get(key);
     }
-    const upstream = await bridge.app({ path: '/cameras/' + row.remote_id + '/media/' + stream, signal, correlation });
-    const type = upstream.headers.get('content-type') ?? '';
-    if (!upstream.ok || !upstream.body || type.toLowerCase() !== multipartType) {
-      await upstream.body?.cancel().catch(() => {});
+    if (signal.aborted) throw cannotPlay();
+
+    const output = new PassThrough({ highWaterMark: 32_768 });
+    const shared: SharedStream = active ?? {
+      source: row.rtsp_proxy, controller: new AbortController(), viewers: new Set(), done: Promise.resolve()
+    };
+    shared.viewers.add(output);
+    const close = () => { output.destroy(); };
+    signal.addEventListener('abort', close, { once: true });
+    output.once('close', () => {
+      signal.removeEventListener('abort', close);
+      shared.viewers.delete(output);
+      if (!shared.viewers.size) shared.controller.abort();
+    });
+    if (shared.latest) output.write(shared.latest);
+    if (!active) {
+      this.streams.set(key, shared);
+      shared.done = this.broadcast({ key, shared, profile });
+    }
+
+    try {
+      if (output.readableLength === 0) await once(output, 'readable', { signal });
+      if (!output.readableLength || signal.aborted) throw cannotPlay();
+      return { type: multipartType, stream: output };
+    } catch (error) {
+      output.destroy();
+      throw error instanceof Failure ? error : cannotPlay();
+    }
+  }
+
+  private async broadcast({ key, shared, profile }: { key: string; shared: SharedStream; profile: MediaProfile }) {
+    const { signal } = shared.controller;
+    let failure = cannotPlay();
+    try {
+      while (!signal.aborted) {
+        const attempt = new AbortController();
+        const abort = () => attempt.abort();
+        signal.addEventListener('abort', abort, { once: true });
+        let deadline = setTimeout(abort, 25_000);
+        let source: MediaSource | undefined;
+        let hasFrame = false;
+        try {
+          source = await this.upstream({ ...profile, signal: attempt.signal });
+          for await (const part of jpegParts(source)) {
+            hasFrame = true;
+            clearTimeout(deadline);
+            deadline = setTimeout(abort, 12_000);
+            shared.latest = part;
+            for (const viewer of shared.viewers) {
+              // A slow viewer can skip a frame without holding up the camera or other viewers.
+              if (!viewer.destroyed && !viewer.writableNeedDrain) viewer.write(part);
+            }
+          }
+          if (!hasFrame || attempt.signal.aborted) throw cannotPlay();
+        } finally {
+          clearTimeout(deadline);
+          signal.removeEventListener('abort', abort);
+          await source?.close();
+        }
+        // The authenticated bridge relay has a bounded lifetime. Active viewers can
+        // continue on the next upstream connection after the previous one has closed.
+        if (!signal.aborted) await wait(250, undefined, { signal });
+      }
+    } catch (error) {
+      if (error instanceof Failure) failure = error;
+    } finally {
+      shared.controller.abort();
+      this.streams.delete(key);
+      for (const viewer of shared.viewers) {
+        if (viewer.destroyed) continue;
+        if (shared.latest) viewer.end();
+        else viewer.destroy(failure);
+      }
+      shared.latest = undefined;
+    }
+  }
+
+  private async upstream({ bridge, row, stream, correlation, signal }: MediaProfile & { signal: AbortSignal }): Promise<MediaSource> {
+    if (row.rtsp_proxy) return this.restream({ source: row.rtsp_proxy, signal });
+    const response = await bridge.api({ path: '/cameras/' + row.remote_id + '/media/' + stream, signal, correlation });
+    const type = response.headers.get('content-type') ?? '';
+    const match = /^multipart\/x-mixed-replace\s*;\s*boundary=(?:"([\w.-]{1,70})"|([\w.-]{1,70}))\s*$/i.exec(type);
+    const boundary = match?.[1] ?? match?.[2];
+    if (!response.ok || !response.body || !boundary) {
+      await response.body?.cancel().catch(() => {});
       throw cannotPlay();
     }
-    return { type, stream: Readable.fromWeb(upstream.body as never, { signal, highWaterMark: 32_768 }) };
+    const input = Readable.fromWeb(response.body as never, { signal, highWaterMark: 32_768 });
+    return { input, boundary, close: () => { input.destroy(); } };
   }
 
-  async preview({ bridge, row, correlation, refresh, ifNoneMatch }: Profile & {
-    correlation: string; refresh: boolean; ifNoneMatch?: string
-  }): Promise<PreviewResult> {
-    if (!row.rtsp_proxy && bridge.hasPreview(row.remote_id)) {
-      return this.bridgePreview({ bridge, row, correlation, refresh, ifNoneMatch });
-    }
-    return { frame: await this.localPreview({ bridge, row, correlation, refresh }) };
-  }
-
-  private async bridgePreview({ bridge, row, correlation, refresh, ifNoneMatch }: Profile & {
-    correlation: string; refresh: boolean; ifNoneMatch?: string
-  }): Promise<PreviewResult> {
-    const response = await bridge.app({
-      path: '/cameras/' + row.remote_id + '/preview', search: refresh ? '?refresh=true' : undefined,
-      correlation, ifNoneMatch, signal: AbortSignal.timeout(refresh ? 40_000 : 4_000)
-    });
-    const etag = response.headers.get('etag') ?? '';
-    const timestamp = response.headers.get('x-preview-captured-at') ?? '';
-    const capturedAt = timestamp.length <= 40 && Number.isFinite(Date.parse(timestamp)) ? timestamp : undefined;
-    if (/^"[0-9a-f]{64}"$/.test(etag)) {
-      if (response.status === 304 && ifNoneMatch) return { etag, capturedAt };
-      if (response.ok && response.headers.get('content-type') === 'image/jpeg') {
-        const bytes = await responseBytes({ response, limit: 8 * 1024 * 1024 });
-        if (bytes.length >= 4 && bytes.readUInt16BE(0) === 0xffd8 && bytes.readUInt16BE(bytes.length - 2) === 0xffd9) {
-          return { frame: { bytes, type: 'image/jpeg' }, etag, capturedAt };
-        }
-      }
-    }
-    if (!response.bodyUsed) await response.body?.cancel().catch(() => {});
-    throw cannotPlay();
-  }
-
-  private localPreview({ bridge, row, correlation, refresh }: Profile & { correlation: string; refresh: boolean }) {
-    const previous = this.previews.get(row.id);
-    const cacheMs = Math.min(row.preview_interval_ms, defaultPreviewIntervalMs);
-    if (previous?.source === row.rtsp_proxy
-      && (previous.finishedAt === undefined || (!refresh && performance.now() - previous.finishedAt < cacheMs))) return previous.frame;
-    if (this.pendingPreviews >= 8) throw new Failure('MEDIA_LIMIT', 429);
-    if (this.previews.size >= 64) {
-      const oldest = [...this.previews].find(([, entry]) => entry.finishedAt !== undefined);
-      if (oldest) this.previews.delete(oldest[0]);
-    }
-    this.previews.delete(row.id);
-    this.pendingPreviews++;
-    const next: Preview = {
-      source: row.rtsp_proxy,
-      frame: this.capture({ bridge, row, correlation }).finally(() => {
-        this.pendingPreviews--;
-        next.finishedAt = performance.now();
-      })
-    };
-    this.previews.set(row.id, next);
-    return next.frame;
-  }
-
-  private async capture({ bridge, row, correlation }: Profile & { correlation: string }): Promise<Frame> {
-    const streams = playbackStreams({ bridge, row });
-    if (streams.length) {
-      try {
-        const stream = streams.includes('sub') ? 'sub' : streams[0];
-        const connection = await this.open({ bridge, row, stream, signal: AbortSignal.timeout(12_000), correlation, still: true });
-        try { return { bytes: await readJpeg({ stream: connection.stream }), type: 'image/jpeg' }; }
-        finally { connection.stream.destroy(); }
-      } catch (error) {
-        if (row.rtsp_proxy || !bridge.canCapture(row.remote_id)) throw error;
-      }
-    }
-    if (!bridge.canCapture(row.remote_id)) throw new Failure('MEDIA_UNAVAILABLE', 422);
-    if (available({ bridge, remote: row.remote_id }).online === false) throw new Failure('CAMERA_OFFLINE', 409);
-    const result = await bridge.command({ camera: row.remote_id, id: randomUUID(), command: { setting: 'snapshot' }, capture: true, correlation });
-    if (result.ok !== true) throw cannotPlay();
-    return { bytes: validatePng({ result: result.result }), type: 'image/png' };
-  }
-
-  private async restream({ source, signal, still }: { source: string; signal: AbortSignal; still: boolean }) {
+  private restream({ source, signal }: { source: string; signal: AbortSignal }): MediaSource {
     if (signal.aborted) throw cannotPlay();
     if (this.proxyProcesses >= 8) throw new Failure('MEDIA_LIMIT', 429);
     const args = [
       '-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '1', '-filter_threads', '1',
       '-protocol_whitelist', 'rtsp,tcp', '-rtsp_transport', 'tcp', '-allowed_media_types', 'video',
       '-probesize', '500000', '-analyzeduration', '1500000', '-f', 'rtsp', '-i', source,
-      '-map', '0:v:0', '-an', '-vf', still ? 'scale=w=min(iw\\,640):h=-2' : 'fps=8,scale=w=min(iw\\,1280):h=-2',
-      ...(still ? ['-frames:v', '1'] : []),
-      '-threads', '1', '-c:v', 'mjpeg', '-q:v', '6', '-f', 'mpjpeg', '-boundary_tag', 'wui', 'pipe:1'
+      '-map', '0:v:0', '-an', '-vf', 'fps=8,scale=w=min(iw\\,1280):h=-2',
+      '-threads', '1', '-c:v', 'mjpeg', '-q:v', '6', '-f', 'mpjpeg', '-boundary_tag', 'wui', '-flush_packets', '1', 'pipe:1'
     ];
     const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'ignore'] });
     this.proxyProcesses++;
     const stop = () => { child.kill('SIGKILL'); };
-    const deadline = setTimeout(stop, 12_000);
     signal.addEventListener('abort', stop, { once: true });
-    child.stdout.once('close', stop);
     child.once('error', () => child.stdout.destroy());
-    child.once('close', () => {
-      clearTimeout(deadline);
-      signal.removeEventListener('abort', stop);
+    const closed = new Promise<void>(resolve => child.once('close', () => {
       this.proxyProcesses--;
-    });
-    await new Promise<void>((resolve, reject) => {
-      const settle = () => {
-        child.stdout.off('readable', ready);
-        child.stdout.off('close', failed);
-        clearTimeout(deadline);
-      };
-      const ready = () => {
-        if (child.stdout.readableLength === 0) return;
-        settle();
-        resolve();
-      };
-      const failed = () => { settle(); reject(cannotPlay()); };
-      child.stdout.on('readable', ready);
-      child.stdout.once('close', failed);
-    });
-    return child.stdout;
+      signal.removeEventListener('abort', stop);
+      resolve();
+    }));
+    return { input: child.stdout, boundary: 'wui', close: async () => { stop(); child.stdout.destroy(); await closed; } };
   }
 }

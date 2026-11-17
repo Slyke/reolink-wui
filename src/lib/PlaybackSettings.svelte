@@ -1,29 +1,26 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { defaultPreviewIntervalMs, minPreviewIntervalMs, maxPreviewIntervalMs, previewAlerts, type PreviewAlert } from '../../shared/playback.js';
+  import { previewAlerts, type PreviewAlert } from '../../shared/playback.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
 
   let { base, csrf, bridgePreview }: { base: string; csrf: string; bridgePreview: boolean } = $props();
   let source = $state<'direct' | 'proxy'>('direct');
   let proxyUrl = $state('');
-  let previewIntervalMs = $state<number | undefined>(defaultPreviewIntervalMs);
   let refreshOnAlert = $state<PreviewAlert>('off');
   let busy = $state(false);
   let loaded = $state(false);
   let error = $state('');
   let message = $state('');
   const path = $derived(base + '/playback');
-  const usesBridgeCache = $derived(source === 'direct' && bridgePreview);
 
   const load = async () => {
     busy = true;
     try {
       const settings = await api<{
-        source: 'direct' | 'proxy'; proxyUrl?: string; previewIntervalMs: number; refreshOnAlert: PreviewAlert
+        source: 'direct' | 'proxy'; proxyUrl?: string; refreshOnAlert: PreviewAlert
       }>({ path });
       source = settings.source;
       proxyUrl = settings.proxyUrl ?? '';
-      previewIntervalMs = settings.previewIntervalMs;
       refreshOnAlert = settings.refreshOnAlert;
       loaded = true;
       error = '';
@@ -38,7 +35,7 @@
       const value = await api<Outcome>({
         path, csrf, method: 'PUT',
         body: {
-          operationId: operationId(), source, previewIntervalMs, refreshOnAlert,
+          operationId: operationId(), source, refreshOnAlert,
           ...(source === 'proxy' ? { proxyUrl: proxyUrl.trim() } : {})
         }
       });
@@ -75,19 +72,12 @@
       {:else}
         <p class="muted">{t('playback-direct-hint')}</p>
       {/if}
-      <div class="form-grid">
-        {#if !usesBridgeCache}
-          <label>{t('preview-interval')}
-            <input type="number" min={minPreviewIntervalMs} max={maxPreviewIntervalMs} step="1" bind:value={previewIntervalMs} required />
-          </label>
-        {/if}
-        <label>{t('preview-alert')}
-          <select bind:value={refreshOnAlert}>
-            {#each previewAlerts as value}<option {value}>{t(value === 'any' ? 'preview-alert-any' : value)}</option>{/each}
-          </select>
-        </label>
-      </div>
-      <p class="muted">{t(usesBridgeCache ? 'preview-bridge-settings-hint' : 'preview-settings-hint')}</p>
+      <label>{t('preview-alert')}
+        <select bind:value={refreshOnAlert}>
+          {#each previewAlerts as value}<option {value}>{t(value === 'any' ? 'preview-alert-any' : value)}</option>{/each}
+        </select>
+      </label>
+      <p class="muted">{t(bridgePreview ? 'preview-bridge-settings-hint' : 'preview-bridge-configure')}</p>
       <div class="row"><button class="primary" disabled={busy}>{t('save')}</button></div>
     </form>
   {:else if busy}

@@ -71,8 +71,13 @@ const eventHistory = z.discriminatedUnion('backend', [
   })
 ]);
 
-const http = object({ url: endpoint({ secure: 'https:', plain: 'http:' }), token: bearer, ca: tlsRoot });
-const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:' }), token: bearer, ca: tlsRoot });
+const http = object({
+  url: endpoint({ secure: 'https:', plain: 'http:' }),
+  token: bearer,
+  ca: tlsRoot,
+  adminToken: bearer.optional(),
+  relay: z.boolean().default(true)
+});
 const mqtt = object({
   url: endpoint({ secure: 'mqtts:', plain: 'mqtt:', originOnly: true }),
   cameraIds: z.array(id).min(1).max(128).refine(unique).optional(),
@@ -88,25 +93,23 @@ const bridge = object({
   id,
   label: z.string().min(1).max(80),
   cameraIds: z.array(id).max(128).refine(unique).default([]),
-  commands: z.enum(['http', 'ws', 'mqtt']),
-  events: z.enum(['ws', 'mqtt']),
+  commands: z.enum(['http', 'mqtt']),
+  events: z.literal('mqtt').default('mqtt'),
   capture: z.literal('mqtt').optional(),
   http: http.optional(),
-  ws: ws.optional(),
-  mqtt: mqtt.optional(),
-  extensions: http.extend({ adminToken: bearer.optional(), relay: z.boolean().default(false) }).optional(),
+  mqtt,
   callbacks: z.record(id, endpoint({ secure: 'https:', plain: 'http:' })).optional()
 }).superRefine((value, ctx) => {
-  if (!value[value.commands] || !value[value.events] || (value.capture && !value.mqtt) || (value.callbacks && !value.ws)) {
-    ctx.addIssue({ code: 'custom', message: 'Configure each selected bridge transport' });
+  if ((value.commands === 'http' || value.callbacks) && !value.http) {
+    ctx.addIssue({ code: 'custom', path: ['http'], message: 'HTTP commands and callbacks require a bridge HTTP endpoint' });
   }
-  if (!(value.mqtt?.cameraIds ?? value.cameraIds).length && (value.events === 'mqtt' || value.commands === 'mqtt' || value.capture)) {
-    ctx.addIssue({ code: 'custom', message: 'MQTT requires exact camera IDs' });
+  if (!value.http && !(value.mqtt.cameraIds ?? value.cameraIds).length) {
+    ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Set exact MQTT camera IDs or configure an HTTP endpoint for inventory' });
   }
-  if (value.cameraIds.length && value.mqtt?.cameraIds?.some(id => !value.cameraIds.includes(id))) {
+  if (value.cameraIds.length && value.mqtt.cameraIds?.some(id => !value.cameraIds.includes(id))) {
     ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Use camera IDs in the bridge scope' });
   }
-  if (value.extensions?.adminToken && value.extensions.adminToken === value.extensions.token) {
+  if (value.http?.adminToken && value.http.adminToken === value.http.token) {
     ctx.addIssue({ code: 'custom', message: 'Administrative token must be separate' });
   }
 });

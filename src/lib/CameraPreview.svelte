@@ -3,25 +3,19 @@
   import { bridgePreviewPollIntervalMs } from '../../shared/playback.js';
   import { fetchPreview, t, UiError } from './api.js';
 
-  let { camera, name, enabled, intervalMs, bridgePreview, refreshRequest = 0 }: {
-    camera: string; name: string; enabled: boolean; intervalMs: number; bridgePreview: boolean; refreshRequest?: number
+  let { camera, name, enabled, refreshRequest = 0 }: {
+    camera: string; name: string; enabled: boolean; refreshRequest?: number
   } = $props();
-  const delayMs = $derived(bridgePreview ? bridgePreviewPollIntervalMs : intervalMs);
   let panel: HTMLDivElement;
   let image = $state('');
   let failed = $state(false);
   let enqueue: (() => void) | undefined;
-  let reschedule: ((delay: number) => void) | undefined;
   let previousRequest: number | undefined;
 
   $effect(() => {
     const next = refreshRequest;
     if (previousRequest !== undefined && next !== previousRequest) enqueue?.();
     previousRequest = next;
-  });
-  $effect(() => {
-    const delay = delayMs;
-    reschedule?.(delay);
   });
 
   onMount(() => {
@@ -39,10 +33,10 @@
       image = '';
       etag = undefined;
     };
-    const schedule = (delay: number) => {
+    const schedule = () => {
       clearTimeout(timer);
       if (canFetch() && !running && finishedAt !== undefined) {
-        timer = setTimeout(update, Math.max(0, Math.ceil(finishedAt + delay - performance.now())));
+        timer = setTimeout(update, Math.max(0, Math.ceil(finishedAt + bridgePreviewPollIntervalMs - performance.now())));
       }
     };
     const update = async () => {
@@ -72,19 +66,18 @@
         running = false;
         finishedAt = performance.now();
         if (urgent && canFetch()) void update();
-        else schedule(delayMs);
+        else schedule();
       }
     };
     enqueue = () => {
       urgent = true;
       void update();
     };
-    reschedule = schedule;
     const resume = () => {
       if (urgent || finishedAt === undefined) {
         clearTimeout(timer);
         void update();
-      } else schedule(delayMs);
+      } else schedule();
     };
     const observer = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(([entry]) => {
       visible = entry.isIntersecting;
@@ -95,7 +88,7 @@
     resume();
     return () => {
       stopped = true;
-      enqueue = reschedule = undefined;
+      enqueue = undefined;
       observer?.disconnect();
       document.removeEventListener('visibilitychange', resume);
       request?.abort();
