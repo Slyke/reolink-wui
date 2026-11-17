@@ -7,6 +7,7 @@
   let { camera, base, csrf, online }: { camera: Camera; base: string; csrf: string; online: boolean } = $props();
 
   type Values = {
+    image?: { hflip?: boolean; vflip?: boolean; rotation?: number };
     spotlight?: { enabled?: boolean; brightness?: number };
     leds?: { status_led?: boolean; ir_mode?: 'auto' | 'off' };
     motion_detection?: { enabled?: boolean; sensitivity?: number };
@@ -202,6 +203,24 @@
               </form>
             {:else if motion?.sensitivity !== undefined}
               <p>{t('sensitivity')} · {motion.sensitivity}</p>
+            {/if}
+          {:else if group === 'image'}
+            {#if values.image?.image}
+              {@const orientation = values.image.image}
+              <dl class="event-metadata">
+                {#if orientation.hflip !== undefined}<dt>{t('image-hflip')}</dt><dd>{t(orientation.hflip ? 'on' : 'off')}</dd>{/if}
+                {#if orientation.vflip !== undefined}<dt>{t('image-vflip')}</dt><dd>{t(orientation.vflip ? 'on' : 'off')}</dd>{/if}
+                {#if orientation.rotation !== undefined}<dt>{t('image-rotation')}</dt><dd>{orientation.rotation}°</dd>{/if}
+              </dl>
+            {/if}
+            {#if caps?.write}
+              <div class="row">
+                {#each ['hflip','vflip','clockwise','counterclockwise'] as action}
+                  {#if (action === 'hflip' && caps.hflip) || (action === 'vflip' && caps.vflip) || (['clockwise','counterclockwise'].includes(action) && caps.rotation)}
+                    <button disabled={disabled} onclick={() => change({ group, fields: { setting: 'image_orientation', action } })}>{t('image-' + action)}</button>
+                  {/if}
+                {/each}
+              </div>
             {/if}
           {:else if selectedClass}
             {@const type = selectedClass}

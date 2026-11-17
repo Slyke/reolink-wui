@@ -70,6 +70,7 @@ export const launch = async ({
 const caps = {
   baichuan: { controls: {
     leds: { status_led: true, ir_led: true }, motion_detection: { enabled:true, sensitivity:true },
+    image: {hflip:true,vflip:true,rotation:true},
     spotlight: { manual:true, brightness:true, brightness_min:0, brightness_max:100 },
     ai_person: { sensitivity:true, delay_seconds:true }, ai_pet: { sensitivity:true, delay_seconds:true }
   } },
@@ -119,13 +120,14 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false } = {}) => {
   const previewRequests = [];
   let previewJpeg = jpeg;
   let led = false;
   let motion = true;
   let sensitivity = 40;
   let brightness = 5;
+  const orientation = {hflip:false,vflip:false,rotation:0};
   let inventory = ['alpha','beta'];
   let inventoryReads = 0;
   const ai = { ai_person:{sensitivity:76,delay_seconds:2}, ai_pet:{sensitivity:60,delay_seconds:0} };
@@ -142,13 +144,20 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false } =
     { camera_id, topic: 'availability', payload: { online: true, updated_at: new Date().toISOString() } },
     { camera_id, topic: 'state/settings', payload: {
       leds: { status_led: led, ir_mode: 'auto' }, motion_detection: { enabled: motion, sensitivity },
-      spotlight: { brightness }, ...ai
+      spotlight: { brightness }, image:orientation, ...ai
     } },
     { camera_id, topic: 'rules', payload: { baichuan: [{ id: 'rule-1', enabled:true, type:'motion', parameters:{password:serviceToken} }] } }
   ]);
   const command = body => {
     const { id, command } = body;
     requests.push(command);
+    if (command.setting === 'image_orientation') {
+      if (command.action === 'hflip') orientation.hflip = !orientation.hflip;
+      if (command.action === 'vflip') orientation.vflip = !orientation.vflip;
+      if (command.action === 'clockwise') orientation.rotation = (orientation.rotation+90)%360;
+      if (command.action === 'counterclockwise') orientation.rotation = (orientation.rotation+270)%360;
+      writes++;
+    }
     if (command.setting === 'status_led') { led = command.enabled; writes++; }
     if (command.setting === 'motion_detection') {
       motion = command.enabled ?? motion;
@@ -162,6 +171,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false } =
       writes++;
     }
     const state = {
+      image_orientation: orientation,
       motion_detection: { enabled:motion, sensitivity },
       ai_detection: ai['ai_' + command.class]
     }[command.setting] ?? { status_led:led, vendor:{ secret:serviceToken } };
@@ -183,6 +193,14 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false } =
     for await (const chunk of req) chunks.push(chunk);
     return JSON.parse(Buffer.concat(chunks));
   };
+  let recordedMp4;
+  if (recordings) {
+    const encoder = spawn('ffmpeg',['-v','error','-f','lavfi','-i','color=blue:size=160x120:rate=8','-t','2','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-movflags','frag_keyframe+empty_moov','-f','mp4','pipe:1'],{stdio:['ignore','pipe','ignore']});
+    const parts = [];
+    for await (const part of encoder.stdout) parts.push(part);
+    await once(encoder,'exit');
+    recordedMp4 = Buffer.concat(parts);
+  }
   const server = createServer(async (req,res) => {
     if (req.url === '/livez') return res.end('{}');
     if (req.headers.authorization !== 'Bearer ' + serviceToken) { res.statusCode=401; return res.end('{}'); }
@@ -198,7 +216,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false } =
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
       version:1, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
-      previewCameras, enrollment:false, inventory:true, callbacks:true
+      previewCameras, recordingsCameras:recordings?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
@@ -210,6 +228,29 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false } =
       if (req.method === 'PUT') callbacks.splice(callbacks.findIndex(entry => entry.id === id), 1, await read(req));
       if (req.method === 'DELETE') callbacks.splice(callbacks.findIndex(entry => entry.id === id), 1);
       return res.end(JSON.stringify({ ok:true, correlation_id:req.headers['x-correlation-id'], callbacks }));
+    }
+    if (req.url.endsWith('/settings/image')) return res.end(JSON.stringify({values:{image:orientation}}));
+    if (recordings && req.url.endsWith('/storage')) return res.end(JSON.stringify({
+      cards:[{number:0,kind:'sd',mounted:true,formatted:true,totalBytes:64000000000,usedBytes:16000000000,freeBytes:48000000000}],
+      cameraTime:'2026-11-17T12:30:00',refreshedAt:new Date().toISOString(),streams:['main','sub']
+    }));
+    if (recordings && /\/recordings\?/.test(req.url)) {
+      const query = new URL(req.url,'http://127.0.0.1').searchParams;
+      return res.end(JSON.stringify({
+        date:query.get('date'),stream:query.get('stream'),truncated:false,
+        recordings:[{id:'a'.repeat(64),start:query.get('date')+'T12:00:00',end:query.get('date')+'T12:00:02',stream:query.get('stream'),sizeBytes:recordedMp4.length,kind:'motion'}]
+      }));
+    }
+    if (recordings && /\/recordings\/[a-f0-9]{64}\/video$/.test(req.url)) {
+      let start=0,end=recordedMp4.length-1;
+      const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range??'');
+      if (range) {start=Number(range[1]); if(range[2]) end=Math.min(end,Number(range[2]));}
+      if (start>=recordedMp4.length) {res.writeHead(416,{'content-range':'bytes */'+recordedMp4.length});return res.end();}
+      res.writeHead(range?206:200,{
+        'content-type':'video/mp4','content-length':end-start+1,'accept-ranges':'bytes',
+        ...(range?{'content-range':'bytes '+start+'-'+end+'/'+recordedMp4.length}:{})
+      });
+      return res.end(recordedMp4.subarray(start,end+1));
     }
     if (req.url.endsWith('/settings/motion')) return res.end(JSON.stringify({ values:{ motion_detection:{enabled:motion,sensitivity} } }));
     if (req.url.endsWith('/settings/spotlight')) return res.end(JSON.stringify({ values:{ spotlight:{brightness} } }));

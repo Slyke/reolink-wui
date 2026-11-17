@@ -92,3 +92,11 @@ docker build -t reolink-wui:dev \
 ```
 
 Supply real commit values in CI and tag the image with both version and short hash. The example Compose file uses a shared loopback network namespace for proxy mode and publishes only the UI to the local machine. Give the unprivileged application user access to the mounted config and SQLite directory. Compose 2.24+ accepts an optional `.env` for secret references. This directory, real configs, database dumps and generated keys are outside the image and build context.
+
+## SD-card recordings and orientation
+
+Open **Recordings** to select a camera, search a date in the camera's local time, view total/used/free storage, and play SD-card footage with the video player's seek controls. The bridge must expose the storage and recordings API. The WUI account requires `recordings.view`. Instance administrators have this permission, and the Camera admin preset includes it when newly assigned. Other accounts can receive it under Camera grants.
+
+The bridge downloads and prepares a private temporary MP4 on first playback. Subsequent range reads use that cached clip. Camera credentials and native recording file names remain in the bridge. Search again if the private recording reference has expired. [Bridge recordings API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#sd-card-recordings)
+
+**Settings → Camera settings → Image orientation** shows supported camera-side horizontal/vertical flip and clockwise/counterclockwise rotation controls. They require `settings.image.write` and use fresh camera reads followed by verified readback. Camera-admin grants include the image-setting permissions. Quarter-turn rotation requires an advertised camera range.

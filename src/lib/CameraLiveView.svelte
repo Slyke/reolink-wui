@@ -5,9 +5,9 @@
   import { dismissOnBackdrop } from './dialog.js';
   import type { Camera } from './models.js';
 
-  let { camera, name, csrf, administer, compact = false, refreshRequest = 0, actions }: {
+  let { camera, name, csrf, administer, compact = false, refreshRequest = 0, headingId, actions }: {
     camera: Camera; name: string; csrf: string; administer: boolean;
-    compact?: boolean; refreshRequest?: number; actions?: Snippet;
+    compact?: boolean; refreshRequest?: number; headingId?: string; actions?: Snippet;
   } = $props();
   const id = $props.id();
   const base = $derived('/api/v1/cameras/' + camera.id);
@@ -19,6 +19,7 @@
   let expanded = $state(false);
   let image = $state('');
   let failed = $state(false);
+  let previewLoaded = $state(false);
   let manualFrameRequest = $state(0);
   let previousRequest: number | undefined;
   let enqueue: (() => void) | undefined;
@@ -120,6 +121,7 @@
     const clear = () => {
       if (image) URL.revokeObjectURL(image);
       image = '';
+      previewLoaded = false;
       etag = undefined;
     };
     const schedule = () => {
@@ -200,7 +202,9 @@
 {#snippet preview()}
   <div class="viewport preview-viewport">
     {#if image && enabled}
-      <img src={image} alt={t('preview-alt', { camera: name })} />
+      <img src={image} alt={t('preview-alt', { camera: name })}
+        onload={() => { previewLoaded = true; }}
+        onerror={() => { failed = true; previewLoaded = false; }} />
       {#if failed}<small class="preview-notice">{t('preview-stale')}</small>{/if}
     {:else}
       <p>{t(!enabled ? 'preview-unconfigured' : failed ? 'preview-offline' : 'preview-waiting')}</p>
@@ -209,7 +213,7 @@
 {/snippet}
 
 {#snippet guidance()}
-  {#if camera.capabilities.mediaAllowed && !playing}
+  {#if camera.capabilities.mediaAllowed && !playing && (!(image && previewLoaded && !failed) || !!liveMessage)}
     <div class="row muted">
       <span>{t(canStream ? (camera.capabilities.viaProxy ? 'playback-proxy' : 'playback-direct') : 'live-stream-unavailable')}</span>
       {#if administer}<a href={'/settings/cameras?camera=' + camera.id + '#playback-title'}>{t('live-configure')}</a>{/if}
@@ -218,14 +222,23 @@
 {/snippet}
 
 <div class="stack">
+  <div class="row between panel-title">
+    <h2 id={headingId ?? id + '-inline'}>{t('live')}</h2>
+    {#if camera.capabilities.mediaAllowed}
+      <button class="icon-button" type="button" title={t('live-enlarge')} aria-label={t('live-enlarge')}
+        aria-haspopup="dialog" disabled={!enabled && !canStream} onclick={() => show({ play: false })}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
+        </svg>
+      </button>
+    {/if}
+  </div>
   <div bind:this={panel}>{@render preview()}</div>
   {#if camera.capabilities.mediaAllowed || actions}
     <div class="row">
       {#if camera.capabilities.mediaAllowed}
         <button class="primary" type="button" aria-haspopup="dialog" disabled={!canStream || !mediaOnline}
           onclick={() => show({ play: true })}>{t('live-start')}</button>
-        <button type="button" aria-haspopup="dialog" disabled={!enabled && !canStream}
-          onclick={() => show({ play: false })}>{t('live-enlarge')}</button>
         {#if !compact}
           <button type="button" disabled={!enabled} onclick={() => { manualFrameRequest++; }}>{t('live-refresh')}</button>
         {/if}
@@ -255,15 +268,13 @@
       {/if}
       <div class="row">
         {#if canStream}
-          <label class="stream-quality">{t('live-quality')}
-            <select bind:value={stream} disabled={liveBusy || camera.capabilities.media.length === 1}
+          <select class="stream-quality" aria-label={t('live-quality')} bind:value={stream} disabled={liveBusy}
               onchange={() => { if (playback) void startLive(); }}>
               {#if camera.capabilities.media.includes('main')}
                 <option value="main">{t(camera.capabilities.viaProxy ? 'live-proxy-quality' : 'primary')}</option>
               {/if}
               {#if camera.capabilities.media.includes('sub')}<option value="sub">{t('secondary')}</option>{/if}
-            </select>
-          </label>
+          </select>
         {/if}
         {#if playback || liveBusy}
           <button type="button" onclick={() => { void stopLive(); }}>{t('live-stop')}</button>

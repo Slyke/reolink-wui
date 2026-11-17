@@ -31,7 +31,7 @@ const expectHover = async (page, button) => {
 for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
     page.setDefaultTimeout(6000);
-    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'] });
+    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true });
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
     const apiPort = await reserve();
@@ -279,14 +279,23 @@ for (const mode of ['browser','proxy']) {
       await expect(largeView.getByRole('button',{name:'Refresh live view'})).toHaveCount(0);
       await largeView.getByRole('button',{name:'Stop live stream'}).click();
       await expect(largeView.getByRole('img',{name:/camera preview$/})).toBeVisible();
-      await expect(largeView.getByRole('link',{name:'Configure playback'})).toBeVisible();
+      await expect(largeView.getByRole('link',{name:'Configure playback'})).toHaveCount(0);
       await largeView.getByRole('button',{name:'Close'}).click();
+      await expect(liveView.getByText('Bridge camera relay',{exact:true})).toHaveCount(0);
+      const expandIcon=liveView.getByRole('button',{name:'Enlarge live view'});
+      const inlineTitle=liveView.getByRole('heading',{name:'Live view',exact:true});
+      const iconBounds=await expandIcon.boundingBox();
+      const titleBounds=await inlineTitle.boundingBox();
+      expect(iconBounds.y).toBeLessThan(titleBounds.y+titleBounds.height);
+      expect(await expandIcon.innerText()).toBe('');
       await page.getByRole('link',{name:'Settings',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/settings/appearance');
       await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('ocean');
       await page.getByRole('combobox',{name:'Mode',exact:true}).selectOption('light');
       await page.getByRole('combobox',{name:'Font',exact:true}).selectOption('georgia');
       await page.getByRole('combobox',{name:'Content width'}).selectOption('1440');
+      const appearanceWidths=await page.locator('.appearance-fields select').evaluateAll(items=>items.map(item=>item.getBoundingClientRect().width));
+      expect(Math.max(...appearanceWidths)-Math.min(...appearanceWidths)).toBeLessThan(1);
       await page.reload();
       await expect(page.getByRole('heading',{name:'Appearance'})).toBeVisible();
       await expect(page.locator('html')).toHaveAttribute('data-palette','ocean');
@@ -459,6 +468,26 @@ for (const mode of ['browser','proxy']) {
       await expect(upstreamTable.getByRole('row').filter({hasText:'Commands'})).toContainText('HTTP');
       await expect(upstreamTable.getByText('Online',{exact:true})).toHaveCount(2);
 
+      await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
+      const orientationPanel=page.locator('article').filter({has:page.getByRole('heading',{name:'Image orientation',exact:true})});
+      await expect(orientationPanel).toBeVisible();
+      await orientationPanel.getByRole('button',{name:'Flip horizontally',exact:true}).click();
+      await expect(orientationPanel.getByText('On',{exact:true})).toBeVisible();
+      await orientationPanel.getByRole('button',{name:'Rotate clockwise',exact:true}).click();
+      await expect(orientationPanel.getByText('90°',{exact:true})).toBeVisible();
+      await orientationPanel.getByRole('button',{name:'Rotate counterclockwise',exact:true}).click();
+      await expect(orientationPanel.getByText('0°',{exact:true})).toBeVisible();
+      await page.getByRole('link',{name:'Recordings',exact:true}).first().click();
+      await expect(page.getByRole('heading',{name:'SD card and storage'})).toBeVisible();
+      await expect(page.getByText('64 GB',{exact:true})).toBeVisible();
+      await expect(page.getByText('16 GB',{exact:true})).toBeVisible();
+      await page.getByRole('button',{name:'Play',exact:true}).click();
+      const recordingVideo=page.locator('video.recording-video');
+      await expect(recordingVideo).toBeVisible();
+      await expect.poll(() => recordingVideo.evaluate(video => video.readyState)).toBeGreaterThanOrEqual(1);
+      const seek=await page.request.get(new URL(await recordingVideo.getAttribute('src'),publicOrigin).toString(),{headers:{range:'bytes=0-31'}});
+      expect(seek.status()).toBe(206);
+      expect((await seek.body()).length).toBe(32);
       await page.goto(publicOrigin+'/settings/enrollment');
       await page.getByLabel('Device UID').fill('TESTWUI001');
       const enrollmentButton = page.getByRole('button',{name:'Show enrollment QR'});

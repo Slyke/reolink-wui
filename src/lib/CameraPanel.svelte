@@ -99,8 +99,7 @@
   </section>
   <div class="monitor-columns" class:with-events={camera.capabilities.events}>
     <section class="panel stack" aria-labelledby={liveTitle}>
-      <h2 id={liveTitle} class="panel-title">{t('live')}</h2>
-      <CameraLiveView {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
+      <CameraLiveView headingId={liveTitle} {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
         {#snippet actions()}
           {#if camera.capabilities.capture}
             <button disabled={!online || busy} onclick={snapshot}>{t(busy ? 'pending' : 'snapshot')}</button>
@@ -176,6 +175,9 @@
         {/if}
       {/if}
     </section>
+  {/if}
+  {#if camera.capabilities.recordings}
+    <div class="row"><a class="button" href={'/recordings?camera=' + camera.id}>{t('recordings')}</a></div>
   {/if}
   {#if camera.capabilities.rotate || Object.keys(camera.capabilities.settings).length || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
     <div class="row"><a class="button" href={'/settings/cameras?camera=' + camera.id}>{t('camera-settings')}</a></div>

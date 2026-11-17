@@ -15,7 +15,7 @@ if (config) {
   boot({ caller: 'ui::start' });
 }
 
-const requestHeaders = ['accept', 'content-type', 'cookie', 'if-none-match', 'last-event-id', 'origin', 'referer', 'sec-fetch-site', 'x-csrf-token'];
+const requestHeaders = ['accept', 'content-type', 'cookie', 'if-none-match', 'range', 'last-event-id', 'origin', 'referer', 'sec-fetch-site', 'x-csrf-token'];
 const noBody = new Set([204, 205, 304]);
 const drop = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection',

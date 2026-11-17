@@ -23,6 +23,7 @@ export const settingSchema = z.discriminatedUnion('setting', [
   object({ setting: z.literal('ir_led'), mode: z.enum(['auto', 'off']) }),
   object({ setting: z.literal('motion_detection'), enabled: z.boolean().optional(), sensitivity: int(1, 50).optional() })
     .refine(value => value.enabled !== undefined || value.sensitivity !== undefined),
+  object({ setting: z.literal('image_orientation'), action: z.enum(['hflip', 'vflip', 'clockwise', 'counterclockwise']) }),
   object({ setting: z.literal('ai_detection'), class: z.enum(aiClasses), sensitivity: int(0, 100).optional(), delay_seconds: int(0, 8).optional() })
     .refine(value => value.sensitivity !== undefined || value.delay_seconds !== undefined)
 ]);
@@ -31,6 +32,7 @@ export const groupFor = (setting: z.infer<typeof settingSchema>['setting']): Set
   if (setting === 'spotlight' || setting === 'spotlight_brightness') return 'spotlight';
   if (setting === 'status_led' || setting === 'ir_led') return 'leds';
   if (setting === 'motion_detection') return 'motion';
+  if (setting === 'image_orientation') return 'image';
   return 'ai';
 };
 
@@ -101,6 +103,7 @@ const sanitizeGroup = ({ raw, group }: { raw: Envelope; group: SettingsGroup }) 
     brightness_min: num(raw.brightness_min), brightness_max: num(raw.brightness_max)
   };
   if (group === 'leds') return { status_led: bool(raw.status_led), ir_mode: ['auto', 'off'].includes(String(raw.ir_mode)) ? raw.ir_mode : undefined };
+  if (group === 'image') return { hflip: bool(raw.hflip), vflip: bool(raw.vflip), rotation: num(raw.rotation) };
   if (group === 'motion') return { enabled: bool(raw.enabled), sensitivity: num(raw.sensitivity) };
   return { sensitivity: num(raw.sensitivity), delay_seconds: num(raw.delay_seconds) };
 };
@@ -153,6 +156,8 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     manual: bool(light.manual), brightness: bool(light.brightness),
     range: range({ min: light.brightness_min, max: light.brightness_max })
   });
+  const orientation = record(ctrls.image);
+  if (Object.keys(orientation).length) group('image', { hflip: bool(orientation.hflip), vflip: bool(orientation.vflip), rotation: bool(orientation.rotation) });
   group('leds', { statusLed: bool(led.status_led), irLed: bool(led.ir_led) });
   group('motion', { enabled: bool(motion.enabled), sensitivity: bool(motion.sensitivity) });
   group('ai', { classes: Object.fromEntries(aiClasses.filter(name => Object.hasOwn(ctrls, 'ai_' + name)).map(name => {
@@ -164,6 +169,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
   return {
     discovered: !!caps,
     events: grant.has('events'),
+    recordings: grant.has('recordings.view') && bridge.hasRecordings(remote),
     capture: grant.has('capture') && bridge.canCapture(remote),
     mediaAllowed: grant.has('media.live'),
     preview: bridgePreview,
@@ -219,6 +225,10 @@ export const validateSetting = ({ value, settings }: {
     switch (value.setting) {
       case 'spotlight': if (group.manual === true) return; break;
       case 'spotlight_brightness': if (group.brightness && allowedRange({ value: value.brightness, bounds: group.range as ReturnType<typeof range> })) return; break;
+      case 'image_orientation':
+        if ((value.action === 'hflip' && group.hflip) || (value.action === 'vflip' && group.vflip)
+          || (['clockwise', 'counterclockwise'].includes(value.action) && group.rotation)) return;
+        break;
       case 'status_led': if (group.statusLed === true) return; break;
       case 'ir_led': if (group.irLed === true) return; break;
       case 'motion_detection': if ((value.enabled === undefined || group.enabled) && (value.sensitivity === undefined || group.sensitivity)) return; break;

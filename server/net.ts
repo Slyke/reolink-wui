@@ -6,7 +6,7 @@ export const trust = ({ ca }: { ca?: string }) => ca ? [...getCACertificates('de
 
 export const dispatcher = ({ ca }: { ca?: string }) => new Agent({
   connect: { ca: trust({ ca }), timeout: 3500 },
-  headersTimeout: 45_000, bodyTimeout: 45_000,
+  headersTimeout: 130_000, bodyTimeout: 45_000,
   connections: 24
 });
 

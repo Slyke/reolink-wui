@@ -589,3 +589,49 @@ test('inventory interval controls scheduled discovery independently of readiness
   assert.equal(updated.bridges[0].refreshedAt,null);
   assert.equal(updated.inventoryIntervalSeconds,1);
 });
+
+test('SD recordings enforce camera grants, serve byte ranges and verify image-setting readback', async t => {
+  const fixture=await fixtureBridge({recordings:true});
+  t.after(()=>fixture.close());
+  const { app,runtime,incoming,seed,signIn }=await launch({bridges:[fixture.config]});
+  t.after(()=>app.close());
+  const admin=await seed({username:'recording-admin',admin:true});
+  const viewer=await seed({username:'recording-viewer'});
+  const privileged=await signIn('recording-admin');
+  const restricted=await signIn('recording-viewer');
+  await eventually(()=>runtime.bridges.get('lab').state('alpha').has('info'));
+  const [camera]=await runtime.sql.query('SELECT id FROM cameras WHERE remote_id=$1','alpha');
+  await runtime.sql.query('INSERT INTO grants VALUES ($1,$2,$3)',viewer,camera.id,JSON.stringify(['view','media.live']));
+  const root='/cameras/'+camera.id;
+  assert.equal((await incoming({path:root+'/storage',headers:restricted})).statusCode,403);
+  const storage=await incoming({path:root+'/storage',headers:privileged});
+  assert.equal(storage.statusCode,200,storage.body);
+  assert.equal(storage.json().cards[0].totalBytes,64000000000);
+  assert.equal(storage.json().cards[0].usedBytes,16000000000);
+  assert.equal((await incoming({path:root+'/recordings?date=2026-02-30',headers:privileged})).statusCode,400);
+  const search=await incoming({path:root+'/recordings?date=2026-11-17&stream=sub',headers:privileged});
+  assert.equal(search.statusCode,200,search.body);
+  const recording=search.json().recordings[0];
+  const path=root+'/recordings/'+recording.id+'/video';
+  assert.equal((await incoming({path,headers:restricted})).statusCode,403);
+  const partial=await incoming({path,headers:{...privileged,range:'bytes=0-31'}});
+  assert.equal(partial.statusCode,206,partial.body);
+  assert.equal(partial.rawPayload.length,32);
+  assert.match(partial.headers['content-range'],/^bytes 0-31\/\d+$/);
+  const invalid=await incoming({path,headers:{...privileged,range:'bytes=9999999-'}});
+  assert.equal(invalid.statusCode,416);
+  assert.equal((await incoming({path:root+'/recordings/'+recording.id+'/video',headers:{...privileged,range:'bytes=0-1,4-8'}})).statusCode,400);
+  assert.equal((await incoming({path:root+'/settings/image',headers:restricted,method:'PATCH',payload:{
+    operationId:uuid(),change:{setting:'image_orientation',action:'hflip'}
+  }})).statusCode,403);
+  for(const action of ['hflip','vflip','clockwise','counterclockwise']) {
+    const update=await incoming({path:root+'/settings/image',headers:privileged,method:'PATCH',payload:{
+      operationId:uuid(),change:{setting:'image_orientation',action}
+    }});
+    assert.equal(update.statusCode,200,update.body);
+    assert.equal(update.json().outcome,'confirmed');
+  }
+  const orientation=await incoming({path:root+'/settings/image?fresh=true',headers:privileged});
+  assert.deepEqual(orientation.json().values.image,{hflip:true,vflip:true,rotation:0});
+  assert.ok(admin);
+});

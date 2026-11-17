@@ -18,8 +18,6 @@
       {#each modes as item}<option value={item}>{t(item)}</option>{/each}
     </select>
   </label>
-</div>
-<div class="form-grid">
   <label>{t('appearance-font')}
     <select value={settings.font} {disabled} onchange={event => choose({ key: 'font', value: event.currentTarget.value })}>
       {#each fontGroups as group}

@@ -9,6 +9,7 @@ import { forwardProofHeader, samePeer, sameSecret } from './trusted-proxy.js';
 import { csrfToken } from './auth.js';
 import { buildInfo, Failure, report } from './errors.js';
 import { Runtime, input, username, uuid } from './runtime.js';
+import { recordingRoutes } from './recording-routes.js';
 import { liveRoutes } from './live.js';
 import { cameraRoutes } from './camera-routes.js';
 import { adminRoutes } from './admin-routes.js';
@@ -101,6 +102,7 @@ export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions
   adminRoutes({ api: app, path, runtime });
   enrollmentRoutes({ api: app, path, runtime });
   liveRoutes({ api: app, path, runtime });
+  recordingRoutes({ api: app, path, runtime });
 
   return { app, runtime };
 };

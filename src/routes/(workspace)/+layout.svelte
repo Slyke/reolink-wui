@@ -49,6 +49,7 @@
   const links = [
     { href: '/dashboard', label: 'dashboard' },
     { href: '/monitor', label: 'monitor' },
+    { href: '/recordings', label: 'recordings' },
     { href: '/settings', label: 'settings' },
     { href: '/status', label: 'status-page' }
   ];

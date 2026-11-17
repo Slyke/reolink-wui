@@ -27,9 +27,9 @@ export type BridgeUpdate = { kind: 'feed' }
 
 type Link = { url: URL; token: string; adminToken?: string; agent: Agent };
 
-const request = ({ link, path, search, token, method, data, correlation, ifNoneMatch, signal }: {
+const request = ({ link, path, search, token, method, data, correlation, ifNoneMatch, range, signal }: {
   link: Link; path: string; search?: string; token?: string; method?: string; data?: unknown; correlation?: string;
-  ifNoneMatch?: string; signal: AbortSignal
+  ifNoneMatch?: string; range?: string; signal: AbortSignal
 }) => {
   const options: RequestInit & { dispatcher: Agent } = {
     dispatcher: link.agent, method, redirect: 'error', signal,
@@ -37,7 +37,8 @@ const request = ({ link, path, search, token, method, data, correlation, ifNoneM
       authorization: 'Bearer ' + (token ?? link.token),
       ...(data !== undefined ? { 'content-type': 'application/json' } : {}),
       ...(correlation ? { 'x-correlation-id': correlation } : {}),
-      ...(ifNoneMatch ? { 'if-none-match': ifNoneMatch } : {})
+      ...(ifNoneMatch ? { 'if-none-match': ifNoneMatch } : {}),
+      ...(range ? { range } : {})
     },
     body: data === undefined ? undefined : JSON.stringify(data)
   };
@@ -58,6 +59,7 @@ export class Bridge {
   private scanning?: Promise<boolean>;
   private readonly mediaStreams = new Map<string, string[]>();
   private previewCameras = new Set<string>();
+  private recordingCameras = new Set<string>();
   private httpState?: boolean;
   private interruption?: BridgeInterruption;
   private get activeFeed() {
@@ -264,20 +266,24 @@ export class Bridge {
     return this.has('media') ? this.mediaStreams.get(camera) ?? [] : [];
   }
 
+  hasRecordings(camera: string) {
+    return this.has('v1') && this.recordingCameras.has(camera);
+  }
+
   hasPreview(camera: string) {
     return this.has('v1') && this.previewCameras.has(camera);
   }
 
-  async api({ path, search, admin = false, data, correlation, ifNoneMatch, signal, method = data === undefined ? 'GET' : 'POST' }: {
+  async api({ path, search, admin = false, data, correlation, ifNoneMatch, range, signal, method = data === undefined ? 'GET' : 'POST' }: {
     path: string; search?: string; admin?: boolean; data?: unknown; correlation?: string;
-    ifNoneMatch?: string; signal?: AbortSignal; method?: string
+    ifNoneMatch?: string; range?: string; signal?: AbortSignal; method?: string
   }) {
     const link = this.http;
     if (!link || (admin && !link.adminToken)) throw new Failure('UNSUPPORTED', 422);
     try {
       return await request({
         link, path: '/api' + path, search, token: admin ? link.adminToken : undefined, method,
-        data, correlation, ifNoneMatch, signal: signal ?? AbortSignal.timeout(admin ? 65_000 : 18_000)
+        data, correlation, ifNoneMatch, range, signal: signal ?? AbortSignal.timeout(admin ? 65_000 : 18_000)
       });
     } catch {
       if (method === 'GET' || method === 'HEAD') throw new Failure('BRIDGE_UNAVAILABLE', 502);
@@ -362,7 +368,7 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras]]);
     const ok = contract.version === 1;
     this.bridgeVersion.v1 = ok;
     this.bridgeVersion.inventory = ok && contract.inventory === true;
@@ -377,9 +383,11 @@ export class Bridge {
         }
       }
     }
+    this.recordingCameras = new Set(ok && Array.isArray(contract.recordingsCameras)
+      ? contract.recordingsCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 
