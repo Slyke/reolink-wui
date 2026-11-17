@@ -18,13 +18,15 @@ For trusted header modes configure `auth.ingress = { issuer, peers, secret, iden
 
 ## Bridges
 
-Configure one record per bridge. Set `http` for the bridge API and `mqtt` for events and retained state. Choose `commands: "http"` or `commands: "mqtt"` and set `capture: "mqtt"` for on-demand image capture. The broker identity needs read access to each camera's event and state topics and command results. For MQTT commands or captures it also needs write access to each camera's command requests. [Bridge HTTP API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md)
+Configure one record per bridge. Set `http` for the bridge API and `mqtt` for its broker connection. Choose `commands: "http"` or `commands: "mqtt"` and set `capture: "mqtt"` for on-demand image capture. The broker identity needs read access to each camera's event and state topics and command results. For MQTT commands or captures it also needs write access to each camera's command requests. [Bridge HTTP API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md)
 
 WUI queries `GET /api/inventory` and subscribes to the exact topics for active cameras. With neither camera list configured, new cameras are picked up once the bridge activates them and the broker ACL permits access. Use `cameraIds` to restrict the visible cameras. `mqtt.cameraIds` limits MQTT subscriptions and also supplies the visible scope if `cameraIds` is omitted. For an older bridge without the HTTP inventory endpoint, enter the exact camera IDs.
 
 Configure the inventory scan interval under **Settings → Private bridges**. It defaults to 10 seconds and accepts 1 through 86400. The **Refreshed at** timestamp in Settings records the last manual inventory refresh.
 
-When updating an earlier WUI configuration, set `events: "mqtt"` and remove `ws`. Move any `extensions.adminToken` and `extensions.relay` values into `http` and remove `extensions`. Use the existing bridge HTTP bearer token, or configure a restricted service token with `api.commands: true` if the WUI runs commands over HTTP.
+Omit `events` to use WS/WSS as the primary event and state feed when a bridge endpoint is configured. MQTT is the default standby. The WUI keeps both feeds subscribed and uses the preferred one when it is ready. Status marks the active and standby connections.
+
+Set `events: { primary: "mqtt", secondary: "ws" }` to prefer MQTT. The `events: "mqtt"` and `events: "ws"` forms select a single event feed. By default WS/WSS uses `/ws` at the `http` endpoint with the same token and CA. For a custom path or credential, set `ws: { url, token, ca }`. If using a scoped bridge API token, enable `api.events` on the bridge for WebSocket read access.
 
 For MQTT TLS over an authenticated tunnel that provides only the broker leaf certificate, set `mqtt.ca` to the explicitly trusted certificate and `mqtt.allowPartialTrustChain: true`. The client still verifies the hostname and certificate validity. With an issuer CA available, configure that CA and leave partial trust disabled.
 

@@ -34,7 +34,7 @@
         <h3>{t('feed-gap-' + gap.cause)}</h3>
         <dl class="event-metadata">
           <dt>{t('feed-gap-detected')}</dt><dd>{@render timestamp(gap.detectedAt)}</dd>
-          {#if gap.cause === 'bridge-connection'}
+          {#if gap.cause === 'bridge-connection' || gap.cause === 'bridge-backlog'}
             <dt>{t('feed-gap-bridge')}</dt><dd>{gap.bridge} · {gap.transport}</dd>
           {/if}
           {#if gap.cause === 'bridge-connection'}
@@ -66,7 +66,7 @@
             </ul>
           </div>
         {:else}
-          <p class="muted">{t('feed-gap-unknown-events')}</p>
+          <p class="muted">{t(gap.cause === 'bridge-backlog' ? 'feed-gap-bridge-backlog-description' : 'feed-gap-unknown-events')}</p>
         {/if}
       </section>
     {/each}

@@ -1,3 +1,4 @@
+import WebSocket from 'ws';
 import mqtt, { type MqttClient } from 'mqtt';
 import { randomUUID } from 'node:crypto';
 import type { ConnectionOptions } from 'node:tls';
@@ -45,16 +46,122 @@ const connectionFailure = (error: Error): FeedConnectionFailure => {
   if (typeof code === 'string' && /^(?:ERR_TLS_CERT_|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT$|SELF_SIGNED_CERT_IN_CHAIN$|UNABLE_TO_(?:GET_ISSUER_CERT|VERIFY_LEAF_SIGNATURE))/.test(code)) {
     return 'tls';
   }
-  if (typeof code === 'number' && [4, 5, 0x86, 0x87].includes(code)) return 'authorization';
+  if ((typeof code === 'number' && [4, 5, 0x86, 0x87].includes(code))
+    || /^Unexpected server response: (401|403)$/.test(error.message)) return 'authorization';
   return 'transport';
 };
 
-type Channels = {
+export type ChannelChanges = {
   refresh: () => void;
   connected: (ready: boolean, failure?: FeedConnectionFailure) => void;
   snapshot: (message: Envelope) => void;
   event: (message: Envelope) => void;
+  gap: () => void;
 };
+
+export class SocketChannel {
+  private socket?: WebSocket;
+  private retry?: ReturnType<typeof setTimeout>;
+  private ended = false;
+  private readonly replies = new Replies();
+  ready?: boolean;
+
+  constructor(
+    private readonly conf: NonNullable<BridgeConfig['ws']>,
+    private readonly ids: string[],
+    private readonly changes: ChannelChanges
+  ) {
+    this.open();
+  }
+
+  private open() {
+    const socket = new WebSocket(this.conf.url, {
+      headers: { authorization: 'Bearer ' + this.conf.token },
+      ca: trust({ ca: this.conf.ca }), handshakeTimeout: 3500, maxPayload: 2_000_000, followRedirects: false
+    });
+    this.socket = socket;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let responsive = true;
+    let failure: FeedConnectionFailure | undefined;
+    socket.on('error', error => {
+      failure ??= connectionFailure(error);
+      socket.terminate();
+    });
+    socket.on('close', () => {
+      clearInterval(heartbeat);
+      this.ready = false;
+      this.replies.lost();
+      if (this.ended) return;
+      this.changes.connected(false, failure ?? 'transport');
+      this.retry = setTimeout(() => this.open(), 1500);
+    });
+    socket.on('pong', () => { responsive = true; });
+    socket.on('open', () => {
+      heartbeat = setInterval(() => {
+        if (!responsive) {
+          failure = 'heartbeat';
+          return socket.terminate();
+        }
+        responsive = false;
+        socket.ping();
+      }, 8000);
+      void this.request({ op: 'subscribe', cameras: this.ids }).then(reply => {
+        if (this.ended || socket.readyState !== WebSocket.OPEN) return;
+        if (reply.ok !== true || !Array.isArray(reply.snapshots)) {
+          failure = 'subscription';
+          socket.terminate();
+          return;
+        }
+        this.changes.refresh();
+        for (const item of reply.snapshots) this.changes.snapshot(record(item));
+        this.ready = true;
+        this.changes.connected(true);
+      }).catch(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          failure ??= 'subscription';
+          socket.terminate();
+        }
+      });
+    });
+    socket.on('message', (data, binary) => {
+      if (binary) return;
+      const message = parse(data.toString());
+      if (typeof message.id === 'string') return this.replies.match({ key: message.id, value: message });
+      if (!this.ready) return;
+      if (message.op === 'event') this.changes.event(record(message.event));
+      if (message.op === 'snapshot') this.changes.snapshot(record(message.snapshot));
+      if (message.op === 'gap') {
+        this.changes.gap();
+        this.changes.refresh();
+        if (Array.isArray(message.snapshots)) for (const item of message.snapshots) this.changes.snapshot(record(item));
+        this.changes.connected(true);
+      }
+    });
+  }
+
+  private request(message: Envelope) {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Failure('BRIDGE_UNAVAILABLE', 503);
+    const id = randomUUID();
+    return this.replies.wait({
+      key: id, ms: 4500, send: () => socket.send(JSON.stringify({ ...message, id }), error => {
+        if (error) socket.terminate();
+      })
+    });
+  }
+
+  async refreshSnapshots() {
+    const response = await this.request({ op: 'snapshot' });
+    if (response.ok !== true || !Array.isArray(response.snapshots)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
+    for (const item of response.snapshots) this.changes.snapshot(record(item));
+  }
+
+  close() {
+    this.ended = true;
+    clearTimeout(this.retry);
+    this.socket?.terminate();
+  }
+}
 
 const maxPacket = 25_200_000;
 const eventTopics = ['availability', 'info', 'capabilities', 'rules', 'state/+', 'events'];
@@ -72,7 +179,7 @@ export class BrokerChannel {
 
   constructor(
     private readonly config: BridgeConfig['mqtt'], ids: string[],
-    private readonly controls: boolean, private readonly changes: Channels
+    private readonly controls: boolean, private readonly changes?: ChannelChanges
   ) {
     this.targets = new Set(ids);
     const tlsOptions = { allowPartialTrustChain: config.allowPartialTrustChain } satisfies Pick<ConnectionOptions, 'allowPartialTrustChain'>;
@@ -89,14 +196,14 @@ export class BrokerChannel {
       this.subscribed.clear();
       this.ready = false;
       this.replies.lost();
-      if (!this.closed) changes.connected(false, this.failure ?? 'transport');
+      if (!this.closed) changes?.connected(false, this.failure ?? 'transport');
       this.failure = undefined;
     });
     // MQTT.js owns socket recovery.
     this.client.on('error', error => { this.failure ??= connectionFailure(error); });
     this.client.on('connect', () => {
       this.failure = undefined;
-      changes.refresh();
+      changes?.refresh();
       this.syncSubscriptions();
     });
     this.client.on('message', (topic, payload, packet) => {
@@ -112,9 +219,9 @@ export class BrokerChannel {
         const message = parse(payload);
         if (typeof message.id === 'string') this.replies.match({ key: id + '/' + message.id, value: message });
       } else if (suffix === 'events') {
-        if (!packet.retain && this.ready) changes.event({ ...parse(payload), camera_id: id });
+        if (!packet.retain && this.ready) changes?.event({ ...parse(payload), camera_id: id });
       } else if (/^(availability|info|capabilities|rules|state\/[a-zA-Z0-9_:-]{1,96})$/.test(suffix) && payload.length < 2_000_000) {
-        changes.snapshot({ camera_id: id, topic: suffix, payload: parse(payload) });
+        changes?.snapshot({ camera_id: id, topic: suffix, payload: parse(payload) });
       }
     });
   }
@@ -129,7 +236,7 @@ export class BrokerChannel {
     this.targets = targets;
     if (targets.size && this.subscribed.size === 0 && this.ready) {
       this.ready = false;
-      this.changes.connected(false);
+      this.changes?.connected(false);
     }
     this.syncSubscriptions();
     return true;
@@ -137,13 +244,14 @@ export class BrokerChannel {
 
   private syncSubscriptions() {
     if (this.closed || this.subscribing || !this.client.connected) return;
-    const suffixes = this.controls ? [...eventTopics, 'command/result'] : eventTopics;
+    const suffixes = this.changes ? [...eventTopics] : [];
+    if (this.controls) suffixes.push('command/result');
     const topics = new Set([...this.targets].flatMap(id => suffixes.map(suffix => this.config.baseTopic + '/' + id + '/' + suffix)));
     const add = [...topics].filter(topic => !this.subscribed.has(topic));
     const remove = [...this.subscribed].filter(topic => !topics.has(topic));
     if (!add.length && !remove.length) {
       this.ready = true;
-      this.changes.connected(true);
+      this.changes?.connected(true);
       return;
     }
     const generation = this.generation;

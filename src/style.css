@@ -140,7 +140,14 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
   color: var(--color-mid-ink); background: var(--color-mid-fill-strong); border-color: var(--color-mid-border);
 }
 .pill[data-status='cleared'] { color: var(--color-text-muted); }
-.pill.detection-state { transition: background-color var(--transition), border-color var(--transition), color var(--transition); }
+.detection-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr)); gap: var(--space-2);
+}
+.pill.detection-state {
+  width: 100%; min-width: 0; min-height: 1.65rem;
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition);
+}
+.pill.detection-state::before { flex: none; }
 .viewport { display: grid; place-items: center; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-sm); aspect-ratio: 16 / 9; overflow: hidden; color: var(--color-text-muted); text-align: center; }
 .viewport img { width: 100%; height: 100%; object-fit: contain; }
 .preview-viewport { position: relative; }
@@ -151,7 +158,7 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
 }
 .camera-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: var(--space-4); }
 .camera-tile { color: var(--color-text); text-decoration: none; transition: border-color var(--transition), background-color var(--transition); }
-.camera-tile:hover { color: var(--color-text); border-color: var(--color-start); background: var(--color-panel-strong); }
+.camera-tile:is(:hover, :focus-within) { color: var(--color-text); border-color: var(--color-start); background: var(--color-panel-strong); }
 
 .viewport p { padding: 1rem; }
 .snapshot { max-width: 100%; max-height: 22rem; object-fit: contain; }
@@ -216,14 +223,17 @@ fieldset { min-width: 0; border: 1px solid var(--color-border); border-radius: v
 details.panel > summary { cursor: pointer; min-height: 2.35rem; color: var(--color-text); }
 details.panel > summary:hover { color: var(--color-start-ink); }
 details.panel[open] > summary { margin-bottom: var(--space-3); color: var(--color-mid-ink); }
-.qr-dialog, .event-dialog {
+.qr-dialog, .event-dialog, .live-dialog {
   max-height: calc(100dvh - 2rem); padding: var(--space-4); overflow: auto;
   color: var(--color-text); background: var(--color-panel); border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-panel);
 }
 .qr-dialog { width: min(94vw, 46rem); }
 .event-dialog { width: min(94vw, 49rem); }
-.qr-dialog::backdrop, .event-dialog::backdrop { background: var(--color-backdrop); backdrop-filter: blur(4px); }
+.live-dialog { width: min(96vw, 90rem); }
+.live-dialog .viewport { max-height: 68dvh; }
+.live-dialog .viewport img { min-width: 0; min-height: 0; }
+.qr-dialog::backdrop, .event-dialog::backdrop, .live-dialog::backdrop { background: var(--color-backdrop); backdrop-filter: blur(4px); }
 .qr-code { display: block; width: min(100%, 36rem, 73dvh); height: auto; margin-inline: auto; image-rendering: pixelated; }
 
 @media (max-width: 800px) {

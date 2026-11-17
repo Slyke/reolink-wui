@@ -5,7 +5,7 @@
   import { useWorkspace } from '$lib/workspace.js';
   import { matchesPreviewAlert } from '../../../../shared/playback.js';
   import type { InventoryState } from '../../../../shared/upstreams.js';
-  import CameraPreview from '$lib/CameraPreview.svelte';
+  import CameraLiveView from '$lib/CameraLiveView.svelte';
 
   const workspace = useWorkspace();
   let cameras = $state<Camera[]>([]);
@@ -79,16 +79,14 @@
   <div class="camera-grid">
     {#each cameras as camera, index (camera.id)}
       {@const name = camera.name ?? t('camera-generic', { index: index + 1 })}
-      <a class="panel stack camera-tile" href={'/monitor?camera=' + camera.id} aria-labelledby={'dashboard-camera-' + camera.id}>
+      <article class="panel stack camera-tile" aria-labelledby={'dashboard-camera-' + camera.id}>
         <div class="row between">
-          <h2 id={'dashboard-camera-' + camera.id} class="wrap">{name}</h2>
+          <h2 id={'dashboard-camera-' + camera.id} class="wrap"><a href={'/monitor?camera=' + camera.id}>{name}</a></h2>
           <span class="pill" data-status={cameraStatus(camera)}>{t(cameraStatus(camera))}</span>
         </div>
-        {#key camera.capabilities.preview}
-          <CameraPreview camera={camera.id} {name} enabled={camera.capabilities.preview}
-            refreshRequest={frameRequests[camera.id] ?? 0} />
-        {/key}
-      </a>
+        <CameraLiveView {camera} {name} compact csrf={workspace.current().csrf} administer={workspace.current().user.admin}
+          refreshRequest={frameRequests[camera.id] ?? 0} />
+      </article>
     {/each}
   </div>
 {:else}

@@ -78,6 +78,8 @@ const http = object({
   adminToken: bearer.optional(),
   relay: z.boolean().default(true)
 });
+const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:' }), token: bearer, ca: tlsRoot });
+const eventTransport = z.enum(['ws', 'mqtt']);
 const mqtt = object({
   url: endpoint({ secure: 'mqtts:', plain: 'mqtt:', originOnly: true }),
   cameraIds: z.array(id).min(1).max(128).refine(unique).optional(),
@@ -94,17 +96,32 @@ const bridge = object({
   label: z.string().min(1).max(80),
   cameraIds: z.array(id).max(128).refine(unique).default([]),
   commands: z.enum(['http', 'mqtt']),
-  events: z.literal('mqtt').default('mqtt'),
+  events: z.union([eventTransport, object({ primary: eventTransport, secondary: eventTransport.optional() })]).optional(),
   capture: z.literal('mqtt').optional(),
   http: http.optional(),
+  ws: ws.optional(),
   mqtt,
   callbacks: z.record(id, endpoint({ secure: 'https:', plain: 'http:' })).optional()
+}).transform(value => {
+  const defaults = value.ws || value.http
+    ? { primary: 'ws' as const, secondary: 'mqtt' as const }
+    : { primary: 'mqtt' as const };
+  const events = value.events ?? defaults;
+  return { ...value, events: typeof events === 'string' ? { primary: events } : events };
 }).superRefine((value, ctx) => {
+  const { primary, secondary } = value.events;
+  const usesWs = primary === 'ws' || secondary === 'ws';
+  if (primary === secondary) {
+    ctx.addIssue({ code: 'custom', path: ['events', 'secondary'], message: 'Choose a different secondary transport' });
+  }
+  if (usesWs && !value.http && !value.ws) {
+    ctx.addIssue({ code: 'custom', path: ['ws'], message: 'Set a WebSocket or bridge HTTP endpoint' });
+  }
   if ((value.commands === 'http' || value.callbacks) && !value.http) {
     ctx.addIssue({ code: 'custom', path: ['http'], message: 'HTTP commands and callbacks require a bridge HTTP endpoint' });
   }
-  if (!value.http && !(value.mqtt.cameraIds ?? value.cameraIds).length) {
-    ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Set exact MQTT camera IDs or configure an HTTP endpoint for inventory' });
+  if (!value.http && !usesWs && !(value.mqtt.cameraIds ?? value.cameraIds).length) {
+    ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Set exact MQTT camera IDs or configure a bridge endpoint for discovery' });
   }
   if (value.cameraIds.length && value.mqtt.cameraIds?.some(id => !value.cameraIds.includes(id))) {
     ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Use camera IDs in the bridge scope' });

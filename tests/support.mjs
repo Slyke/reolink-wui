@@ -9,6 +9,7 @@ import { createServer as tcp } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect } from 'mqtt';
+import { WebSocketServer } from 'ws';
 import { api } from '../dist/server/api.js';
 import { passwordHash } from '../dist/server/auth.js';
 import { configSchema } from '../dist/server/config.js';
@@ -118,7 +119,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false } = {}) => {
   const previewRequests = [];
   let previewJpeg = jpeg;
   let led = false;
@@ -236,12 +237,38 @@ export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
     res.statusCode = 404;
     res.end('{}');
   });
+  let socketOpen = true;
+  const wss = websocket ? new WebSocketServer({
+    server, path:'/ws',
+    verifyClient: ({ req }) => socketOpen && req.headers.authorization === 'Bearer ' + serviceToken
+  }) : undefined;
+  const subscribers = new Map();
+  wss?.on('connection', socket => {
+    socket.on('message', data => {
+      const { id, op, cameras } = JSON.parse(data.toString());
+      if (op === 'subscribe') subscribers.set(socket, new Set(cameras));
+      const scope = subscribers.get(socket);
+      socket.send(JSON.stringify({
+        id, ok:true, snapshots:snapshots().filter(item => !scope?.size || scope.has(item.camera_id))
+      }));
+    });
+    socket.on('close', () => subscribers.delete(socket));
+  });
+  const broadcast = (camera, message) => {
+    for (const [socket, scope] of subscribers) {
+      if ((!scope.size || scope.has(camera)) && socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
+    }
+  };
+  const publishEvent = (event, transport) => {
+    if (transport !== 'mqtt') broadcast(event.camera_id, {op:'event',event});
+    if (transport !== 'ws') broker.client.publish(baseTopic+'/'+event.camera_id+'/events', JSON.stringify(event));
+  };
   server.listen(0,'127.0.0.1');
   await once(server,'listening');
   const root = 'http://127.0.0.1:' + server.address().port;
   return {
     config: {
-      id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http',
+      id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http', events:'mqtt',
       http:{url:root,token:serviceToken}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
     },
     correlations, requests, previewRequests,
@@ -257,15 +284,24 @@ export const fixtureBridge = async ({ previewCameras = [] } = {}) => {
     },
     setReportedLevels: levels => { brightness = levels.brightness; sensitivity = levels.sensitivity; },
     disconnect: broker.stop,
+    disconnectWs: () => { socketOpen = false; wss?.clients.forEach(socket => socket.terminate()); },
+    reconnectWs: () => { socketOpen = true; },
+    publishEvent,
     reconnect: async () => { await broker.start(); await publishSnapshots(); },
-    detection: (camera, type, active) => broker.client.publish(
-      baseTopic+'/'+camera+'/state/'+type, JSON.stringify({active}), { retain:true }
-    ),
-    event: (camera_id, type, details = {}) => broker.client.publish(
-      baseTopic+'/'+camera_id+'/events',
-      JSON.stringify({ camera_id, type, active:true, received_at:new Date().toISOString(), source:'onvif', vendor:{password:serviceToken}, ...details })
-    ),
+    detection: (camera, type, active) => {
+      const topic = 'state/'+type;
+      const payload = {active};
+      broadcast(camera, {op:'snapshot',snapshot:{camera_id:camera,topic,payload}});
+      broker.client.publish(baseTopic+'/'+camera+'/'+topic, JSON.stringify(payload), {retain:true});
+    },
+    event: (camera_id, type, details = {}, transport) => {
+      const event = {camera_id,type,active:true,received_at:new Date().toISOString(),source:'onvif',vendor:{password:serviceToken},...details};
+      publishEvent(event,transport);
+      return event;
+    },
     close: async () => {
+      wss?.clients.forEach(socket => socket.terminate());
+      wss?.close();
       server.closeAllConnections();
       await Promise.all([broker.close(), new Promise(resolve => server.close(resolve))]);
     }

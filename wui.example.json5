@@ -16,7 +16,10 @@
   bridges: [
     // {
     //   id: "bridge", label: "Private bridge", cameraIds: [],
-    //   commands: "http", events: "mqtt", capture: "mqtt",
+    //   commands: "http", capture: "mqtt",
+    //   // Defaults to WS/WSS primary and MQTT standby when http is configured.
+    //   // events: { primary: "mqtt", secondary: "ws" },
+    //   // Supply ws: { url, token, ca } for a custom WebSocket endpoint.
     //   // For credential administration, also configure http.adminToken.
     //   http: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_HTTP_TOKEN}", ca: "${file:bridge-ca.pem}" },
     //   mqtt: { url: "mqtts://broker.example.invalid:8883", baseTopic: "cameras", username: "${BROKER_USERNAME}", password: "${BROKER_PASSWORD}" },

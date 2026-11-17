@@ -136,7 +136,7 @@ for (const mode of ['browser','proxy']) {
       expect((await feed.boundingBox()).height).toBeLessThanOrEqual((await liveView.boundingBox()).height + 1);
       const detail = page.getByRole('dialog',{name:'Event details'});
       await feed.getByRole('button',{name:/^Pet /}).first().click();
-      await expect(detail.getByText('Object coordinates are unavailable for this event.')).toBeVisible();
+      await expect(detail.getByText('Object coordinates are unavailable for this event.')).toHaveCount(0);
       await expect(detail.getByRole('heading',{name:'Bounding box'})).toHaveCount(0);
       await page.evaluate(() => Object.defineProperty(navigator.clipboard,'writeText',{
         configurable:true,
@@ -214,6 +214,36 @@ for (const mode of ['browser','proxy']) {
       await expect.poll(() => betaPreviews().some(request => request.unchanged)).toBe(true);
       const previews = betaPreviews();
       expect(previews[1].at - previews[0].at).toBeGreaterThanOrEqual(1900);
+      const liveResponse = () => page.waitForResponse(response => new URL(response.url()).pathname.startsWith(prefix+'/v1/media/')
+        && response.headers()['content-type']?.includes('multipart/x-mixed-replace'));
+      const card = page.getByRole('article',{name:'Loading dock'});
+      const largeView = page.getByRole('dialog',{name:'Live view · Loading dock'});
+      const expandView = card.getByRole('button',{name:'Enlarge live view'});
+      const previewTile = await card.getByRole('img',{name:'Loading dock camera preview'}).boundingBox();
+      await expandView.click();
+      const enlargedPreview = largeView.getByRole('img',{name:'Loading dock camera preview'});
+      await expect(enlargedPreview).toBeVisible();
+      expect((await enlargedPreview.boundingBox()).width).toBeGreaterThan(previewTile.width);
+      await page.mouse.click(2,2);
+      await expect(largeView).toBeHidden();
+      await expect(expandView).toBeFocused();
+
+      const dashboardPlayback = liveResponse();
+      await card.getByRole('button',{name:'Start live stream'}).click();
+      await dashboardPlayback;
+      const video = largeView.getByRole('img',{name:'Live camera video'});
+      await expect.poll(() => video.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
+      const quality = largeView.getByRole('combobox',{name:'Stream quality'});
+      await expect(quality).toHaveValue('main');
+      const switchPlayback = liveResponse();
+      const subLease = page.waitForRequest(request => new URL(request.url()).pathname.endsWith('/media-sessions')
+        && request.postDataJSON()?.stream === 'sub');
+      await quality.selectOption('sub');
+      await subLease;
+      await switchPlayback;
+      await expect(largeView.getByRole('link',{name:'Configure playback'})).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await expect(largeView).toBeHidden();
       await page.getByRole('link',{name:'Loading dock',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/monitor?camera='+camera.id);
       await expect(page.getByRole('region',{name:'Event feed'}).getByRole('button',{name:/^Motion detection /})).toHaveCount(1);
@@ -221,6 +251,12 @@ for (const mode of ['browser','proxy']) {
       bridge.detection('alpha','person',false);
       const pill = page.locator('.detection-state').filter({hasText:/Person/});
       await expect(pill).toHaveAttribute('data-status','cleared');
+      bridge.detection('alpha','motion',false);
+      bridge.detection('alpha','vehicle',false);
+      const detectionGrid = page.locator('.detection-grid');
+      await expect(detectionGrid.locator('.pill')).toHaveCount(3);
+      const layout = await detectionGrid.locator('.pill').evaluateAll(items => items.map(element => element.getBoundingClientRect().width));
+      expect(Math.max(...layout) - Math.min(...layout)).toBeLessThan(1);
       const clearedColor = await pill.evaluate(element => getComputedStyle(element).backgroundColor);
       bridge.detection('alpha','person',true);
       await expect(pill).toHaveAttribute('data-status','triggered');
@@ -234,16 +270,17 @@ for (const mode of ['browser','proxy']) {
       const manualFrame = page.waitForRequest(forcedPreview);
       await liveView.getByRole('button',{name:'Refresh live view'}).click();
       await manualFrame;
-      const liveResponse = () => page.waitForResponse(response => new URL(response.url()).pathname.startsWith(prefix+'/v1/media/')
-        && response.headers()['content-type']?.includes('multipart/x-mixed-replace'));
       const streamResponse = liveResponse();
       await liveView.getByRole('button',{name:'Start live stream'}).click();
       await streamResponse;
-      const live = liveView.getByRole('img',{name:'Live camera video'});
+      const live = largeView.getByRole('img',{name:'Live camera video'});
       await expect.poll(() => live.evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
-      await expect(liveView.getByRole('button',{name:'Refresh live view'})).toHaveCount(0);
-      await liveView.getByRole('button',{name:'Stop live stream'}).click();
-      await expect(liveView.getByRole('img',{name:/camera preview$/})).toBeVisible();
+      await expect(largeView.getByText('Bridge camera relay',{exact:true})).toHaveCount(0);
+      await expect(largeView.getByRole('button',{name:'Refresh live view'})).toHaveCount(0);
+      await largeView.getByRole('button',{name:'Stop live stream'}).click();
+      await expect(largeView.getByRole('img',{name:/camera preview$/})).toBeVisible();
+      await expect(largeView.getByRole('link',{name:'Configure playback'})).toBeVisible();
+      await largeView.getByRole('button',{name:'Close'}).click();
       await page.getByRole('link',{name:'Settings',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/settings/appearance');
       await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('ocean');

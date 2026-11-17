@@ -192,6 +192,56 @@ for (const database of dbs) test('authorization, operations and live revocation:
   assert.equal((await incoming({ path:'/admin',headers:allowed })).statusCode,401);
 });
 
+test('default WebSocket preference keeps MQTT warm and deduplicates events during failover', async t => {
+  const fixture = await fixtureBridge({ websocket:true });
+  t.after(() => fixture.close());
+  const { app, runtime } = await launch({ bridges:[{...fixture.config, events:undefined}] });
+  t.after(() => app.close());
+  const bridge = runtime.bridges.get('lab');
+  const role = id => bridge.upstream().connections.find(connection => connection.id === id)?.feed;
+  const delivered = [];
+  const gaps = [];
+  const stop = bridge.observe(update => {
+    if (update.kind === 'event') delivered.push(update.topic);
+    if (update.kind === 'gap') gaps.push(update.details);
+  });
+  t.after(stop);
+
+  await eventually(() => role('ws') === 'active' && role('mqtt') === 'standby');
+  const initial = fixture.event('alpha','person');
+  await eventually(() => delivered.length === 1);
+  fixture.detection('alpha','person',true);
+  fixture.disconnectWs();
+  await eventually(() => role('mqtt') === 'active' && bridge.state('alpha').get('state/person')?.active);
+  fixture.publishEvent(initial,'mqtt');
+  fixture.event('alpha','pet',{},'mqtt');
+  await eventually(() => delivered.includes('pet'));
+  assert.deepEqual(delivered,['person','pet']);
+  assert.deepEqual(gaps,[]);
+  fixture.reconnectWs();
+  await eventually(() => role('ws') === 'active' && role('mqtt') === 'standby');
+  fixture.event('alpha','motion',{},'ws');
+  await eventually(() => delivered.includes('motion'));
+  assert.deepEqual(delivered,['person','pet','motion']);
+  assert.deepEqual(gaps,[]);
+});
+
+test('explicit MQTT preference uses WebSocket while the broker is down', async t => {
+  const fixture = await fixtureBridge({ websocket:true });
+  t.after(() => fixture.close());
+  const { app, runtime } = await launch({ bridges:[{...fixture.config, events:{primary:'mqtt',secondary:'ws'}}] });
+  t.after(() => app.close());
+  const bridge = runtime.bridges.get('lab');
+  const role = id => bridge.upstream().connections.find(connection => connection.id === id)?.feed;
+  await eventually(() => role('mqtt') === 'active' && role('ws') === 'standby');
+  await fixture.disconnect();
+  await eventually(() => role('ws') === 'active');
+  assert.equal(bridge.feedReady,true);
+  assert.equal(bridge.feedGap,undefined);
+  await fixture.reconnect();
+  await eventually(() => role('mqtt') === 'active' && role('ws') === 'standby');
+});
+
 test('HTTP reply loss reports unknown while the MQTT feed reconnects', async t => {
   const bridge = await fixtureBridge();
   t.after(() => bridge.close());

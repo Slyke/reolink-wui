@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { api, errorText, operationId, outcomeText, t, url, type Outcome } from './api.js';
+  import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
   import { cameraStatus, type Camera, type CameraDetail, type CameraEvent } from './models.js';
 
-  import CameraPreview from './CameraPreview.svelte';
+  import CameraLiveView from './CameraLiveView.svelte';
   import EventFeed from './EventFeed.svelte';
 
   let { camera, events, historyError, csrf, revision, alertFrameRequest, administer }: {
@@ -12,13 +12,8 @@
   } = $props();
   let info = $state<CameraDetail>();
   const liveTitle = $props.id();
-  let stream = $state<'main' | 'sub'>('main');
-  let playback = $state('');
-  let manualFrameRequest = $state(0);
-  let playbackTimer: ReturnType<typeof setTimeout> | undefined;
-  let playbackSequence = 0;
   let capture = $state('');
-  let busy = $state(false), moving = $state(false), liveBusy = $state(false);
+  let busy = $state(false), moving = $state(false);
   let duration = $state(400), speed = $state<number>();
   let zoom = $state<number>(), preset = $state(0);
   let position = $state<CameraDetail['position']>();
@@ -28,9 +23,6 @@
   let movement: string | undefined;
   const base = $derived('/api/v1/cameras/' + camera.id);
   const online = $derived(camera.availability.online === true && !camera.availability.stale);
-  const mediaOnline = $derived(online || camera.capabilities.viaProxy);
-  const canStream = $derived(camera.capabilities.media.length > 0);
-  const settingsLink = $derived('/settings/cameras?camera=' + camera.id);
   const ptz = $derived(camera.capabilities.ptz);
   const result = (value: Outcome) => { message = outcomeText(value); };
   const refresh = async () => {
@@ -40,42 +32,6 @@
     const current = revision;
     if (current > 0) void refresh();
   });
-  $effect(() => {
-    if ((!mediaOnline || !camera.capabilities.media.length) && playback) closeLive();
-    if (!camera.capabilities.media.includes(stream)) stream = camera.capabilities.media.includes('sub') ? 'sub' : 'main';
-  });
-
-  const releaseStream = ({ path }: { path: string }) => api({ path, method: 'DELETE', csrf, keepalive: true }).catch(() => {});
-  const closeLive = () => {
-    playbackSequence++;
-    clearTimeout(playbackTimer);
-    if (!playback) return;
-    const path = playback;
-    playback = '';
-    return releaseStream({ path });
-  };
-  const startLive = async () => {
-    if (!canStream || !mediaOnline || liveBusy) return;
-    liveBusy = true; message = ''; error = '';
-    const closing = closeLive();
-    const generation = playbackSequence;
-    try {
-      await closing;
-      if (generation !== playbackSequence) return;
-      const value = await api<Outcome>({ path: base + '/media-sessions', method: 'POST', csrf, body: { operationId: operationId(), stream } });
-      if (generation !== playbackSequence) {
-        if (value.data?.url) void releaseStream({ path: value.data.url });
-        return;
-      }
-      if (value.data?.url) {
-        playback = value.data.url;
-        playbackTimer = setTimeout(() => { closeLive(); message = t('live-display'); }, Math.max(0, Date.parse(value.data.expiresAt) - Date.now()));
-      } else result(value);
-    } catch (err) { error = errorText(err); }
-    finally { liveBusy = false; }
-  };
-  const refreshLive = () => { manualFrameRequest++; };
-
   const snapshot = async () => {
     busy = true; error = ''; message = '';
     try {
@@ -115,7 +71,6 @@
   };
   onDestroy(() => {
     stop();
-    closeLive();
     if (capture) URL.revokeObjectURL(capture);
   });
   const directions = $derived([
@@ -145,48 +100,13 @@
   <div class="monitor-columns" class:with-events={camera.capabilities.events}>
     <section class="panel stack" aria-labelledby={liveTitle}>
       <h2 id={liveTitle} class="panel-title">{t('live')}</h2>
-      {#if playback}
-        <div class="viewport">
-          <img src={url(playback)} alt={t('live-alt')} onerror={() => { closeLive(); message = t('live-display'); }} />
-        </div>
-      {:else}
-        {#key camera.capabilities.preview}
-          <CameraPreview camera={camera.id} name={camera.name ?? t('camera-noun')} enabled={camera.capabilities.preview}
-            refreshRequest={manualFrameRequest + alertFrameRequest} />
-        {/key}
-      {/if}
-      <div class="row">
-        {#if camera.capabilities.media.length > 1}
-          <select class="stream-quality" aria-label={t('live-quality')} bind:value={stream} disabled={liveBusy}
-            onchange={() => { if (playback) void startLive(); }}>
-            <option value="main">{t('primary')}</option>
-            <option value="sub">{t('secondary')}</option>
-          </select>
-        {/if}
-        {#if camera.capabilities.mediaAllowed}
-          {#if playback}
-            <button onclick={closeLive}>{t('live-stop')}</button>
-          {:else}
-            <button class="primary" disabled={!canStream || !mediaOnline || liveBusy} onclick={startLive}>{t(liveBusy ? 'pending' : 'live-start')}</button>
+      <CameraLiveView {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
+        {#snippet actions()}
+          {#if camera.capabilities.capture}
+            <button disabled={!online || busy} onclick={snapshot}>{t(busy ? 'pending' : 'snapshot')}</button>
           {/if}
-          {#if !playback}
-            <button disabled={!camera.capabilities.preview} onclick={refreshLive}>{t('live-refresh')}</button>
-          {/if}
-        {/if}
-        {#if camera.capabilities.capture}
-          <button disabled={!online || busy} onclick={snapshot}>{t(busy ? 'pending' : 'snapshot')}</button>
-        {/if}
-      </div>
-      {#if camera.capabilities.mediaAllowed}
-        <div class="row muted">
-          {#if canStream}
-            <span>{t(camera.capabilities.viaProxy ? 'playback-proxy' : 'playback-direct')}</span>
-          {:else}
-            <span>{t('live-stream-unavailable')}</span>
-          {/if}
-          {#if administer}<a href={settingsLink + '#playback-title'}>{t('live-configure')}</a>{/if}
-        </div>
-      {/if}
+        {/snippet}
+      </CameraLiveView>
       {#if capture}
         <img class="snapshot" src={capture} alt={t('snapshot-alt')} />
         <a href={capture} download="snapshot.png">{t('download')}</a>
@@ -197,11 +117,11 @@
   {#if info?.detections?.length}
     <section class="panel stack">
       <h2>{t('detections')}</h2>
-      <div class="row">
+      <div class="detection-grid">
         {#each info.detections as item (item.type)}
           {@const status = item.active === true ? 'triggered' : item.active === false ? 'cleared' : 'observed'}
           <span class="pill detection-state" data-status={online ? status : 'stale'}>
-            {t(item.type)} · {t(item.active === undefined ? 'event-observed' : item.active ? 'event-active' : 'event-clear')}
+            <span class="wrap">{t(item.type)} · {t(item.active === undefined ? 'event-observed' : item.active ? 'event-active' : 'event-clear')}</span>
           </span>
         {/each}
       </div>

@@ -63,7 +63,10 @@
                   {upstream.label}{#if connection.id === 'mqtt'}{' '}<sup class="muted status-via">({t('via')})</sup>{' '}{t('upstream-broker')}{/if}
                 </th>
                 <td><code>{connection.transport}</code></td>
-                <td>{connection.uses.map(use => t('connection-' + use)).join(', ')}</td>
+                <td>
+                  {connection.uses.map(use => t('connection-' + use)).join(', ')}
+                  {#if connection.feed}<small class="muted"> · {t('connection-feed-' + connection.feed)}</small>{/if}
+                </td>
                 <td><span class="pill" data-status={connection.state}>{t(connection.state)}</span></td>
               </tr>
             {/each}

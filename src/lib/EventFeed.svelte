@@ -137,10 +137,10 @@
             <dd><time datetime={event.cameraTime}>{formatLocalTimestamp(event.cameraTime)}</time></dd>
           {/if}
         </dl>
-        {#if !event.objects?.some(({ box }) => [box.left, box.top, box.right, box.bottom].some(Number.isFinite))}
-          <p class="muted">{t('event-coordinates-unavailable')}</p>
-        {/if}
         {#if event.objects?.length}
+          {#if !event.objects.some(({ box }) => [box.left, box.top, box.right, box.bottom].some(Number.isFinite))}
+            <p class="muted">{t('event-coordinates-unavailable')}</p>
+          {/if}
           <section class="grid" aria-label={t('event-object-details')}>
             {#each event.objects as object}
               {@const coordinates = [

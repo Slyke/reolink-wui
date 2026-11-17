@@ -3,17 +3,18 @@ export const maxEventRetention = 1000;
 export const maxFeedGapReports = 6;
 export const maxFeedGapSamples = 8;
 
-export type FeedConnectionFailure = 'tls' | 'authorization' | 'subscription' | 'transport';
+export type FeedConnectionFailure = 'tls' | 'authorization' | 'subscription' | 'heartbeat' | 'transport';
 
 type DetectedGap = { id: string; detectedAt: number };
 type ConnectionGap = DetectedGap & { recoveredAt?: number };
-type BridgeSource = { bridge: string; transport: 'MQTT' | 'MQTT TLS' };
+type BridgeSource = { bridge: string; transport: 'WS' | 'WSS' | 'MQTT' | 'MQTT TLS' };
 type MissedEvent = { camera: string; type?: string; observedAt: number };
 
 export type FeedGap =
   | (DetectedGap & { cause: 'unknown' })
   | (ConnectionGap & { cause: 'browser-connection' })
   | (ConnectionGap & BridgeSource & { cause: 'bridge-connection'; failure: FeedConnectionFailure })
+  | (DetectedGap & BridgeSource & { cause: 'bridge-backlog' })
   | (DetectedGap & {
     cause: 'delivery-backlog';
     firstObservedAt: number;
