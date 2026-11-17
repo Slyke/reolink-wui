@@ -1,0 +1,18 @@
+# Compatibility
+
+Capabilities describe a specific camera/channel as reported by the bridge. Model names alone do not enable controls. Availability and freshness gate writes. Monitor shows detections retained by the WUI. After a bridge disconnect, it refreshes state and marks the gap.
+
+| Model / revision / firmware | Feature | Transport | Evidence and limits |
+| --- | --- | --- | --- |
+| Standalone cameras with the bridge's Baichuan capability discovery | PTZ reads, bounded moves, Stop, presets, zoom; spotlight, LED, motion and AI settings | HTTP, WS, or MQTT 5 for supported typed commands | Exercised against the bridge's mock camera and local broker. Each operation and native range comes from the channel's capabilities. |
+| Baichuan capture support | PNG snapshot, download, and five-second preview | MQTT 5 | Bridge capture is limited to 1920×1080 and the broker's packet budget. WUI validates the decoded PNG; downloads use a short lived browser object URL. |
+| Cameras with ONVIF or Baichuan event coverage | Availability, detections, rule snapshots and object metadata | WS or MQTT 5 | The bridge chooses device protocols. Rule schedules, zones and camera-owned actions beyond current motion/detection operations have no verified write path. |
+| Any configured bridge with WUI v1 and supported Baichuan settings | Fresh LED, spotlight, motion and AI readback | Private HTTPS | A fresh read is required after an uncertain settings write. PTZ uses a fresh position read. Legacy retained snapshots alone cannot clear a write fence. |
+| Lumus E430, hardware `IPC_NT1NO24MP`, firmware `v3.1.0.6198_2604102075` | Wi-Fi join QR, factory password and credential rotation protocol | Browser-only QR and private Baichuan | The sibling provisioning CLI previously verified Wi-Fi QR and first-password setup. The WUI port is tested with a mock. A new hardware or firmware combination stays unsupported until verified. |
+| Other powered Wi-Fi, PoE, or Ethernet devices | Enrollment by verified UID or reported hardware serial | Private Baichuan | Configure the target on the bridge. Use Reolink Client locally for unsupported initialization, then import a private credential. PoE and Ethernet enrollment use the LAN. |
+| Explicitly configured RTSP H.264 main or substream | Live relay | Private RTSP/TCP to bridge, multipart MJPEG from WUI | Video-only fallback for browsers that cannot play device RTSP. Configuring a profile is a deployment assertion; verify it for the specific camera and profile before advertising it. Relays expire within two minutes and close on grant/session revocation. |
+| Configured Frigate or compatible RTSP restream | Dashboard preview and continuous playback | Private RTSP/TCP to WUI, JPEG or multipart MJPEG to browser | Select the per-camera RTSP proxy source. The WUI API runs FFmpeg and closes live streams on source change, expiry, or grant revocation. |
+| Browser-to-camera media | Requires verified device playback authorization | — | The device would need playback-only credentials with an enforceable short expiry. |
+| Recordings, exports, audio and two-way talk | Await supported bridge capabilities | — | |
+
+The default QR for device identification is the WUI format (`REOLINK-WUI/1`, separate UID and serial fields). For Wi-Fi on the documented revision the join QR is a separate, in-browser artifact. No vendor enrollment QR is emitted for an unverified identifier format. See the [Reolink setup guide](https://support.reolink.com/articles/360020094714-How-to-Initially-Set-up-Reolink-WiFi-Cameras-without-LAN-Port-via-Reolink-App/) and [Reolink's RTSP notes](https://support.reolink.com/articles/900000630706-Introduction-to-RTSP/).

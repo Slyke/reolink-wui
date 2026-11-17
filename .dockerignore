@@ -1,0 +1,16 @@
+**
+!package.json
+!package-lock.json
+!server/
+!server/**
+!shared/
+!shared/**
+!src/
+!src/**
+!svelte.config.js
+!vite.config.ts
+!tsconfig.json
+!tsconfig.api.json
+**/local-only/
+**/.env*
+**/*.sqlite*

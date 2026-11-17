@@ -1,0 +1,23 @@
+services:
+  api:
+    image: reolink-wui:dev
+    command: ["node", "dist/server/main.js"]
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./local-only:/app/local-only
+  ui:
+    image: reolink-wui:dev
+    network_mode: "service:api"
+    depends_on: [api]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3000"
+    volumes:
+      - ./local-only:/app/local-only:ro

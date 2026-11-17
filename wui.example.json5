@@ -1,0 +1,27 @@
+{
+  publicOrigin: "http://127.0.0.1:3000", // TLS at ingress for deployment
+  listen: { host: "127.0.0.1", port: 8080 },
+  httpApi: {
+    mode: "proxy",
+    browserBasePath: "/api",
+    proxy: { basePath: "/api-proxy", upstreamBaseUrl: "http://127.0.0.1:8080", upstreamBasePath: "/api" },
+  },
+  forward: { secret: "${WUI_FORWARD_SECRET}", peers: ["127.0.0.1"] },
+  auth: { mode: "local" },
+  // localSessionMinutes: 10080, // Optional seven-day lifetime for password sign-ins
+  database: { driver: "sqlite", path: "./local-only/wui.sqlite" },
+  // Settings → Event history can override the starting count per camera.
+  eventHistory: { backend: "memory", retention: 100 },
+  // eventHistory: { backend: "valkey", url: "${WUI_VALKEY_URL}", keyPrefix: "reolink-wui", retention: 100 },
+  bridges: [
+    // {
+    //   id: "bridge", label: "Private bridge", cameraIds: [],
+    //   commands: "http", events: "ws", capture: "mqtt",
+    //   http: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_SERVICE_TOKEN}", ca: "${file:bridge-ca.pem}" },
+    //   ws: { url: "wss://bridge.example.invalid:8080/ws", token: "${BRIDGE_SERVICE_TOKEN}", ca: "${file:bridge-ca.pem}" },
+    //   mqtt: { url: "mqtts://broker.example.invalid:8883", baseTopic: "cameras", cameraIds: ["entrance"], username: "${BROKER_USERNAME}", password: "${BROKER_PASSWORD}" },
+    //   extensions: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_SERVICE_TOKEN}", adminToken: "${BRIDGE_ADMIN_TOKEN}", ca: "${file:bridge-ca.pem}", relay: true },
+    //   callbacks: { alerts: "https://alerts.example.invalid/events" },
+    // },
+  ],
+}

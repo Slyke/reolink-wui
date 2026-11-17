@@ -1,0 +1,11 @@
+/local-only/
+/.env
+/.env.*
+!/.env.example
+/node_modules/
+/.svelte-kit/
+/dist/
+/build/
+/test-results/
+/playwright-report/
+*.sqlite*

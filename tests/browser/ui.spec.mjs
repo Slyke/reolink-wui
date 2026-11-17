@@ -1,0 +1,465 @@
+import { expect, test } from '@playwright/test';
+import { createServer, request } from 'node:http';
+import { createServer as tcp } from 'node:net';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { setTimeout as wait } from 'node:timers/promises';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { api } from '../../dist/server/api.js';
+import { configSchema } from '../../dist/server/config.js';
+import { passwordHash } from '../../dist/server/auth.js';
+import { fixtureBridge, eventually, localPassword, hop, uuid } from '../support.mjs';
+
+const reserve = async () => {
+  const listener = tcp().listen(0, '127.0.0.1');
+  await once(listener,'listening');
+  const port = listener.address().port;
+  await new Promise(resolve => listener.close(resolve));
+  return port;
+};
+
+const expectHover = async (page, button) => {
+  await page.mouse.move(0, 0);
+  const background = () => button.evaluate(element => getComputedStyle(element).backgroundColor);
+  const resting = await background();
+  await button.hover();
+  await expect.poll(background).not.toBe(resting);
+};
+
+for (const mode of ['browser','proxy']) {
+  test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
+    page.setDefaultTimeout(6000);
+    const bridge = await fixtureBridge({ previewCameras:['beta'] });
+    const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
+    const uiPort = await reserve();
+    const apiPort = await reserve();
+    const ingressPort = mode === 'browser' ? await reserve() : uiPort;
+    const publicOrigin = 'http://127.0.0.1:' + ingressPort;
+    const apiOrigin = 'http://127.0.0.1:' + apiPort;
+    const conf = {
+      publicOrigin, auth:{mode:'local'}, database:{driver:'sqlite',path:join(directory,'app.sqlite')},
+      bridges:[bridge.config],
+      httpApi: {
+        mode, browserBasePath:'/ui/api',
+        proxy:{ basePath:'/front', upstreamBasePath:'/node/v3', upstreamBaseUrl:apiOrigin }
+      },
+      ...(mode==='proxy'?{forward:{secret:hop,peers:['127.0.0.1']}}:{})
+    };
+    const file = join(directory,'wui.json5');
+    await writeFile(file,JSON.stringify(conf));
+    const { app,runtime } = await api({ config:configSchema.parse(conf) });
+    const edge = mode === 'browser' ? createServer((incoming,outgoing) => {
+      const target = incoming.url.startsWith('/ui/api/') ? apiOrigin : 'http://127.0.0.1:' + uiPort;
+      const proxy = request(new URL(incoming.url,target),{method:incoming.method,headers:incoming.headers}, from => {
+        outgoing.writeHead(from.statusCode, from.headers); from.pipe(outgoing);
+      });
+      proxy.on('error', () => {outgoing.statusCode=502; outgoing.end();});
+      outgoing.on('close',() => proxy.destroy());
+      incoming.pipe(proxy);
+    }).listen(ingressPort,'127.0.0.1') : undefined;
+    const ui = spawn(process.execPath,['build/index.js'], {
+      env:{...process.env,WUI_CONFIG:file,ORIGIN:publicOrigin,HOST:'127.0.0.1',PORT:String(uiPort)}, stdio:'ignore'
+    });
+    try {
+      await app.listen({ host:'127.0.0.1',port:apiPort });
+      const account = uuid();
+      const viewer = uuid();
+      await runtime.sql.query('INSERT INTO accounts VALUES ($1,$2,$3,$4,1,1)',
+        account,'Test operator','fixture-user',await passwordHash({ password:localPassword }));
+      await runtime.sql.query('INSERT INTO accounts VALUES ($1,$2,$3,$4,0,1)',
+        viewer,'Test viewer','fixture-viewer',await passwordHash({ password:localPassword }));
+      const [camera] = await runtime.sql.query('SELECT id FROM cameras WHERE remote_id=$1','alpha');
+      await runtime.sql.query('INSERT INTO grants VALUES ($1,$2,$3)',viewer,camera.id,JSON.stringify(['view','events','media.live']));
+      await eventually(async () => fetch(publicOrigin+'/livez').then(response => response.ok,()=>false));
+      await eventually(() => runtime.bridges.get('lab').feedReady);
+      const prefix = mode === 'browser' ? '/ui/api' : '/front';
+      const observed = [];
+      const errors = [];
+      page.on('request', request => observed.push({url:request.url(),body:request.postData()}));
+      page.on('pageerror', error => errors.push(error.message));
+      await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: publicOrigin });
+      await page.goto(publicOrigin);
+      await page.evaluate(() => {
+        localStorage.setItem('d4rk-styleguide-palette','retro');
+        document.cookie='d4rk-styleguide-theme=light; Path=/; SameSite=Lax';
+      });
+      await page.getByLabel('Username').fill('fixture-user');
+      await page.getByLabel('Password',{exact:true}).fill(localPassword);
+      const login = page.getByRole('button',{name:'Sign in with password'});
+      await expectHover(page, login);
+      await login.click();
+      await expect(page).toHaveURL(publicOrigin+'/monitor');
+      await expect(page.locator('html')).toHaveAttribute('data-palette','retro');
+      await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+      await page.getByRole('button',{name:/Loading dock/}).click();
+      await expect(page.getByRole('heading',{name:'Loading dock'})).toBeVisible();
+      await expect(page.getByText('Event feed connected')).toBeVisible();
+      expect(observed.some(item => new URL(item.url).pathname === prefix + '/v1/events')).toBe(true);
+      bridge.event('alpha','motion',{
+        rule_id:'rule-4',
+        objects:[{class:'person',confidence:0.91,tracking_id:'42',bounding_box:{
+          left:0,top:12,right:130,bottom:180,coordinate_space:'pixels_top_left',
+          reference_frame:'Camera substream',frame_width:640,frame_height:360
+        }}]
+      });
+      for (let count = 0; count < 14; count++) bridge.event('alpha','pet',{active:false});
+      const feed = page.getByRole('region',{name:'Event feed'});
+      const liveView = page.getByRole('region',{name:'Live view'});
+      const motion = feed.getByRole('button',{name:/^Motion detection /});
+      await expect(motion).toHaveCount(1);
+      await expect(feed.getByRole('button',{name:/^Pet /})).toHaveCount(14);
+      const eventList = feed.getByRole('list');
+      expect(await eventList.evaluate(element => element.scrollHeight)).toBeGreaterThan(
+        await eventList.evaluate(element => element.clientHeight)
+      );
+      expect((await feed.boundingBox()).height).toBeLessThanOrEqual((await liveView.boundingBox()).height + 1);
+      const detail = page.getByRole('dialog',{name:'Event details'});
+      await feed.getByRole('button',{name:/^Pet /}).first().click();
+      await expect(detail.getByText('Object coordinates are unavailable for this event.')).toBeVisible();
+      await expect(detail.getByRole('heading',{name:'Bounding box'})).toHaveCount(0);
+      await page.evaluate(() => Object.defineProperty(navigator.clipboard,'writeText',{
+        configurable:true,
+        value:() => Promise.reject(new DOMException('Clipboard access denied','NotAllowedError'))
+      }));
+      await detail.getByRole('button',{name:'Copy JSON'}).click();
+      const manual = detail.getByRole('textbox',{name:'Event JSON'});
+      await expect(manual).toBeVisible();
+      const fallback = JSON.parse(await manual.inputValue());
+      expect(fallback.event).toMatchObject({ type:'pet', active:false });
+      expect(fallback.event).not.toHaveProperty('objects');
+      await page.evaluate(() => { delete navigator.clipboard.writeText; });
+      await detail.getByRole('button',{name:'Close',exact:true}).click();
+
+      const allTypes = feed.getByRole('button',{name:'Event type All types'});
+      const searchBox = feed.getByRole('searchbox',{name:'Search events'});
+      const filterSize = await allTypes.boundingBox();
+      const searchSize = await searchBox.boundingBox();
+      expect(filterSize.height).toBe(searchSize.height);
+      expect(filterSize.width).toBeCloseTo(searchSize.width, 0);
+      expect(filterSize.y).toBeCloseTo(searchSize.y, 0);
+      await allTypes.click();
+      const typeSearch = page.getByRole('combobox',{name:'Search Event type'});
+      await typeSearch.fill('motion');
+      await typeSearch.press('Enter');
+      await expect(feed.getByRole('button',{name:/^Pet /})).toHaveCount(0);
+      await feed.getByRole('searchbox',{name:'Search events'}).fill('missing');
+      await expect(feed.getByText('No events match your filters.')).toBeVisible();
+      await feed.getByRole('searchbox',{name:'Search events'}).fill('rule-4');
+      await expect(motion.locator('time')).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+      await expectHover(page, motion);
+      await motion.click();
+      await expect(detail.getByRole('heading',{name:'Bounding box'})).toBeVisible();
+      await expect(detail.getByText('0',{exact:true})).toBeVisible();
+      await expect(detail.getByText('640',{exact:true})).toBeVisible();
+      await expect(detail.getByText('42',{exact:true})).toBeVisible();
+      await expect(detail.getByText('Camera substream',{exact:true})).toBeVisible();
+      await detail.getByRole('button',{name:'Copy JSON'}).click();
+      await expect(detail.getByRole('status')).toHaveText('Event JSON copied.');
+      const copied = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
+      expect(copied).toMatchObject({
+        id:expect.any(String), observedAt:expect.any(Number),
+        event:{ type:'motion', ruleId:'rule-4', objects:[{ class:'person', trackId:'42', confidence:0.91, box:{
+          left:0, top:12, right:130, bottom:180, coordinateSpace:'pixels_top_left',
+          referenceFrame:'Camera substream', frameWidth:640, frameHeight:360
+        }}]}
+      });
+      expect(copied.event).not.toHaveProperty('vendor');
+      await detail.getByRole('heading',{name:'Bounding box'}).click();
+      await expect(detail).toBeVisible();
+      await page.mouse.click(2,2);
+      await expect(detail).toBeHidden();
+      await feed.getByRole('button',{name:'Expand',exact:true}).click();
+      const expanded = page.getByRole('dialog',{name:'Event feed'});
+      await expect(expanded).toBeVisible();
+      await expanded.getByRole('button',{name:/^Motion detection /}).click();
+      await expect(detail.getByText('0.91',{exact:true})).toBeVisible();
+      await detail.getByRole('button',{name:'Back to feed'}).click();
+      await expect(expanded).toBeVisible();
+      await page.mouse.click(2,2);
+      await expect(expanded).toBeHidden();
+      await page.setViewportSize({width:375,height:812});
+      expect((await feed.boundingBox()).height).toBeLessThanOrEqual((await liveView.boundingBox()).height + 1);
+      await page.setViewportSize({width:1280,height:720});
+      await expect(page.getByRole('button',{name:/Second camera/})).toBeVisible();
+      const previewBaseline = bridge.previewRequests.length;
+      await page.getByRole('link',{name:'Dashboard',exact:true}).click();
+      await expect(page).toHaveURL(publicOrigin+'/dashboard');
+      for (const name of ['Loading dock','Second camera']) {
+        const preview = page.getByRole('img',{name:name+' camera preview'});
+        await expect(preview).toBeVisible();
+        await preview.evaluate(image => image.decode());
+      }
+      const betaPreviews = () => bridge.previewRequests.slice(previewBaseline).filter(request => request.camera === 'beta');
+      await expect.poll(() => betaPreviews().some(request => request.unchanged)).toBe(true);
+      const previews = betaPreviews();
+      expect(previews[1].at - previews[0].at).toBeGreaterThanOrEqual(1900);
+      await page.getByRole('link',{name:'Loading dock',exact:true}).click();
+      await expect(page).toHaveURL(publicOrigin+'/monitor?camera='+camera.id);
+      await expect(page.getByRole('region',{name:'Event feed'}).getByRole('button',{name:/^Motion detection /})).toHaveCount(1);
+      await expect(page.getByRole('button',{name:'Take snapshot'})).toHaveCount(0);
+      bridge.detection('alpha','person',false);
+      const pill = page.locator('.detection-state').filter({hasText:/Person/});
+      await expect(pill).toHaveAttribute('data-status','cleared');
+      const clearedColor = await pill.evaluate(element => getComputedStyle(element).backgroundColor);
+      bridge.detection('alpha','person',true);
+      await expect(pill).toHaveAttribute('data-status','triggered');
+      await expect.poll(() => pill.evaluate(element => getComputedStyle(element).backgroundColor)).not.toBe(clearedColor);
+      bridge.detection('alpha','person',false);
+      await expect(pill).toHaveAttribute('data-status','cleared');
+      await expect.poll(() => pill.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(clearedColor);
+
+      const forcedPreview = request => new URL(request.url()).pathname === prefix+'/v1/cameras/'+camera.id+'/preview'
+        && new URL(request.url()).searchParams.get('refresh') === 'true';
+      const manualFrame = page.waitForRequest(forcedPreview);
+      await liveView.getByRole('button',{name:'Refresh live view'}).click();
+      await manualFrame;
+      const liveResponse = () => page.waitForResponse(response => new URL(response.url()).pathname.startsWith(prefix+'/v1/media/')
+        && response.headers()['content-type']?.includes('multipart/x-mixed-replace'));
+      let streamResponse = liveResponse();
+      await liveView.getByRole('button',{name:'Start live stream'}).click();
+      await streamResponse;
+      const live = liveView.getByRole('img',{name:'Live camera video'});
+      await expect.poll(() => live.evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
+      const previousStream = await live.getAttribute('src');
+      streamResponse = liveResponse();
+      await liveView.getByRole('button',{name:'Refresh live view'}).click();
+      await streamResponse;
+      await expect(live).not.toHaveAttribute('src',previousStream);
+      await liveView.getByRole('button',{name:'Stop live stream'}).click();
+      await expect(liveView.getByRole('img',{name:/camera preview$/})).toBeVisible();
+      await page.getByRole('link',{name:'Settings',exact:true}).click();
+      await expect(page).toHaveURL(publicOrigin+'/settings/appearance');
+      await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('ocean');
+      await page.getByRole('combobox',{name:'Mode',exact:true}).selectOption('light');
+      await page.getByRole('combobox',{name:'Font',exact:true}).selectOption('georgia');
+      await page.getByRole('combobox',{name:'Content width'}).selectOption('1440');
+      await page.reload();
+      await expect(page.getByRole('heading',{name:'Appearance'})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-palette','ocean');
+      await expect(page.locator('html')).toHaveAttribute('data-theme','light');
+      await expect(page.locator('html')).toHaveAttribute('data-font','georgia');
+      await expect(page.locator('html')).toHaveAttribute('data-content-width','1440');
+      const adminAppearance = await page.evaluate(id => ({
+        personal:JSON.parse(localStorage.getItem('reolink-wui:appearance:' + id)),
+        legacy:localStorage.getItem('d4rk-styleguide-palette'),
+        cookies:document.cookie
+      }), account);
+      expect(adminAppearance.personal).toEqual({palette:'ocean',theme:'light',font:'georgia',contentWidth:'1440'});
+      expect(adminAppearance.legacy).toBeNull();
+      expect(adminAppearance.cookies).not.toContain('d4rk-styleguide-');
+
+      await page.getByRole('link',{name:'Default appearance',exact:true}).click();
+      const appearanceDefaults = page.getByRole('region',{name:'Default appearance',exact:true});
+      await appearanceDefaults.getByRole('combobox',{name:'Theme',exact:true}).selectOption('paper');
+      await appearanceDefaults.getByRole('button',{name:'Save defaults'}).click();
+      await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-palette','ocean');
+
+      await page.getByRole('button',{name:'Sign out'}).click();
+      await page.getByLabel('Username').fill('fixture-viewer');
+      await page.getByLabel('Password',{exact:true}).fill(localPassword);
+      await login.click();
+      await expect(page.locator('html')).toHaveAttribute('data-palette','paper');
+      await page.getByRole('link',{name:'Settings',exact:true}).click();
+      await expect(page.getByRole('link',{name:'Default appearance',exact:true})).toHaveCount(0);
+      await page.getByRole('combobox',{name:'Theme',exact:true}).selectOption('terminal');
+      await expect(page.locator('html')).toHaveAttribute('data-palette','terminal');
+      await page.getByRole('button',{name:'Use installation defaults'}).click();
+      await expect(page.locator('html')).toHaveAttribute('data-palette','paper');
+
+      await page.getByRole('button',{name:'Sign out'}).click();
+      await page.getByLabel('Username').fill('fixture-user');
+      await page.getByLabel('Password',{exact:true}).fill(localPassword);
+      await login.click();
+      await expect(page.locator('html')).toHaveAttribute('data-palette','ocean');
+      await page.getByRole('link',{name:'Settings',exact:true}).click();
+      await page.getByRole('link',{name:'Accounts',exact:true}).click();
+      await expect(page).toHaveURL(publicOrigin+'/settings/accounts');
+      await expectHover(page, page.getByRole('button',{name:'Add account'}));
+
+      await page.getByRole('link',{name:'Camera grants'}).click();
+      await expect(page).toHaveURL(publicOrigin+'/settings/access');
+      const accountPicker = page.getByRole('button',{name:/^Account /});
+      await accountPicker.press('ArrowDown');
+      const accountSearch = page.getByRole('combobox',{name:'Search Account'});
+      await expect(accountSearch).toBeFocused();
+      await accountSearch.fill('unmatched');
+      await expect(page.getByText('No matching options')).toBeVisible();
+      await accountSearch.fill('FIXTURE-USER');
+      await accountSearch.press('Enter');
+      await expect(page.getByText('Instance administrators have full access to all cameras.')).toBeVisible();
+      await expect(page.getByRole('button',{name:/^Camera /})).toBeDisabled();
+      await accountPicker.press('ArrowDown');
+      await accountSearch.fill('FIXTURE-VIEWER');
+      await accountSearch.press('Enter');
+      await expect(accountPicker).toHaveAccessibleName('Account Test viewer');
+      await expect(accountPicker).toBeFocused();
+      const cameraPicker = page.getByRole('button',{name:/^Camera /});
+      await cameraPicker.click();
+      const cameraSearch = page.getByRole('combobox',{name:'Search Camera'});
+      await cameraSearch.fill('DOCK');
+      await expect(page.getByRole('option',{name:'Second camera'})).toHaveCount(0);
+      await cameraSearch.press('Escape');
+      await expect(cameraPicker).toBeFocused();
+      await cameraPicker.press('ArrowDown');
+      await cameraSearch.fill('DOCK');
+      await cameraSearch.press('Enter');
+      await expect(page.getByRole('combobox',{name:'Apply preset'})).toHaveValue('viewer');
+      await expect(page.getByLabel('View camera and state')).toBeChecked();
+
+      await page.getByRole('link',{name:'Event history',exact:true}).click();
+      await expect(page).toHaveURL(publicOrigin+'/settings/events');
+      const limit = page.getByRole('spinbutton',{name:'Events to keep per camera'});
+      await limit.fill('7');
+      await page.getByRole('button',{name:'Save changes'}).click();
+      await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
+      await page.reload();
+      await expect(limit).toHaveValue('7');
+
+      await page.getByRole('link',{name:'Private bridges',exact:true}).click();
+      const inventoryInterval = page.getByRole('spinbutton',{name:'Inventory scan interval (seconds)'});
+      await expect(inventoryInterval).toHaveValue('10');
+      await expect(inventoryInterval).toHaveAttribute('min','1');
+      await expect(inventoryInterval).toHaveAttribute('max','86400');
+      await inventoryInterval.fill('2');
+      await page.getByRole('button',{name:'Save interval'}).click();
+      await expect(page.getByText(/syncs reported camera inventory every 2 seconds/)).toBeVisible();
+      await page.reload();
+      await expect(inventoryInterval).toHaveValue('2');
+      await page.getByRole('button',{name:'Refresh inventory'}).click();
+      await expect(page.locator('time')).toHaveText(/^Refreshed at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+      await expect(page.getByText('Confirmed',{exact:true})).toHaveCount(0);
+
+      await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
+      const settingsRefresh = page.getByRole('button',{name:/^Refresh/});
+      await expect(settingsRefresh).toHaveCount(1);
+      const brightness = page.getByRole('spinbutton',{name:'Brightness',exact:true});
+      const sensitivity = page.getByRole('spinbutton',{name:'Sensitivity',exact:true});
+      await expect(brightness).toHaveValue('5');
+      await expect(sensitivity).toHaveValue('40');
+      bridge.setReportedLevels({brightness:17,sensitivity:22});
+      await settingsRefresh.click();
+      await expect(page.getByText('Camera settings refreshed.')).toBeVisible();
+      await expect(brightness).toHaveValue('17');
+      await expect(sensitivity).toHaveValue('22');
+
+      const detectionType = page.getByRole('combobox',{name:'Detection type'});
+      await detectionType.selectOption('pet');
+      const petSettings = page.getByRole('group',{name:'Pet detection settings'});
+      await expect(petSettings.getByRole('spinbutton',{name:'Pet sensitivity'})).toHaveValue('60');
+      const petDelay = petSettings.getByRole('spinbutton',{name:'Pet delay (seconds)'});
+      await expect(petDelay).toHaveValue('0');
+      await petDelay.fill('3');
+      await page.getByRole('button',{name:'Save Pet settings'}).click();
+      await expect.poll(() => bridge.requests.at(-1)).toEqual({setting:'ai_detection',class:'pet',delay_seconds:3});
+      await detectionType.selectOption('person');
+      await expect(page.getByRole('spinbutton',{name:'Person sensitivity'})).toHaveValue('76');
+      await expect(page.getByRole('spinbutton',{name:'Person delay (seconds)'})).toHaveValue('2');
+      const source = page.getByRole('combobox',{name:'Video source'});
+      await source.selectOption('proxy');
+      await page.getByRole('textbox',{name:'RTSP restream URL'}).fill('rtsp://127.0.0.1:8554/sample');
+      const playback = page.getByRole('region',{name:'Playback',exact:true});
+      const interval = playback.getByRole('spinbutton',{name:'Frame preview interval (ms)'});
+      const alertMode = playback.getByRole('combobox',{name:'Refresh on alert'});
+      await expect(interval).toHaveValue('5000');
+      await expect(interval).toHaveAttribute('min','50');
+      await interval.fill('120');
+      await alertMode.selectOption('person');
+      await playback.getByRole('button',{name:'Save changes'}).click();
+      await expect(playback.getByText('Playback settings saved.')).toBeVisible();
+      await page.reload();
+      await expect(source).toHaveValue('proxy');
+      await expect(interval).toHaveValue('120');
+      await expect(alertMode).toHaveValue('person');
+      await source.selectOption('direct');
+      await playback.getByRole('button',{name:'Save changes'}).click();
+      await expect(playback.getByText('Playback settings saved.')).toBeVisible();
+
+      const frameTimings = [];
+      const framePath = '**/v1/cameras/'+camera.id+'/preview';
+      const delayFrame = async route => {
+        const measurement = { start:performance.now() };
+        frameTimings.push(measurement);
+        const result = await route.fetch();
+        if (frameTimings.indexOf(measurement) < 2) await wait(180);
+        measurement.end = performance.now();
+        await route.fulfill({response:result});
+      };
+      await page.route(framePath, delayFrame);
+      const dashboardFeed = page.waitForResponse(response => new URL(response.url()).pathname === prefix+'/v1/events');
+      await page.getByRole('link',{name:'Dashboard',exact:true}).click();
+      await dashboardFeed;
+      await expect.poll(() => frameTimings.length).toBeGreaterThanOrEqual(2);
+      expect(frameTimings[1].start - frameTimings[0].end).toBeGreaterThanOrEqual(115);
+      const dashboardAlert = page.waitForRequest(forcedPreview);
+      bridge.event('alpha','person');
+      await dashboardAlert;
+      await page.unroute(framePath, delayFrame);
+      await page.getByRole('link',{name:'Loading dock',exact:true}).click();
+      await expect(page.getByText('Event feed connected')).toBeVisible();
+      await expect(liveView.getByRole('img',{name:'Loading dock camera preview'})).toBeVisible();
+      const monitorAlert = page.waitForRequest(forcedPreview);
+      bridge.event('alpha','motion',{objects:[{class:'person'}]});
+      await monitorAlert;
+
+      await page.getByRole('link',{name:'Status',exact:true}).click();
+      await expect(page).toHaveURL(publicOrigin+'/status');
+      const upstreamTable = page.getByRole('table');
+      await expect(upstreamTable.getByRole('row').filter({hasText:'Inventory and events'})).toContainText('WS');
+      await expect(upstreamTable.getByRole('row').filter({hasText:'Commands'})).toContainText('HTTP');
+      await expect(upstreamTable.getByText('Online',{exact:true})).toHaveCount(3);
+
+      await page.goto(publicOrigin+'/settings/enrollment');
+      await page.getByLabel('Device UID').fill('TESTWUI001');
+      const enrollmentButton = page.getByRole('button',{name:'Show enrollment QR'});
+      const enrollmentQr = page.getByRole('dialog',{name:'WUI device enrollment code'});
+      await enrollmentButton.click();
+      await expect(enrollmentQr).toBeVisible();
+      await enrollmentQr.getByRole('button',{name:'Close'}).click();
+      await expect(enrollmentQr).toBeHidden();
+      await enrollmentButton.click();
+      await expect(enrollmentQr).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(enrollmentQr).toBeHidden();
+      await expect(enrollmentButton).toBeFocused();
+
+      await page.locator('summary').filter({hasText:'Wi-Fi join QR'}).click();
+      await page.getByLabel('Wi-Fi network name').fill('Fixture Network QA');
+      await page.getByLabel('Wi-Fi password').fill('fixture-wifi-password-123');
+      await page.getByLabel('Camera code (last four characters)').fill('XY12');
+      await page.getByRole('button',{name:'Generate Wi-Fi QR'}).click();
+      const wifiQr = page.getByRole('dialog',{name:'Wi-Fi join QR'});
+      const qr = page.locator('canvas[aria-label="Private Wi-Fi setup QR"]');
+      await expect(wifiQr).toBeVisible();
+      await expect(qr).toHaveJSProperty('width', 640);
+      expect((await qr.boundingBox()).width).toBeGreaterThan(400);
+      await expect(page.getByLabel('Wi-Fi password')).toHaveValue('');
+      await page.mouse.click(2,2);
+      await expect(wifiQr).toBeHidden();
+      await expect(qr).toHaveJSProperty('width', 0);
+      expect(JSON.stringify(observed)).not.toContain('fixture-wifi-password-123');
+      expect(JSON.stringify(observed)).not.toContain('Fixture Network QA');
+
+      await page.setViewportSize({width:375,height:812});
+      await enrollmentButton.click();
+      await expect(enrollmentQr).toBeVisible();
+      expect((await enrollmentQr.boundingBox()).width).toBeLessThan(375);
+      await page.keyboard.press('Escape');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+      expect(errors).toEqual([]);
+      await page.getByRole('button',{name:'Sign out'}).click();
+      await expect(page.getByRole('heading',{name:'Sign in'})).toBeVisible();
+    } finally {
+      if (!page.isClosed()) await page.close();
+      edge?.closeAllConnections();
+      edge?.close();
+      if (ui.exitCode===null) { ui.kill(); await once(ui,'exit'); }
+      app.server.closeAllConnections?.();
+      await app.close();
+      await bridge.close();
+      await rm(directory,{recursive:true, force:true});
+    }
+  });
+}

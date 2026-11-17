@@ -1,0 +1,48 @@
+{
+  "name": "reolink-wui",
+  "version": "0.1.0",
+  "private": true,
+  "repository": { "type": "git", "url": "https://github.com/Slyke/reolink-wui.git" },
+  "type": "module",
+  "engines": {
+    "node": ">=24.14 <25"
+  },
+  "scripts": {
+    "dev": "vite",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.api.json --noEmit",
+    "build": "svelte-kit sync && tsc -p tsconfig.api.json && vite build",
+    "api": "node dist/server/main.js",
+    "ui": "node build/index.js",
+    "admin": "node dist/server/admin.js",
+    "test": "tsc -p tsconfig.api.json && node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:browser": "playwright test",
+    "error-validate": "node ./tools/error_gen.cjs --action validate --error-file ./server/errors.json"
+  },
+  "dependencies": {
+    "@zxing/browser": "^0.1.5",
+    "fastify": "^5.7.0",
+    "ioredis": "^5.11.1",
+    "json5": "^2.2.3",
+    "mqtt": "^5.15.0",
+    "openid-client": "^6.8.0",
+    "pg": "^8.17.0",
+    "qrcode": "^1.5.4",
+    "undici": "^7.22.0",
+    "ws": "^8.19.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@sveltejs/adapter-node": "^5.5.4",
+    "@sveltejs/kit": "^2.70.3",
+    "@sveltejs/vite-plugin-svelte": "^6.2.4",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.16.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.18.1",
+    "svelte": "^5.50.0",
+    "svelte-check": "^4.3.5",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  }
+}
