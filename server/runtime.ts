@@ -54,7 +54,16 @@ export class Runtime {
     const overrides = await this.sql.query<{ id: string; connection_config: string }>(
       'SELECT id,connection_config FROM bridges WHERE connection_config IS NOT NULL'
     );
-    for (const row of overrides) configurations.set(row.id, bridgeSchema.parse(JSON.parse(row.connection_config)));
+    for (const row of overrides) {
+      const saved = JSON.parse(row.connection_config);
+      const config = bridgeSchema.parse(saved);
+      configurations.set(row.id, config);
+      if (saved.http && Object.hasOwn(saved.http, 'adminToken')) {
+        delete saved.http.adminToken;
+        await this.sql.query('UPDATE bridges SET connection_config=$1 WHERE id=$2 AND connection_config=$3',
+          JSON.stringify(saved), row.id, row.connection_config);
+      }
+    }
     if (configurations.size > 32) throw new Failure('BAD_INPUT',400);
     for (const config of configurations.values()) {
       const sources = await this.sql.transaction(async query => {
@@ -86,9 +95,9 @@ export class Runtime {
     this.eventObservers.get(id)?.();
     this.eventObservers.set(id, bridge.observe(update => {
       if (update.kind === 'preview') return;
-      if (update.kind === 'event' && bridge.ids().includes(update.camera)) {
-        this.history.add({ camera: id + '/' + update.camera, entry: update.entry });
-      }
+      if (update.kind !== 'event') return;
+      const stable = bridge.stableId(update.camera);
+      if (stable && bridge.remoteId(stable) === update.camera) this.history.add({ camera: id + '/' + stable, entry: update.entry });
     }));
   }
 
@@ -161,8 +170,9 @@ export class Runtime {
     const existing = await this.sql.query<CameraRef>('SELECT * FROM cameras');
     const known = new Set(existing.map(camera => camera.bridge_id + '/' + camera.remote_id));
     for (const bridge of this.bridges.values()) {
-      for (const id of bridge.ids()) {
-        if (!known.has(bridge.config.id + '/' + id)) await storeCamera({ sql: this.sql, bridge: bridge.config.id, remote: id });
+      for (const publicId of bridge.ids()) {
+        const id = bridge.stableId(publicId);
+        if (id && !known.has(bridge.config.id + '/' + id)) await storeCamera({ sql: this.sql, bridge: bridge.config.id, remote: id });
       }
     }
   }
@@ -224,7 +234,7 @@ export class Runtime {
     const rows = await camerasFor({ sql: this.sql, account });
     const visible = new Set<string>();
     for (const row of rows) {
-      if (row.permissions.includes('view') && this.bridges.get(row.bridge_id)?.includes(row.remote_id)) {
+      if (row.permissions.includes('view') && this.bridges.get(row.bridge_id)?.remoteId(row.remote_id)) {
         visible.add(row.bridge_id);
       }
     }
@@ -269,8 +279,9 @@ export class Runtime {
     const grant = new Set(row?.permissions);
     if (!row || !grant.has(permission)) throw new Failure('ACCESS_DENIED', 403);
     const bridge = this.bridges.get(row.bridge_id);
-    if (!bridge || !bridge.includes(row.remote_id)) throw new Failure('CAMERA_UNKNOWN', 404);
-    return { row, grant, bridge, session };
+    const remote = bridge?.remoteId(row.remote_id);
+    if (!bridge || !remote) throw new Failure('CAMERA_UNKNOWN', 404);
+    return { row: { ...row, routeId: remote }, grant, bridge, session };
   }
 
   async views({ account }: { account: Account }) {
@@ -279,12 +290,13 @@ export class Runtime {
     return rows.flatMap(row => {
       const bridge = this.bridges.get(row.bridge_id);
       const grant = new Set(row.permissions);
-      if (!bridge?.includes(row.remote_id) || !grant.has('view')) return [];
+      const remote = bridge?.remoteId(row.remote_id);
+      if (!bridge || !remote || !grant.has('view')) return [];
       return [{
-        id: row.id, ...information({ state: bridge.state(row.remote_id) }),
-        availability: available({ bridge, remote: row.remote_id }),
-        previewIntervalMs: row.preview_interval_ms, previewPush: bridge.previewPush(row.remote_id), refreshOnAlert: row.preview_refresh_on_alert,
-        capabilities: capabilities({ bridge, remote: row.remote_id, grant, proxy: !!row.rtsp_proxy })
+        id: row.id, ...information({ state: bridge.state(remote) }),
+        availability: available({ bridge, remote }),
+        previewIntervalMs: row.preview_interval_ms, previewPush: bridge.previewPush(remote), refreshOnAlert: row.preview_refresh_on_alert,
+        capabilities: capabilities({ bridge, remote, grant, proxy: !!row.rtsp_proxy })
       }];
     });
   }

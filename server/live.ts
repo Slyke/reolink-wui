@@ -37,7 +37,7 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
     const filter = input({ schema: eventFilter, value: request.query });
     if (filter.camera) await runtime.camera({ request, id: filter.camera, permission: 'events' });
     const select = async (actor: Account) => (await camerasFor({ sql: runtime.sql, account: actor })).filter(row => (
-      (!filter.camera || filter.camera === row.id) && runtime.bridges.get(row.bridge_id)?.includes(row.remote_id)
+      (!filter.camera || filter.camera === row.id) && runtime.bridges.get(row.bridge_id)?.remoteId(row.remote_id)
     ));
     const rows = await select(account);
     if (subscriptions >= 128) throw new Failure('MEDIA_LIMIT', 429);
@@ -91,7 +91,7 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
           return;
         }
         if (update.kind === 'feed') return enqueue({ kind: 'feed' });
-        const mapped = byBridge.get(id + '/' + update.camera);
+        const mapped = byBridge.get(id + '/' + bridge.stableId(update.camera));
         if (!mapped) return;
         if (update.kind === 'preview' && mapped.grants.has('media.live')) {
           return enqueue({ kind: 'preview', camera: mapped.camera, etag: update.etag });
@@ -199,7 +199,7 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
       bridge, row, correlation: request.id, refresh: refresh === 'true',
       ifNoneMatch: typeof tag === 'string' && tag.length <= 512 ? tag : undefined
     });
-    await signedCamera({ request, id: row.id });
+    if ((await signedCamera({ request, id: row.id })).row.routeId !== row.routeId) throw new Failure('CAMERA_UNKNOWN',404);
     if (etag) reply.header('etag', etag);
     if (capturedAt) reply.header('x-preview-captured-at', capturedAt);
     return frame ? reply.type('image/jpeg').send(frame) : reply.code(304).send();
@@ -210,7 +210,7 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
     const current = await signedCamera({ request, id: request.params.id, mutate: true });
     const { bridge, row, session } = current;
     if (!playbackStreams({ bridge, row }).includes(data.stream)) throw new Failure('MEDIA_UNAVAILABLE', 422);
-    if (!row.rtsp_proxy && !available({ bridge, remote: row.remote_id }).online) throw new Failure('CAMERA_OFFLINE', 409);
+    if (!row.rtsp_proxy && !available({ bridge, remote: row.routeId }).online) throw new Failure('CAMERA_OFFLINE', 409);
     for (const [id, value] of sessions) {
       if (value.expires <= Date.now()) {
         value.cancel?.();
@@ -251,7 +251,7 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
     let validation: ReturnType<typeof setTimeout>;
     const check = async () => {
       const active = await signedCamera({ request, id: media.camera });
-      if (active.session.token !== media.token || active.row.rtsp_proxy !== media.source) return closed();
+      if (active.session.token !== media.token || active.row.routeId !== row.routeId || active.row.rtsp_proxy !== media.source) return closed();
       if (!controller.signal.aborted) validation = setTimeout(() => void check().catch(closed), 700);
     };
     validation = setTimeout(() => void check().catch(closed), 700);

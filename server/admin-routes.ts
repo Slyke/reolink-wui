@@ -1,3 +1,4 @@
+import type { Bridge } from './bridge.js';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -61,8 +62,9 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
       })),
       cameras: cameras.flatMap(row => {
         const bridge = runtime.bridges.get(row.bridge_id);
-        return bridge?.includes(row.remote_id)
-          ? [{ id: row.id, bridge: row.bridge_id, label: information({ state: bridge.state(row.remote_id) }).name ?? row.remote_id }]
+        const remote = bridge?.remoteId(row.remote_id);
+        return bridge && remote
+          ? [{ id: row.id, bridge: row.bridge_id, label: information({ state: bridge.state(remote) }).name ?? remote }]
           : [];
       })
     };
@@ -232,7 +234,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
           const [account] = await query<{ admin: number }>('SELECT admin FROM accounts WHERE id=$1', id);
           if (account?.admin === 1) throw new Failure('ACCESS_DENIED', 403);
           const [row] = await query<CameraRef>('SELECT * FROM cameras WHERE id=$1', camera);
-          if (!account || !row || !runtime.bridges.get(row.bridge_id)?.includes(row.remote_id)) throw new Failure('BAD_INPUT', 404);
+          if (!account || !row || !runtime.bridges.get(row.bridge_id)?.remoteId(row.remote_id)) throw new Failure('BAD_INPUT', 404);
           if (!granted.length) {
             await query('DELETE FROM grants WHERE account_id=$1 AND camera_id=$2', id, camera);
           } else {
@@ -283,7 +285,10 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
     }).filter(item => item.id) : []
   );
 
-  const cameraMapping = async (bridgeId: string) => new Map((await runtime.sql.query<CameraRef>('SELECT * FROM cameras WHERE bridge_id=$1', bridgeId)).map(row => [row.remote_id, row.id]));
+  const cameraMapping = async (bridge: Bridge) => new Map((await runtime.sql.query<CameraRef>('SELECT * FROM cameras WHERE bridge_id=$1', bridge.config.id)).flatMap(row => {
+    const remote = bridge.remoteId(row.remote_id);
+    return remote ? [[remote, row.id] as const] : [];
+  }));
 
   api.get<{ Params: { bridge: string } }>(root + '/bridges/:bridge/callbacks', async request => {
     await runtime.admin({ request });
@@ -292,7 +297,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
     const response = await bridge.callbacks({ action: 'list', correlation: request.id });
     if (!response.ok) throw new Failure('COMMAND_REJECTED', 422);
     await runtime.ops.reconcile({ camera: 'bridge:' + bridge.config.id, group: 'callbacks', before });
-    return { callbacks: callbackData(response.callbacks, await cameraMapping(bridge.config.id)), destinations: Object.keys(bridge.config.callbacks ?? {}) };
+    return { callbacks: callbackData(response.callbacks, await cameraMapping(bridge)), destinations: Object.keys(bridge.config.callbacks ?? {}) };
   });
   api.post<{ Params: { bridge: string } }>(root + '/bridges/:bridge/callbacks', async (request, reply) => {
     const admin = await runtime.admin({ request, mutate: true });
@@ -316,8 +321,9 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
           const cameras: string[] = [];
           for (const id of new Set(body.cameras)) {
             const [row] = await runtime.sql.query<CameraRef>('SELECT * FROM cameras WHERE id=$1 AND bridge_id=$2', id, bridge.config.id);
-            if (!row || !bridge.includes(row.remote_id)) throw new Failure('CALLBACK_INVALID', 422);
-            cameras.push(row.remote_id);
+            const remote = row && bridge.remoteId(row.remote_id);
+            if (!remote) throw new Failure('CALLBACK_INVALID', 422);
+            cameras.push(remote);
           }
           command = {
             action: body.action, correlation: request.id,
@@ -325,7 +331,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
           };
         }
         const response = await bridge.callbacks(command);
-        return { ...result({ reply: response, write: true }), data: response.ok ? callbackData(response.callbacks, await cameraMapping(bridge.config.id)) : undefined };
+        return { ...result({ reply: response, write: true }), data: response.ok ? callbackData(response.callbacks, await cameraMapping(bridge)) : undefined };
       }
     });
     return sendOutcome({ reply, value });

@@ -1,6 +1,6 @@
 export type BridgeConnections = {
   id: string; label: string; cameraIds: string[]; commands?: 'http' | 'mqtt'; capture?: 'mqtt';
-  http?: { url: string; ca?: string; rejectUnauthorized: boolean; relay: boolean; tokenConfigured: boolean; adminTokenConfigured: boolean };
+  http?: { url: string; ca?: string; rejectUnauthorized: boolean; relay: boolean; tokenConfigured: boolean };
   ws?: { url: string; ca?: string; rejectUnauthorized: boolean; tokenConfigured: boolean };
   mqtt?: {
     url: string; baseTopic: string; cameraIds?: string[]; username?: string; ca?: string;

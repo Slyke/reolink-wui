@@ -17,7 +17,7 @@ export const rtspProxyUrl = z.string().max(2048).url().transform(value => new UR
   && !/%|\\/.test(url.host)
 );
 
-type Profile = { bridge: Bridge; row: CameraRef };
+type Profile = { bridge: Bridge; row: CameraRef & { routeId: string } };
 type MediaProfile = Profile & { stream: string; correlation: string };
 type MediaSource = { input: Readable; boundary: string; close: () => void | Promise<void> };
 type SharedStream = {
@@ -29,7 +29,7 @@ type SharedStream = {
 };
 type PreviewResult = { frame?: Buffer; etag?: string; capturedAt?: string };
 
-export const playbackStreams = ({ bridge, row }: Profile) => row.rtsp_proxy ? ['main'] : bridge.streams(row.remote_id);
+export const playbackStreams = ({ bridge, row }: Profile) => row.rtsp_proxy ? ['main'] : bridge.streams(row.routeId);
 
 const isJpeg = (bytes: Buffer) =>
   bytes.length >= 4 && bytes.readUInt16BE(0) === 0xffd8 && bytes.readUInt16BE(bytes.length - 2) === 0xffd9;
@@ -37,9 +37,9 @@ const isJpeg = (bytes: Buffer) =>
 export const bridgePreview = async ({ bridge, row, correlation, refresh, ifNoneMatch }: Profile & {
   correlation: string; refresh: boolean; ifNoneMatch?: string
 }): Promise<PreviewResult> => {
-  if (!bridge.hasPreview(row.remote_id)) throw new Failure('MEDIA_UNAVAILABLE', 422);
+  if (!bridge.hasPreview(row.routeId)) throw new Failure('MEDIA_UNAVAILABLE', 422);
   const response = await bridge.api({
-    path: '/cameras/' + row.remote_id + '/preview', search: refresh ? '?refresh=true' : undefined,
+    stableId: row.remote_id, path: '/cameras/' + row.routeId + '/preview', search: refresh ? '?refresh=true' : undefined,
     correlation, ifNoneMatch, signal: AbortSignal.timeout(refresh ? 40_000 : 4_000)
   });
   const etag = response.headers.get('etag') ?? '';
@@ -107,7 +107,7 @@ export class Playback {
   async open({ signal, ...profile }: MediaProfile & { signal: AbortSignal }) {
     const { bridge, row, stream } = profile;
     if (!playbackStreams({ bridge, row }).includes(stream)) throw new Failure('MEDIA_UNAVAILABLE', 422);
-    const key = row.id + '/' + stream;
+    const key = row.id + '/' + row.routeId + '/' + stream;
     let active = this.streams.get(key);
     while (active && (active.controller.signal.aborted || active.source !== row.rtsp_proxy)) {
       active.controller.abort();
@@ -193,7 +193,7 @@ export class Playback {
 
   private async upstream({ bridge, row, stream, correlation, signal }: MediaProfile & { signal: AbortSignal }): Promise<MediaSource> {
     if (row.rtsp_proxy) return this.restream({ source: row.rtsp_proxy, signal });
-    const response = await bridge.api({ path: '/cameras/' + row.remote_id + '/media/' + stream, signal, correlation });
+    const response = await bridge.api({ stableId: row.remote_id, path: '/cameras/' + row.routeId + '/media/' + stream, signal, correlation });
     const type = response.headers.get('content-type') ?? '';
     const match = /^multipart\/x-mixed-replace\s*;\s*boundary=(?:"([\w.-]{1,70})"|([\w.-]{1,70}))\s*$/i.exec(type);
     const boundary = match?.[1] ?? match?.[2];

@@ -64,10 +64,9 @@ const http = object({
   token: bearer,
   ca: tlsRoot,
   rejectUnauthorized: z.boolean().default(true),
-  adminToken: bearer.optional(),
   relay: z.boolean().default(true)
 });
-const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:', allowPlainRemote: true }), token: bearer, ca: tlsRoot, rejectUnauthorized: z.boolean().default(true) });
+const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:', allowPlainRemote: true }), token: bearer.optional(), ca: tlsRoot, rejectUnauthorized: z.boolean().default(true) });
 const eventTransport = z.enum(['ws', 'mqtt']);
 export const eventSourcesSchema = z.array(z.enum(eventSources)).min(1).max(eventSources.length).refine(unique);
 const legacyEvents = z.union([
@@ -89,7 +88,16 @@ const mqtt = object({
 }).refine(value => Boolean(value.username) === Boolean(value.password))
   .refine(value => !value.allowPartialTrustChain || (value.url.protocol === 'mqtts:' && Boolean(value.ca)));
 
-export const bridgeSchema = object({
+// Discard the retired credential before resolving file/environment references on upgrades.
+function withoutAdminToken<T>(value: T): T {
+  if (value && typeof value === 'object' && 'http' in value && value.http && typeof value.http === 'object' && 'adminToken' in value.http) {
+    const { adminToken: _, ...http } = value.http;
+    return { ...value, http };
+  }
+  return value;
+}
+
+const bridgeFields = object({
   id,
   label: z.string().min(1).max(80),
   cameraIds: z.array(id).max(128).refine(unique).default([]),
@@ -127,10 +135,14 @@ export const bridgeSchema = object({
   if (value.cameraIds.length && value.mqtt?.cameraIds?.some(id => !value.cameraIds.includes(id))) {
     ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Use camera IDs in the bridge scope' });
   }
-  if (value.http?.adminToken && value.http.adminToken === value.http.token) {
-    ctx.addIssue({ code: 'custom', message: 'Administrative token must be separate' });
+  if (value.ws && !value.http && !value.ws.token) {
+    ctx.addIssue({ code: 'custom', path: ['ws', 'token'], message: 'Set the bridge token for a WebSocket-only connection' });
   }
-});
+}).transform(value => ({
+  ...value, ws: value.ws && { ...value.ws, token: value.ws.token ?? value.http!.token }
+}));
+
+export const bridgeSchema = z.preprocess(withoutAdminToken, bridgeFields);
 
 export const configSchema = object({
   logging: z.record(z.string(),z.unknown()).default({}),
@@ -182,6 +194,9 @@ export const readConfig = ({ path = process.env.WUI_CONFIG ?? './local-only/wui.
     parsed = JSON5.parse(readFileSync(path, 'utf8'));
   } catch {
     throw new Error('WUI config missing, unreadable, or invalid JSON5');
+  }
+  if (parsed && typeof parsed === 'object' && 'bridges' in parsed && Array.isArray(parsed.bridges)) {
+    parsed = { ...parsed, bridges: parsed.bridges.map(withoutAdminToken) };
   }
   const validated = configSchema.safeParse(resolveReferences({ value: parsed, configPath: path }));
   if (!validated.success) {

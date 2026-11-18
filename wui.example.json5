@@ -19,7 +19,7 @@
     //   commands: "http", capture: "mqtt", // Omit commands to disable camera commands.
     //   // Add/edit connections and event priorities in Settings > Private bridges.
     //   // Supply ws: { url, token, ca } for a custom WebSocket endpoint.
-    //   // For credential administration, also configure http.adminToken.
+    //   // Use the same PSK as http.token on the bridge.
     //   http: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_HTTP_TOKEN}", ca: "${file:bridge-ca.pem}" },
     //   mqtt: { url: "mqtts://broker.example.invalid:8883", baseTopic: "cameras", username: "${BROKER_USERNAME}", password: "${BROKER_PASSWORD}" },
     //   callbacks: { alerts: "https://alerts.example.invalid/events" },

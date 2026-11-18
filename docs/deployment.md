@@ -26,7 +26,7 @@ The bridge ID is the WUI's stable identifier for an upstream connection. It link
 
 TLS is selected by the URL scheme. Plain `http://`, `ws://`, and `mqtt://` connections are supported. Their TLS counterparts are `https://`, `wss://`, and `mqtts://`. Each transport has its own `rejectUnauthorized` boolean, defaulting to `true`. Supply `ca` for a private CA or self-signed trust anchor, or uncheck **Verify TLS certificate and hostname** to set `rejectUnauthorized: false` for that connection. Inferred WebSocket connections inherit the HTTP connection's trust and verification settings. A custom WebSocket connection has independent settings. No process-wide TLS override is used.
 
-The optional HTTP `adminToken` authorizes bridge camera enrollment and credential management. It is separate from the WUI administrator account and is not required for viewing cameras. Callback destinations name the allowed receiver URLs for this WUI connection. **Bridge callbacks** creates the actual delivery rules and their camera/event filters. The same URLs must be allowed by the bridge's `api.callbackDestinations`.
+Set the bridge’s `http.token` as the WUI HTTP API token. WUI enforces administrator access for enrollment and the per-camera `device.rotate` permission for password rotation. Callback destinations name the allowed receiver URLs for this WUI connection. **Bridge callbacks** creates the actual delivery rules and their camera/event filters. The same URLs must be allowed by the bridge's `api.callbackDestinations`.
 
 The startup `bridges` array also accepts multiple connections. WUI overrides take precedence for the matching bridge ID. A bridge can use HTTP, WebSocket, MQTT, or a combination. Omit `commands` to disable camera commands. WebSocket defaults to `/ws` on the HTTP endpoint, while an explicit `ws` record supplies independent connection details. Add a separate bridge ID for each upstream service. Camera grants remain scoped to that bridge and its camera IDs.
 
@@ -34,32 +34,33 @@ Configure one record per bridge. Set `http` for the bridge API and `mqtt` for it
 
 WUI queries `GET /api/inventory` and subscribes to the exact topics for active cameras. With neither camera list configured, new cameras are picked up once the bridge activates them and the broker ACL permits access. Use `cameraIds` to restrict the visible cameras. `mqtt.cameraIds` limits MQTT subscriptions and also supplies the visible scope if `cameraIds` is omitted. For an older bridge without the HTTP inventory endpoint, enter the exact camera IDs.
 
+To move or temporarily remove a camera, keep its original bridge stable ID. For example, a camera originally named `lumus` can be re-added as `id: "garage", stableId: "lumus"` in the same bridge. WUI reuses its camera UUID, grants, playback settings, and retained event history. A distinct stable ID creates a new WUI camera. Update any explicit public-ID filters and MQTT subscriptions. Memory history lasts for the WUI process lifetime, and Valkey history follows its retention settings. [Bridge camera IDs and ConfigMap handoff](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#camera-ids-and-configmap-handoff)
+
 Configure the inventory scan interval under **Settings → Private bridges**. It defaults to 10 seconds and accepts 1 through 86400. The **Refreshed at** timestamp in Settings records the last manual inventory refresh.
 
 Configure each bridge's **Event source priority** in its selected **Bridge connections** section under **Settings → Private bridges**. The priority editor follows the bridge selector and never applies to other bridges. Preferences are saved as an ordered array such as `["ws", "mqtt", "api"]` in the WUI database. The first connected source supplies events and camera state. Selected standby feeds stay connected, and an earlier source takes over again when it recovers. Reorder, add, or remove sources in the WUI and save to apply the change immediately.
 
 New bridges default to `["ws", "mqtt", "api"]` when HTTP is configured. Available sources depend on the configured endpoints. Existing file-based `events` preferences are imported into the database once during upgrade, including the earlier primary/secondary object and string forms. Subsequent WUI changes take precedence across restarts.
 
-By default WS/WSS uses `/ws` at the `http` endpoint with the same token and CA. For a custom path or credential, set `ws: { url, token, ca }`. The `api` source uses the bridge's authenticated `GET /api/events` HTTP event stream with initial state snapshots, live updates, heartbeats, and gap reporting. Use a bridge build that exposes this endpoint. For a scoped bridge API token, enable `api.events` to permit both WebSocket and HTTP event subscriptions.
+By default WS/WSS uses `/ws` at the `http` endpoint with the same token and CA. For a custom path, set `ws: { url, ca }` to share the HTTP token. With a WS-only connection, supply the bridge PSK as `ws.token`. The `api` source uses the bridge's authenticated `GET /api/events` HTTP event stream with initial state snapshots, live updates, heartbeats, and gap reporting. Use a bridge build that exposes this endpoint.
 
 For MQTT TLS over an authenticated tunnel that provides only the broker leaf certificate, set `mqtt.ca` to the explicitly trusted certificate and `mqtt.allowPartialTrustChain: true`. The client still verifies the hostname and certificate validity. With an issuer CA available, configure that CA and leave partial trust disabled.
 
 ## Enrollment and callbacks
 
-In the bridge's `api` config, set `adminToken`, a persistent `storageDirectory`, and a named target with the device host, Baichuan port, and camera ID. For an initialized camera, put its credential in the bridge target's `importPassword`. Use a dedicated admin token alongside the HTTP token in the WUI bridge record. [Bridge configuration](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#authorization-and-enrollment)
+In the bridge's `api` config, set a persistent `storageDirectory` and a named target with the device host, Baichuan port, and camera ID. For an initialized camera, put its credential in the bridge target's `importPassword`. Use the existing bridge PSK in the WUI bridge record. [Bridge configuration](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#authorization-and-enrollment)
 
 ```json5
 http: {
   url: "https://bridge.example.invalid:8080",
   token: "${file:bridge-http.token}",
-  adminToken: "${file:bridge-admin.token}",
   ca: "${file:bridge-ca.pem}",
 },
 ```
 
 Restart the configured services and open **Settings → Enrollment**. Enter or scan the printed UID or serial, select a bridge and named target, and choose **Import** for an initialized camera or **Initialize** for a supported factory device. Use the Wi-Fi join QR for supported Wi-Fi models. After verification, restart reolink-bridge to activate the device and refresh inventory.
 
-For callbacks, prepare a receiver that accepts event JSON via HTTP POST and returns a 2xx response. Add the exact URL to the WUI bridge record, for example `callbacks: { alerts: "https://alerts.example.invalid/events" }`. Allow the same URL in `api.callbackDestinations` on the bridge. Use the bridge HTTP token or a service token with bridge-wide scope. Restart the configured services and open **Settings → Bridge callbacks**. Choose the bridge and approved receiver, then add a callback ID and optional event and camera filters. [Bridge callback payloads and filters](https://github.com/Slyke/reolink-bridge/blob/master/docs/interfaces.md#manage-downstream-callbacks)
+For callbacks, prepare a receiver that accepts event JSON via HTTP POST and returns a 2xx response. Add the exact URL to the WUI bridge record, for example `callbacks: { alerts: "https://alerts.example.invalid/events" }`. Allow the same URL in `api.callbackDestinations` on the bridge. Use the bridge HTTP token. Restart the configured services and open **Settings → Bridge callbacks**. Choose the bridge and approved receiver, then add a callback ID and optional event and camera filters. [Bridge callback payloads and filters](https://github.com/Slyke/reolink-bridge/blob/master/docs/interfaces.md#manage-downstream-callbacks)
 
 On Kubernetes, use top-level bridge `callbacks` entries in a ConfigMap and restart reolink-bridge to apply them. Editing callbacks from the WUI requires the bridge config file to be in a writable persistent directory, because the bridge replaces the file atomically.
 

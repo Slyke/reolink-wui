@@ -129,6 +129,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   let brightness = 5;
   const orientation = {hflip:false,vflip:false,rotation:0};
   let inventory = ['alpha','beta'];
+  let identities = {};
   let inventoryReads = 0;
   let playbackAvailable = true;
   let playbackFailure;
@@ -153,7 +154,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       spotlight: { brightness }, image:orientation, ...ai
     } },
     { camera_id, topic: 'rules', payload: { baichuan: [{ id: 'rule-1', enabled:true, type:'motion', parameters:{password:token} }] } }
-  ]);
+  ].map(item => identities[camera_id] ? { ...item, payload: { ...item.payload, stable_id: identities[camera_id] } } : item));
   const command = body => {
     const { id, command } = body;
     requests.push(command);
@@ -238,7 +239,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
-      return res.end(JSON.stringify({ cameras:inventory.map(id => ({ id, active:true })) }));
+      return res.end(JSON.stringify({ cameras:inventory.map(id => ({ id, stableId:identities[id], active:true })) }));
     }
     if (/^\/api\/callbacks(?:\/[^/]+)?$/.test(req.url)) {
       const id = req.url.split('/')[3];
@@ -369,8 +370,9 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     },
     counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads, callbacks:callbacks.length }),
     lose: () => { lose = true; },
-    reportInventory: async cameras => {
+    reportInventory: async (cameras, stableIds = {}) => {
       inventory = cameras;
+      identities = stableIds;
       await publishSnapshots();
     },
     setReportedLevels: levels => { brightness = levels.brightness; sensitivity = levels.sensitivity; },
@@ -388,7 +390,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       broker.client.publish(baseTopic+'/'+camera+'/'+topic, JSON.stringify(payload), {retain:true});
     },
     event: (camera_id, type, details = {}, transport) => {
-      const event = {camera_id,type,active:true,received_at:new Date().toISOString(),source:'onvif',vendor:{password:token},...details};
+      const event = {camera_id,stable_id:identities[camera_id],type,active:true,received_at:new Date().toISOString(),source:'onvif',vendor:{password:token},...details};
       publishEvent(event,transport);
       return event;
     },

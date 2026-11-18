@@ -69,7 +69,7 @@ test('HTTP, WS and MQTT accept optional trust anchors or per-connection disabled
   }
   const independent=await testBridge({config:bridgeSchema.parse({
     id:'tls',label:'Independent TLS',http:{...http,rejectUnauthorized:false},
-    ws:{url:http.url.replace('https:','wss:')+'/ws',token:serviceToken}
+    ws:{url:http.url.replace('https:','wss:')+'/ws'}
   })});
   assert.equal(independent.results[0].status,'passed');assert.equal(independent.results[1].failure,'tls');
 

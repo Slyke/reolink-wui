@@ -6,7 +6,7 @@ export const bridgeConnections = (config: BridgeConfig): BridgeConnections => ({
   id: config.id, label: config.label, cameraIds: [...config.cameraIds], commands: config.commands, capture: config.capture,
   ...(config.http ? { http: {
     url: config.http.url.href, ca: config.http.ca, rejectUnauthorized: config.http.rejectUnauthorized, relay: config.http.relay,
-    tokenConfigured: Boolean(config.http.token), adminTokenConfigured: Boolean(config.http.adminToken)
+    tokenConfigured: Boolean(config.http.token)
   } } : {}),
   ...(config.ws ? { ws: { url: config.ws.url.href, ca: config.ws.ca, rejectUnauthorized: config.ws.rejectUnauthorized, tokenConfigured: Boolean(config.ws.token) } } : {}),
   ...(config.mqtt ? { mqtt: {
@@ -24,10 +24,12 @@ export const mergeBridgeCredentials = ({ value, previous, id }: { value: Record<
     const supplied = record(value[transport]);
     const saved = record(previous?.[transport]);
     const fields = { ...supplied };
-    for (const secret of ['token','adminToken','password']) {
+    for (const secret of ['token','password']) {
       if (!Object.hasOwn(supplied,secret) && typeof saved[secret] === 'string') fields[secret] = saved[secret];
       if (fields[secret] === '') delete fields[secret];
     }
+    // On an explicit save/test with HTTP enabled, custom WebSockets share its PSK.
+    if (transport === 'ws' && value.http && !Object.hasOwn(supplied,'token')) delete fields.token;
     merged[transport] = fields;
   }
   return merged;

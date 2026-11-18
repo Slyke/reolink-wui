@@ -18,7 +18,7 @@ export const sendOutcome = <T extends Summary>({ reply, value }: { reply: Fastif
   reply.code(value.outcome === 'pending' ? 202 : (value.outcome === 'unknown' ? 504 : (value.outcome === 'rejected' ? 422 : 200))).send(value)
 );
 const checkOnline = ({ bridge, row }: Awaited<ReturnType<Runtime['camera']>>) => {
-  if (!available({ bridge, remote: row.remote_id }).online) throw new Failure('CAMERA_OFFLINE', 409);
+  if (!available({ bridge, remote: row.routeId }).online) throw new Failure('CAMERA_OFFLINE', 409);
 };
 
 export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
@@ -30,11 +30,11 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
   });
   api.get<{ Params: { id: string } }>(cameras + '/:id', async request => {
     const { row, bridge, grant } = await runtime.camera({ request, id: request.params.id, permission: 'view' });
-    return { id: row.id, ...information({ state: bridge.state(row.remote_id) }), ...visibleState({ bridge, remote: row.remote_id, grant }) };
+    return { id: row.id, ...information({ state: bridge.state(row.routeId) }), ...visibleState({ bridge, remote: row.routeId, grant }) };
   });
   api.get<{ Params: { id: string } }>(cameras + '/:id/capabilities', async request => {
     const { row, bridge, grant } = await runtime.camera({ request, id: request.params.id, permission: 'view' });
-    return capabilities({ bridge, remote: row.remote_id, grant, proxy: !!row.rtsp_proxy });
+    return capabilities({ bridge, remote: row.routeId, grant, proxy: !!row.rtsp_proxy });
   });
 
   api.get<{ Params: { id: string } }>(cameras + '/:id/events', async request => {
@@ -54,7 +54,7 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
     const { row, bridge, grant, session } = context;
     const stop = action.op === 'stop';
     if (!stop) checkOnline(context);
-    validatePtz({ action, caps: capabilities({ bridge, remote: row.remote_id, grant }).ptz });
+    validatePtz({ action, caps: capabilities({ bridge, remote: row.routeId, grant }).ptz });
     const before = Date.now();
     const operation = await runtime.ops.run<unknown>({
       id: operationId, actor: session.account.id, resource: row.id, correlation: request.id,
@@ -73,7 +73,7 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
         )).length) {
           return { outcome: 'rejected', reason: 'PTZ_CANCELLED' };
         }
-        const response = await bridge.command({ camera: row.remote_id, id: operationId, command: { setting: 'ptz', action }, correlation: request.id });
+        const response = await bridge.command({ camera: row.routeId, stableId: row.remote_id, id: operationId, command: { setting: 'ptz', action }, correlation: request.id });
         const outcome = result({ reply: response, write: !read });
         if (action.op === 'status' && response.ok === true) await runtime.ops.reconcile({ camera: row.id, group: 'ptz', before });
         if (response.ok === true) {
@@ -95,12 +95,12 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
     const context = await runtime.camera({ request, id, permission: alert ? 'alerts.write' : 'settings.' + key + '.write' as Permission, mutate: true });
     const { row, bridge, grant, session } = context;
     checkOnline(context);
-    validateSetting({ value: fields.change, settings: capabilities({ bridge, remote: row.remote_id, grant }).settings });
+    validateSetting({ value: fields.change, settings: capabilities({ bridge, remote: row.routeId, grant }).settings });
     const operation = await runtime.ops.run({
       id: fields.operationId, actor: session.account.id, resource: row.id, action: (alert ? 'alerts.' : 'settings.') + fields.change.setting,
       input: fields.change, reconcileGroup: key, serialized: true, correlation: request.id,
       execute: async () => {
-        const response = await bridge.command({ camera: row.remote_id, id: fields.operationId, command: fields.change, correlation: request.id });
+        const response = await bridge.command({ camera: row.routeId, stableId: row.remote_id, id: fields.operationId, command: fields.change, correlation: request.id });
         const outcome = result({ reply: response, write: true });
         const values = response.ok === true && grant.has(alert ? 'alerts.read' : 'settings.' + key + '.read' as Permission)
           ? readback({ raw: record(response.state), group: key, className: fields.change.setting === 'ai_detection' ? fields.change.class : undefined })
@@ -121,13 +121,13 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
     const key = input({ schema: groupSchema, value: group });
     const context = await runtime.camera({ request, id, permission: alert ? 'alerts.read' : 'settings.' + key + '.read' as Permission });
     const { row, bridge } = context;
-    const state = bridge.state(row.remote_id);
+    const state = bridge.state(row.routeId);
     let values = settingValues({ raw: state.get('state/settings') ?? {}, group: key });
     if (fresh) {
       checkOnline(context);
       if (!bridge.has('v1')) throw new Failure('UNSUPPORTED', 422);
       const before = Date.now();
-      const response = await bridge.api({ path: '/cameras/' + row.remote_id + '/settings/' + key, correlation: request.id });
+      const response = await bridge.api({ stableId: row.remote_id, path: '/cameras/' + row.routeId + '/settings/' + key, correlation: request.id });
       if (!response.ok) {
         await response.body?.cancel();
         throw new Failure(response.status === 422 ? 'UNSUPPORTED' : 'BRIDGE_UNAVAILABLE', response.status === 422 ? 422 : 502);
@@ -137,7 +137,7 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
       await runtime.ops.reconcile({ camera: row.id, group: key, before });
     }
     return {
-      values, fresh, availability: available({ bridge, remote: row.remote_id }),
+      values, fresh, availability: available({ bridge, remote: row.routeId }),
       ...(alert ? { rules: rules({ raw: state.get('rules') ?? {} }), liveWrites: ['motion'] } : {})
     };
   };
@@ -152,11 +152,11 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
     const context = await runtime.camera({ request, id: request.params.id, mutate: true, permission: 'capture' });
     const { bridge, grant, row, session } = context;
     checkOnline(context);
-    if (!capabilities({ bridge, remote: row.remote_id, grant }).capture) throw new Failure('UNSUPPORTED', 422);
+    if (!capabilities({ bridge, remote: row.routeId, grant }).capture) throw new Failure('UNSUPPORTED', 422);
     const operation = await runtime.ops.run<Buffer>({
       id: operationId, actor: session.account.id, resource: row.id, action: 'capture', input: null, correlation: request.id,
       execute: async (): Promise<ActionResult<Buffer>> => {
-        const response = await bridge.command({ camera: row.remote_id, id: operationId, command: { setting: 'snapshot' }, capture: true, correlation: request.id });
+        const response = await bridge.command({ camera: row.routeId, stableId: row.remote_id, id: operationId, command: { setting: 'snapshot' }, capture: true, correlation: request.id });
         return { ...result({ reply: response, write: false }), data: response.ok === true ? validatePng({ result: response.result }) : undefined };
       }
     });

@@ -26,16 +26,17 @@ export type BridgeUpdate = { kind: 'feed' }
   | { kind: 'snapshot'; camera: string; topic: string }
   | { kind: 'event'; camera: string; topic: string; entry: CameraEvent };
 
-type Link = { url: URL; token: string; adminToken?: string; agent: Agent };
+type Link = { url: URL; token: string; agent: Agent };
 
-const request = ({ link, path, search, token, method, data, correlation, ifNoneMatch, range, signal }: {
-  link: Link; path: string; search?: string; token?: string; method?: string; data?: unknown; correlation?: string;
+const request = ({ link, path, search, stableId, method, data, correlation, ifNoneMatch, range, signal }: {
+  link: Link; path: string; search?: string; stableId?: string; method?: string; data?: unknown; correlation?: string;
   ifNoneMatch?: string; range?: string; signal: AbortSignal
 }) => {
   const options: RequestInit & { dispatcher: Agent } = {
     dispatcher: link.agent, method, redirect: 'error', signal,
     headers: {
-      authorization: 'Bearer ' + (token ?? link.token),
+      authorization: 'Bearer ' + link.token,
+      ...(stableId ? { 'x-camera-stable-id': stableId } : {}),
       ...(data !== undefined ? { 'content-type': 'application/json' } : {}),
       ...(correlation ? { 'x-correlation-id': correlation } : {}),
       ...(ifNoneMatch ? { 'if-none-match': ifNoneMatch } : {}),
@@ -51,7 +52,8 @@ export class Bridge {
   private readonly feeds = new Map<EventSource, FeedState>();
   private lastFeed?: EventSource;
   private readonly recent = new Map<string, { source: EventSource; expires: number }>();
-  private reportedIds?: Set<string>;
+  private inventoryIds?: Map<string, string>;
+  private inventoryIdentitySupport = false;
   private readonly allowed = new Set<string>();
   private readonly broker?: BrokerChannel;
   private socket?: SocketChannel;
@@ -136,7 +138,7 @@ export class Bridge {
     const bridgeSource = { bridge: this.config.label, transport: feed.transport };
     const updateBrokerTargets = () => {
       // Legacy bridges can disclose the exact camera IDs in their WebSocket snapshots.
-      if ((source === 'ws' || source === 'api') && !this.reportedIds && !this.allowed.size && !this.bridgeVersion.inventory) {
+      if ((source === 'ws' || source === 'api') && !this.inventoryIds && !this.allowed.size && !this.bridgeVersion.inventory) {
         this.broker?.setCameraIds([...feed.cache.keys()]);
       }
     };
@@ -181,7 +183,11 @@ export class Bridge {
         const { camera_id: camera, topic } = message;
         if (typeof camera !== 'string' || !this.inScope(camera) || typeof topic !== 'string'
           || !/^(availability|info|capabilities|rules|state\/[a-zA-Z0-9_:-]{1,96})$/.test(topic)) return;
+        const payload = record(message.payload);
+        if (!this.matchesIdentity(camera, payload)) return;
         let topics = feed.cache.get(camera);
+        if (topics?.size && topics.values().next().value?.stable_id !== payload.stable_id) topics.clear();
+
         if (!topics) {
           if (feed.cache.size >= 128) return;
           topics = new Map();
@@ -189,7 +195,7 @@ export class Bridge {
           if (feed.ready) updateBrokerTargets();
         }
         if (!topics.has(topic) && topics.size >= 256) return;
-        topics.set(topic, record(message.payload));
+        topics.set(topic, payload);
         if (topic === 'state/preview' && (source === 'ws' || source === 'mqtt')) {
           const { etag } = record(record(message.payload).preview);
           if (typeof etag === 'string' && /^"[a-f0-9]{64}"$/.test(etag) && this.previewTags.get(camera) !== etag) {
@@ -202,7 +208,8 @@ export class Bridge {
       },
       event: (payload) => {
         const { camera_id: camera, type: topic } = payload;
-        if (this.activeFeed !== source || typeof camera !== 'string' || !this.includes(camera) || typeof topic !== 'string') return;
+        if (this.activeFeed !== source || typeof camera !== 'string' || !this.includes(camera) || typeof topic !== 'string' || !this.matchesIdentity(camera, payload)) return;
+        if ((payload.stable_id ?? camera) !== this.stableId(camera)) return;
         const now = Date.now();
         if (typeof payload.received_at === 'string') {
           const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('base64url');
@@ -230,11 +237,36 @@ export class Bridge {
   }
 
   includes(camera: string) {
-    return this.inScope(camera) && (!this.reportedIds || this.reportedIds.has(camera));
+    return this.inScope(camera) && (!this.inventoryIds || this.inventoryIds.has(camera));
   }
 
   ids() {
-    return this.reportedIds ? [...this.reportedIds] : (this.allowed.size ? [...this.allowed] : [...(this.cache?.keys() ?? [])]);
+    return this.inventoryIds ? [...this.inventoryIds.keys()] : (this.allowed.size ? [...this.allowed] : [...(this.cache?.keys() ?? [])]);
+  }
+
+  private matchesIdentity(camera: string, payload: Envelope) {
+    const identity = payload.stable_id ?? camera;
+    if (typeof identity !== 'string' || !segment.test(identity)) return false;
+    if (this.inventoryIds?.has(camera) && this.inventoryIds.get(camera) !== identity) {
+      void this.scanInventory().catch(() => {});
+      return false;
+    }
+    return true;
+  }
+
+  stableId(camera: string): string | undefined {
+    if (!this.includes(camera)) return;
+    if (this.inventoryIds) return this.inventoryIds.get(camera);
+    const first = this.state(camera).values().next().value;
+    if (typeof first?.stable_id === 'string') return first.stable_id;
+    if (this.http && (this.httpState === undefined || this.bridgeVersion.inventory)) return;
+    return camera;
+  }
+
+  // SQLite/PostgreSQL and event history keep the stable ID. Only bridge traffic uses the current route.
+  remoteId(stable: string): string | undefined {
+    const matches = this.ids().filter(camera => this.stableId(camera) === stable);
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   observe(listener: (update: BridgeUpdate) => void) {
@@ -246,16 +278,19 @@ export class Bridge {
     return this.cache?.get(camera) ?? new Map<string, Envelope>();
   }
 
-  async command({ camera, id, command, correlation, capture = false }: {
-    camera: string; id: string; command: Envelope; correlation: string; capture?: boolean
+  async command({ camera, stableId, id, command, correlation, capture = false }: {
+    camera: string; stableId: string; id: string; command: Envelope; correlation: string; capture?: boolean
   }) {
-    if (!this.includes(camera)) throw new Failure('CAMERA_UNKNOWN', 404);
+    if (this.stableId(camera) !== stableId) throw new Failure('CAMERA_UNKNOWN', 404);
     const route = capture ? this.config.capture : this.config.commands;
-    if (route === 'mqtt' && this.broker) return this.broker.request({ camera, id, command, snapshot: capture });
+    if (route === 'mqtt' && this.broker) {
+      const supportsIdentity = this.inventoryIdentitySupport || typeof this.state(camera).values().next().value?.stable_id === 'string';
+      return this.broker.request({ camera, id, command, snapshot: capture, stableId: supportsIdentity ? stableId : undefined });
+    }
     if (route !== 'http' || !this.http) throw new Failure('UNSUPPORTED', 422);
     try {
       const response = await request({
-        link: this.http, path: '/api/cameras/' + camera + '/command/exec', method: 'POST', data: { id, command },
+        link: this.http, path: '/api/cameras/' + camera + '/command/exec', stableId, method: 'POST', data: { id, command },
         correlation, signal: AbortSignal.timeout(23_000)
       });
       const reply = record(await jsonResponse({ response }));
@@ -340,16 +375,18 @@ export class Bridge {
     return this.has('v1') && this.previewCameras.has(camera);
   }
 
-  async api({ path, search, admin = false, data, correlation, ifNoneMatch, range, signal, method = data === undefined ? 'GET' : 'POST' }: {
-    path: string; search?: string; admin?: boolean; data?: unknown; correlation?: string;
+  async api({ path, search, stableId, data, correlation, ifNoneMatch, range, signal, method = data === undefined ? 'GET' : 'POST' }: {
+    path: string; search?: string; stableId?: string; data?: unknown; correlation?: string;
     ifNoneMatch?: string; range?: string; signal?: AbortSignal; method?: string
   }) {
     const link = this.http;
-    if (!link || (admin && !link.adminToken)) throw new Failure('UNSUPPORTED', 422);
+    if (!link) throw new Failure('UNSUPPORTED', 422);
+    const camera = path.startsWith('/cameras/') ? path.split('/')[2] : undefined;
+    if (camera && (!stableId || this.stableId(camera) !== stableId)) throw new Failure('CAMERA_UNKNOWN',404);
     try {
       return await request({
-        link, path: '/api' + path, search, token: admin ? link.adminToken : undefined, method,
-        data, correlation, ifNoneMatch, range, signal: signal ?? AbortSignal.timeout(admin ? 65_000 : 18_000)
+        link, path: '/api' + path, search, stableId, method,
+        data, correlation, ifNoneMatch, range, signal: signal ?? AbortSignal.timeout(18_000)
       });
     } catch {
       if (method === 'GET' || method === 'HEAD') throw new Failure('BRIDGE_UNAVAILABLE', 502);
@@ -410,19 +447,30 @@ export class Bridge {
       const cameras = inventory.map(record).filter((item): item is Envelope & { id: string } => (
         typeof item.id === 'string' && this.inScope(item.id)
       )).slice(0, 128);
-      const ids = new Set(cameras.map(camera => camera.id));
+      const ids = new Map<string,string>();
+      for (const camera of cameras) {
+        const stable = camera.stableId ?? camera.id;
+        if (typeof stable !== 'string' || !segment.test(stable) || ids.has(camera.id)) throw new Failure('BRIDGE_UNAVAILABLE',502);
+        ids.set(camera.id,stable);
+      }
+      if (new Set(ids.values()).size !== ids.size) throw new Failure('BRIDGE_UNAVAILABLE',502);
       const active = new Set(cameras.filter(camera => camera.active !== false).map(camera => camera.id));
       const mqttIds = this.config.mqtt?.cameraIds?.filter(id => active.has(id)) ?? [...active];
       for (const { cache } of this.feeds.values()) {
-        for (const id of cache.keys()) {
-          if (!active.has(id)) cache.delete(id);
+        for (const [id, topics] of cache) {
+          const identity = topics.values().next().value?.stable_id ?? id;
+          if (!active.has(id) || ids.get(id) !== identity) {
+            cache.delete(id);
+            this.previewTags.delete(id);
+          }
         }
       }
-      const previous = this.reportedIds;
+      const previous = this.inventoryIds;
       this.inventoryFailed = false;
-      this.reportedIds = ids;
+      this.inventoryIds = ids;
+      this.inventoryIdentitySupport = cameras.some(camera => typeof camera.stableId === 'string');
       const topicsChanged = this.broker?.setCameraIds(mqttIds);
-      if (topicsChanged || !previous || ids.size !== previous.size || [...ids].some(id => !previous.has(id))) {
+      if (topicsChanged || !previous || ids.size !== previous.size || [...ids].some(([id, stable]) => previous.get(id) !== stable)) {
         this.channel.emit('update', { kind: 'feed' });
       }
       return true;
@@ -451,7 +499,7 @@ export class Bridge {
     this.bridgeVersion.previewNotifications = ok && contract.previewNotifications === true;
     this.bridgeVersion.inventory = ok && contract.inventory === true;
     this.bridgeVersion.media = ok && this.config.http?.relay === true && contract.media === true;
-    this.bridgeVersion.enrollment = ok && !!this.http?.adminToken && contract.enrollment === true;
+    this.bridgeVersion.enrollment = ok && contract.enrollment === true;
     this.bridgeVersion.callbacks = ok && contract.callbacks === true;
     this.mediaStreams.clear();
     if (this.bridgeVersion.media) {
@@ -499,7 +547,7 @@ export class Bridge {
       if (!ready && this.httpState !== false) recordError({ key:'BRIDGE_HTTP_CHECK_FAILED',caller:'bridge::check',context:{ bridge:this.config.id } });
       this.httpState = ready;
     }
-    const knownInventory = this.reportedIds !== undefined || this.allowed.size > 0 || !!this.cache?.size || this.socket?.ready;
+    const knownInventory = this.inventoryIds !== undefined || this.allowed.size > 0 || !!this.cache?.size || this.socket?.ready;
     return this.httpState !== false && !!knownInventory && this.feedReady && (this.config.commands !== 'mqtt' || this.broker?.ready === true);
   }
 
@@ -510,7 +558,7 @@ export class Bridge {
 }
 
 const rejectedBeforeWrite = new Set([
-  'CONTROL_ID_CONFLICT', 'CONTROL_VALIDATION_FAILED', 'CONTROL_TRANSPORT_DISABLED', 'CONTROL_QUEUE_UNAVAILABLE',
+  'API_CAMERA_IDENTITY_CHANGED', 'CONTROL_ID_CONFLICT', 'CONTROL_VALIDATION_FAILED', 'CONTROL_TRANSPORT_DISABLED', 'CONTROL_QUEUE_UNAVAILABLE',
   'CONTROL_CAPABILITIES_UNAVAILABLE', 'CONTROL_UNSUPPORTED', 'CONTROL_SETTING_UNSUPPORTED',
   'PTZ_CAPABILITIES_UNAVAILABLE', 'PTZ_UNSUPPORTED', 'PTZ_TRANSPORT_DISABLED', 'PTZ_SPEED_UNSUPPORTED',
   'PTZ_ZOOM_OUT_OF_RANGE', 'PTZ_PRESET_UNKNOWN', 'PTZ_REQUEST_EXPIRED', 'PTZ_QUEUED_MOVE_CANCELLED',

@@ -22,8 +22,8 @@
   let commands = $state<'http' | 'mqtt' | 'none'>(initial() ? initial()?.commands ?? 'none' : 'http');
   let httpEnabled = $state(initial() ? Boolean(initial()?.http) : true);
   let wsEnabled = $state(Boolean(initial()?.ws)), mqttEnabled = $state(Boolean(initial()?.mqtt));
-  let httpUrl = $state(initial()?.http?.url ?? ''), httpToken = $state(''), adminToken = $state('');
-  let httpCa = $state(initial()?.http?.ca ?? ''), relay = $state(initial()?.http?.relay ?? true), clearAdmin = $state(false);
+  let httpUrl = $state(initial()?.http?.url ?? ''), httpToken = $state('');
+  let httpCa = $state(initial()?.http?.ca ?? ''), relay = $state(initial()?.http?.relay ?? true);
   let wsUrl = $state(initial()?.ws?.url ?? ''), wsToken = $state(''), wsCa = $state(initial()?.ws?.ca ?? '');
   let mqttUrl = $state(initial()?.mqtt?.url ?? ''), baseTopic = $state(initial()?.mqtt?.baseTopic ?? 'cameras');
   let mqttIds = $state(initial()?.mqtt?.cameraIds?.join(', ') ?? ''), username = $state(initial()?.mqtt?.username ?? '');
@@ -46,11 +46,10 @@
       ...(mqttEnabled && capture ? { capture: 'mqtt' } : {}),
       ...(httpEnabled ? { http: {
         url: httpUrl, relay, rejectUnauthorized: httpVerify, ...(httpCa.trim() ? { ca: httpCa.trim() } : {}),
-        ...(httpToken ? { token: httpToken } : {}),
-        ...(clearAdmin || adminToken ? { adminToken: clearAdmin ? '' : adminToken } : {})
+        ...(httpToken ? { token: httpToken } : {})
       } } : {}),
       ...(wsEnabled ? { ws: {
-        url: wsUrl, rejectUnauthorized: wsVerify, ...(wsCa.trim() ? { ca: wsCa.trim() } : {}), ...(wsToken ? { token: wsToken } : {})
+        url: wsUrl, rejectUnauthorized: wsVerify, ...(wsCa.trim() ? { ca: wsCa.trim() } : {}), ...(!httpEnabled && wsToken ? { token: wsToken } : {})
       } } : {}),
       ...(mqttEnabled ? { mqtt: {
         url: mqttUrl, baseTopic, rejectUnauthorized: mqttVerify, ...(mqttIds.trim() ? { cameraIds: ids(mqttIds) } : {}),
@@ -96,10 +95,6 @@
       <label>{t('bridge-http-url')}<input type="url" bind:value={httpUrl} required disabled={busy} /></label>
       <label>{t('bridge-http-token')}<input type="password" bind:value={httpToken} autocomplete="new-password"
         required={!configuration?.http?.tokenConfigured} placeholder={configuration?.http?.tokenConfigured ? t('secret-saved') : ''} disabled={busy} /></label>
-      <div class="field"><div class="field-heading"><label for={fieldId + '-admin-token'}>{t('bridge-admin-token')}</label><InfoTip label={t('bridge-admin-token')} text={t('bridge-admin-token-hint')} /></div>
-        <input id={fieldId + '-admin-token'} type="password" bind:value={adminToken} autocomplete="new-password"
-          placeholder={configuration?.http?.adminTokenConfigured ? t('secret-saved') : ''} disabled={busy || clearAdmin} /></div>
-      {#if configuration?.http?.adminTokenConfigured}<label class="check"><input type="checkbox" bind:checked={clearAdmin} disabled={busy} />{t('bridge-clear-admin')}</label>{/if}
       <label class="check"><input type="checkbox" bind:checked={relay} disabled={busy} />{t('bridge-enable-relay')}</label>
       <ConnectionTls secure={httpUrl.toLowerCase().startsWith('https:')} bind:ca={httpCa} bind:verify={httpVerify} disabled={busy} />
     {/if}
@@ -109,8 +104,10 @@
     <label class="check"><input type="checkbox" bind:checked={wsEnabled} disabled={busy} />{t('bridge-custom-ws')}</label>
     {#if wsEnabled}
       <label>{t('bridge-ws-url')}<input type="url" bind:value={wsUrl} required disabled={busy} /></label>
-      <label>{t('bridge-ws-token')}<input type="password" bind:value={wsToken} autocomplete="new-password"
+      {#if !httpEnabled}
+        <label>{t('bridge-ws-token')}<input type="password" bind:value={wsToken} autocomplete="new-password"
         required={!configuration?.ws?.tokenConfigured} placeholder={configuration?.ws?.tokenConfigured ? t('secret-saved') : ''} disabled={busy} /></label>
+      {/if}
       <ConnectionTls secure={wsUrl.toLowerCase().startsWith('wss:')} bind:ca={wsCa} bind:verify={wsVerify} disabled={busy} />
     {:else}<p class="muted">{t('bridge-ws-default')}</p>{/if}
   </fieldset>

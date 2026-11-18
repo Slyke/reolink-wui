@@ -518,6 +518,50 @@ const historyBackends = [{ backend:'memory', retention:3 }];
 if (process.env.WUI_TEST_VALKEY) {
   historyBackends.push({ backend:'valkey', retention:3, url:process.env.WUI_TEST_VALKEY, keyPrefix:'wui-test-'+uuid() });
 }
+for (const eventHistory of historyBackends) test('camera rename preserves history, settings, and grants: '+eventHistory.backend, async t => {
+  const fixture = await fixtureBridge();
+  t.after(() => fixture.close());
+  const {app, runtime, incoming, seed, signIn} = await launch({
+    bridges:[{...fixture.config,cameraIds:[]}], eventHistory
+  });
+  t.after(() => app.close());
+  await seed({username:'rename-admin',admin:true});
+  const viewer = await seed({username:'rename-viewer'});
+  const admin = await signIn('rename-admin');
+  const headers = await signIn('rename-viewer');
+  const bridge = runtime.bridges.get('lab');
+  const sync = async () => { await bridge.refreshInventory(); await runtime.sync(); };
+  await sync();
+  const [camera] = await runtime.sql.query("SELECT * FROM cameras WHERE bridge_id='lab' AND remote_id='alpha'");
+  assert.equal((await incoming({method:'PUT',path:'/admin/accounts/'+viewer+'/grants/'+camera.id,headers:admin,
+    payload:{operationId:uuid(),preset:'viewer',allow:[],deny:[]}})).statusCode,200);
+  assert.equal((await incoming({method:'PUT',path:'/cameras/'+camera.id+'/playback',headers:admin,
+    payload:{operationId:uuid(),source:'direct',previewIntervalMs:7654,refreshOnAlert:'person'}})).statusCode,200);
+  const history = async () => (await incoming({path:'/cameras/'+camera.id+'/events',headers})).json().events.map(item=>item.event.type);
+  await eventually(() => bridge.feedReady && bridge.state('alpha').has('info'));
+  fixture.event('alpha','before');
+  await eventually(async () => (await history()).includes('before'));
+  await fixture.reportInventory(['beta']);
+  await sync();
+  assert.equal((await incoming({path:'/cameras/'+camera.id+'/events',headers})).statusCode,404);
+  await fixture.reportInventory(['garage','alpha'],{garage:'alpha',alpha:'replacement'});
+  await sync();
+  await eventually(() => bridge.state('garage').has('info') && bridge.feedReady);
+  await assert.rejects(bridge.command({camera:'alpha',stableId:'alpha',id:uuid(),command:{setting:'status_led',enabled:false},correlation:uuid()}),
+    error=>error.key==='CAMERA_UNKNOWN');
+  assert.equal(fixture.counts().writes,0);
+  const cameras = (await incoming({path:'/cameras',headers})).json().cameras;
+  assert.deepEqual(cameras.map(item=>item.id),[camera.id]);
+  assert.equal(cameras[0].previewIntervalMs,7654);
+  assert.equal(cameras[0].refreshOnAlert,'person');
+  fixture.event('alpha','unrelated');
+  fixture.event('garage','after');
+  await eventually(async () => (await history()).includes('after'));
+  assert.deepEqual(await history(),['before','after']);
+  const [replacement] = await runtime.sql.query("SELECT * FROM cameras WHERE bridge_id='lab' AND remote_id='replacement'");
+  assert.notEqual(replacement.id,camera.id);
+  assert.equal((await incoming({path:'/cameras/'+replacement.id+'/events',headers})).statusCode,403);
+});
 for (const eventHistory of historyBackends) test('camera history limits, restart and authorization: '+eventHistory.backend, async t => {
   const bridge = await fixtureBridge();
   t.after(() => bridge.close());

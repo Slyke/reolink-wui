@@ -391,14 +391,14 @@ export class BrokerChannel {
     return current();
   }
 
-  request({ camera, id, command, snapshot = false }: { camera: string; id: string; command: Envelope; snapshot?: boolean }) {
+  request({ camera, id, command, stableId, snapshot = false }: { camera: string; id: string; command: Envelope; stableId?: string; snapshot?: boolean }) {
     if (!this.controls || !this.includes(camera)) throw new Failure('UNSUPPORTED', 422);
     const path = this.config.baseTopic + '/' + camera;
     if (!this.ready || !this.client.connected || !this.subscribed.has(path + '/command/result')) throw new Failure('BRIDGE_UNAVAILABLE', 503);
     return this.replies.wait({
       key: camera + '/' + id, ms: snapshot ? 37_000 : 24_000,
       // QoS 0 with offline queueing off means the client cannot retransmit queued writes on reconnect.
-      send: () => this.client.publish(path + '/command/exec', JSON.stringify({ id, command }), { qos: 0, retain: false }, error => {
+      send: () => this.client.publish(path + '/command/exec', JSON.stringify({ id, command, stable_id: stableId }), { qos: 0, retain: false }, error => {
         if (error) this.replies.lost();
       })
     });

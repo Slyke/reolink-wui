@@ -37,14 +37,15 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     if (!bridge?.has('enrollment')) throw new Failure('UNSUPPORTED', 422);
     return bridge;
   };
-  const progress = async ({ bridge, endpoint, data, correlation }: {
-    bridge: Bridge; endpoint: string; data?: unknown; correlation: string
+  const progress = async ({ bridge, endpoint, stableId, data, correlation }: {
+    bridge: Bridge; endpoint: string; stableId?: string; data?: unknown; correlation: string
   }) => {
-    const response = await bridge.api({ path: endpoint, data, method: data === undefined ? 'GET' : 'POST', admin: true, correlation });
+    const response = await bridge.api({ path: endpoint, stableId, data, method: data === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(65_000), correlation });
     const value = shape({ response, body: await jsonResponse({ response }) });
     let cameraId: string | undefined;
-    if (value.remote && bridge.includes(value.remote)) {
-      const row = await storeCamera({ sql: runtime.sql, bridge: bridge.config.id, remote: value.remote });
+    const stable = value.remote && bridge.stableId(value.remote);
+    if (stable) {
+      const row = await storeCamera({ sql: runtime.sql, bridge: bridge.config.id, remote: stable });
       cameraId = row.id;
     }
     return { status: value.status, cameraId, bridgeCorrelationId: value.bridgeCorrelationId };
@@ -63,7 +64,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
   api.get<{ Params: { bridge: string } }>(path + '/admin/bridges/:bridge/enrollment-targets', async request => {
     await runtime.admin({ request });
     const bridge = bridgeFor(request.params.bridge);
-    const response = await bridge.api({ path: '/enrollment-targets', admin: true, correlation: request.id });
+    const response = await bridge.api({ path: '/enrollment-targets', correlation: request.id });
     const result = record(await jsonResponse({ response }));
     if (!response.ok || !Array.isArray(result.targets)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
     return { targets: result.targets.filter(value => typeof value === 'string' && segment.test(value)).slice(0, 64) };
@@ -134,7 +135,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
   api.get<{ Params: { id: string } }>(cameras, async request => {
     const { bridge, row } = await runtime.camera({ request, id: request.params.id, permission: 'device.rotate' });
     if (!bridge.has('enrollment')) throw new Failure('UNSUPPORTED', 422);
-    return progress({ bridge, endpoint: '/cameras/' + row.remote_id + '/rotation', correlation: request.id });
+    return progress({ bridge, stableId: row.remote_id, endpoint: '/cameras/' + row.routeId + '/rotation', correlation: request.id });
   });
   api.post<{ Params: { id: string } }>(cameras, async (request, reply) => {
     const { operationId, action } = input({
@@ -148,7 +149,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
       id: operationId, actor: session.account.id, resource: row.id, action: 'credential.' + action,
       input: action, correlation: request.id, execute: async () => {
         const value = await progress({
-          bridge, endpoint: '/cameras/' + row.remote_id + '/rotation' + (action === 'reconcile' ? '/reconcile' : ''),
+          bridge, stableId: row.remote_id, endpoint: '/cameras/' + row.routeId + '/rotation' + (action === 'reconcile' ? '/reconcile' : ''),
           data: { id: operationId, confirmation: true }, correlation: request.id
         });
         return { outcome: outcome(value.status), data: value, bridgeCorrelationId: value.bridgeCorrelationId };
