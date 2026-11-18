@@ -124,7 +124,14 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
       }
       if (!stream.destroyed) timer = setTimeout(() => void tick().catch(() => stream.destroy()), 600);
     };
+    const stopBridgeChanges = runtime.observeBridgeChanges(id => {
+      if (account.admin === 1 || rows.some(row => row.bridge_id === id)) {
+        send({kind:'feed'});
+        stream.end();
+      }
+    });
     stream.on('close', () => {
+      stopBridgeChanges();
       subscriptions--;
       clearTimeout(timer);
       subscriptionsForBridge.forEach(unsubscribe => unsubscribe());

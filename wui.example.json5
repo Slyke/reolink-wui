@@ -10,14 +10,14 @@
   auth: { mode: "local" },
   // localSessionMinutes: 10080, // Optional seven-day lifetime for password sign-ins
   database: { driver: "sqlite", path: "./local-only/wui.sqlite" },
-  // Settings → Event history can override the starting count per camera.
+  // Settings > Event history selects configuration defaults, memory, or manual Valkey values.
   eventHistory: { backend: "memory", retention: 100 },
   // eventHistory: { backend: "valkey", url: "${WUI_VALKEY_URL}", keyPrefix: "reolink-wui", retention: 100 },
   bridges: [
     // {
     //   id: "bridge", label: "Private bridge", cameraIds: [],
-    //   commands: "http", capture: "mqtt",
-    //   // Set event source priority in Settings > Private bridges.
+    //   commands: "http", capture: "mqtt", // Omit commands to disable camera commands.
+    //   // Add/edit connections and event priorities in Settings > Private bridges.
     //   // Supply ws: { url, token, ca } for a custom WebSocket endpoint.
     //   // For credential administration, also configure http.adminToken.
     //   http: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_HTTP_TOKEN}", ca: "${file:bridge-ca.pem}" },

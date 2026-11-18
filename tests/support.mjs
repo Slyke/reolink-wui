@@ -120,7 +120,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, apiEvents = false } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
   const previewRequests = [];
   let previewJpeg = jpeg;
   let led = false;
@@ -130,6 +130,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   const orientation = {hflip:false,vflip:false,rotation:0};
   let inventory = ['alpha','beta'];
   let inventoryReads = 0;
+  let playbackAvailable = true;
   const ai = { ai_person:{sensitivity:76,delay_seconds:2}, ai_pet:{sensitivity:60,delay_seconds:0} };
   let lose = false;
   let writes = 0;
@@ -138,15 +139,18 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   const correlations = [];
   const requests = [];
   const callbacks = [];
+  const cameraCapabilities = imageSettings ? caps : {
+    ...caps, baichuan:{...caps.baichuan,controls:{...caps.baichuan.controls,image:undefined}}
+  };
   const snapshots = () => inventory.flatMap(camera_id => [
-    { camera_id, topic: 'info', payload: { baichuan: { name: ({ alpha:'Loading dock', beta:'Second camera' })[camera_id] ?? camera_id, model: 'Fixture model', vendor: { secret: serviceToken } } } },
-    { camera_id, topic: 'capabilities', payload: caps },
+    { camera_id, topic: 'info', payload: { baichuan: { name: namePrefix + (({ alpha:'Loading dock', beta:'Second camera' })[camera_id] ?? camera_id), model: 'Fixture model', vendor: { secret: token } } } },
+    { camera_id, topic: 'capabilities', payload: cameraCapabilities },
     { camera_id, topic: 'availability', payload: { online: true, updated_at: new Date().toISOString() } },
     { camera_id, topic: 'state/settings', payload: {
       leds: { status_led: led, ir_mode: 'auto' }, motion_detection: { enabled: motion, sensitivity },
       spotlight: { brightness }, image:orientation, ...ai
     } },
-    { camera_id, topic: 'rules', payload: { baichuan: [{ id: 'rule-1', enabled:true, type:'motion', parameters:{password:serviceToken} }] } }
+    { camera_id, topic: 'rules', payload: { baichuan: [{ id: 'rule-1', enabled:true, type:'motion', parameters:{password:token} }] } }
   ]);
   const command = body => {
     const { id, command } = body;
@@ -174,7 +178,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       image_orientation: orientation,
       motion_detection: { enabled:motion, sensitivity },
       ai_detection: ai['ai_' + command.class]
-    }[command.setting] ?? { status_led:led, vendor:{ secret:serviceToken } };
+    }[command.setting] ?? { status_led:led, vendor:{ secret:token } };
     if (command.setting === 'ptz' && command.action.op === 'move') writes++;
     return {
       id, ok:true, correlation_id: uuid(), verified: command.action?.op !== 'move',
@@ -205,7 +209,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   let apiOpen = true;
   const server = createServer(async (req,res) => {
     if (req.url === '/livez') return res.end('{}');
-    if (req.headers.authorization !== 'Bearer ' + serviceToken) { res.statusCode=401; return res.end('{}'); }
+    if (req.headers.authorization !== 'Bearer ' + token) { res.statusCode=401; return res.end('{}'); }
     if (apiEvents && new URL(req.url,'http://127.0.0.1').pathname === '/api/events') {
       if (!apiOpen) {res.statusCode=503;return res.end('{}');}
       const scope = new Set(new URL(req.url,'http://127.0.0.1').searchParams.get('cameras')?.split(',').filter(Boolean));
@@ -227,8 +231,8 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       return res.end(JSON.stringify(result));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
-      previewCameras, recordingsCameras:recordings?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
+      version:1, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      previewCameras, storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
@@ -244,7 +248,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     if (req.url.endsWith('/settings/image')) return res.end(JSON.stringify({values:{image:orientation}}));
     if (recordings && req.url.endsWith('/storage')) return res.end(JSON.stringify({
       cards:[{number:0,kind:'sd',mounted:true,formatted:true,totalBytes:64000000000,usedBytes:16000000000,freeBytes:48000000000}],
-      cameraTime:'2026-11-17T12:30:00',refreshedAt:new Date().toISOString(),streams:['main','sub']
+      playbackAvailable,cameraTime:'2026-11-17T12:30:00',refreshedAt:new Date().toISOString(),streams:['main','sub']
     }));
     if (recordings && /\/recordings\?/.test(req.url)) {
       const query = new URL(req.url,'http://127.0.0.1').searchParams;
@@ -293,7 +297,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   let socketOpen = true;
   const wss = websocket ? new WebSocketServer({
     server, path:'/ws',
-    verifyClient: ({ req }) => socketOpen && req.headers.authorization === 'Bearer ' + serviceToken
+    verifyClient: ({ req }) => socketOpen && req.headers.authorization === 'Bearer ' + token
   }) : undefined;
   const subscribers = new Map();
   wss?.on('connection', socket => {
@@ -325,14 +329,15 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   return {
     config: {
       id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http', events:'mqtt',
-      http:{url:root,token:serviceToken}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
+      http:{url:root,token:token}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
     },
     correlations, requests, previewRequests,
+    setPlaybackAvailable: value => { playbackAvailable = value; },
     changePreview: () => {
       const comment = Buffer.from([0xff, 0xfe, 0, 3, 1]);
       previewJpeg = Buffer.concat([jpeg.subarray(0, 2), comment, jpeg.subarray(2)]);
     },
-    counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads }),
+    counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads, callbacks:callbacks.length }),
     lose: () => { lose = true; },
     reportInventory: async cameras => {
       inventory = cameras;
@@ -353,7 +358,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       broker.client.publish(baseTopic+'/'+camera+'/'+topic, JSON.stringify(payload), {retain:true});
     },
     event: (camera_id, type, details = {}, transport) => {
-      const event = {camera_id,type,active:true,received_at:new Date().toISOString(),source:'onvif',vendor:{password:serviceToken},...details};
+      const event = {camera_id,type,active:true,received_at:new Date().toISOString(),source:'onvif',vendor:{password:token},...details};
       publishEvent(event,transport);
       return event;
     },

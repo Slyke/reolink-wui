@@ -130,7 +130,7 @@
   };
 </script>
 
-{#if shown.length || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
+{#if shown.length || camera.capabilities.imageOrientation || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
   <section class="panel stack">
     <h2 class="panel-title">{t('settings')}</h2>
     {#if message}<p class:error={failed} role="status">{message}</p>{/if}
@@ -267,6 +267,12 @@
           {/if}
         </article>
       {/each}
+      {#if camera.capabilities.imageOrientation && camera.capabilities.imageOrientation !== 'available'}
+        <article class="panel stack">
+          <h3>{t('image')}</h3>
+          <p class="muted">{t('image-' + camera.capabilities.imageOrientation)}</p>
+        </article>
+      {/if}
       {#if camera.capabilities.alerts.read || camera.capabilities.alerts.write}
         <article class="panel stack">
           <h3>{t('alerts')}</h3>

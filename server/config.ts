@@ -3,7 +3,8 @@ import { isIP } from 'node:net';
 import JSON5 from 'json5';
 import { z } from 'zod';
 import { relativePrefix, segment } from '../shared/urls.js';
-import { defaultEventRetention, maxEventRetention, eventSources } from '../shared/events.js';
+import { defaultEventRetention, eventSources } from '../shared/events.js';
+import { eventHistorySchema } from '../shared/history.js';
 import { resolveReferences } from './references.js';
 
 const object = z.strictObject;
@@ -14,10 +15,10 @@ const peer = z.string().refine(value => isIP(value) !== 0);
 const tlsRoot = z.string().min(1).optional();
 const unique = <T>(values: T[]) => new Set(values).size === values.length;
 const loopback = (host: string) => ['localhost', '127.0.0.1', '[::1]'].includes(host);
-const endpoint = ({ secure, plain, originOnly = false }: { secure: string; plain?: string; originOnly?: boolean }) => (
+const endpoint = ({ secure, plain, originOnly = false, allowPlainRemote = false }: { secure: string; plain?: string; originOnly?: boolean; allowPlainRemote?: boolean }) => (
   z.string().max(2048).url().transform(value => new URL(value)).refine(url => (
     !url.username && !url.password && !url.hash && !url.search && !/%|\\/.test(url.pathname)
-    && (url.protocol === secure || (url.protocol === plain && loopback(url.hostname)))
+    && (url.protocol === secure || (url.protocol === plain && (allowPlainRemote || loopback(url.hostname))))
     && (!originOnly || (url.pathname === '/' || url.pathname === ''))
   ))
 );
@@ -58,27 +59,14 @@ const database = z.discriminatedUnion('driver', [
   }).refine(value => value.tls !== false || loopback(new URL(value.url).hostname))
 ]);
 
-const retention = z.number().int().min(0).max(maxEventRetention).default(defaultEventRetention);
-const eventHistory = z.discriminatedUnion('backend', [
-  object({ backend: z.literal('memory'), retention }),
-  object({
-    backend: z.literal('valkey'), retention, ca: tlsRoot,
-    keyPrefix: z.string().max(80).regex(/^[a-zA-Z0-9:_-]+$/).default('reolink-wui'),
-    url: z.string().max(2048).url().transform(value => new URL(value)).refine(url =>
-      !url.hash && !url.search && !!url.hostname && /^\/?\d*$/.test(url.pathname)
-      && (url.protocol === 'rediss:' || (url.protocol === 'redis:' && loopback(url.hostname)))
-    )
-  })
-]);
-
 const http = object({
-  url: endpoint({ secure: 'https:', plain: 'http:' }),
+  url: endpoint({ secure: 'https:', plain: 'http:', allowPlainRemote: true }),
   token: bearer,
   ca: tlsRoot,
   adminToken: bearer.optional(),
   relay: z.boolean().default(true)
 });
-const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:' }), token: bearer, ca: tlsRoot });
+const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:', allowPlainRemote: true }), token: bearer, ca: tlsRoot });
 const eventTransport = z.enum(['ws', 'mqtt']);
 export const eventSourcesSchema = z.array(z.enum(eventSources)).min(1).max(eventSources.length).refine(unique);
 const legacyEvents = z.union([
@@ -89,7 +77,7 @@ const legacyEvents = z.union([
   return value.secondary ? [value.primary, value.secondary] : [value.primary];
 }).refine(unique);
 const mqtt = object({
-  url: endpoint({ secure: 'mqtts:', plain: 'mqtt:', originOnly: true }),
+  url: endpoint({ secure: 'mqtts:', plain: 'mqtt:', originOnly: true, allowPlainRemote: true }),
   cameraIds: z.array(id).min(1).max(128).refine(unique).optional(),
   baseTopic: z.string().max(160).regex(/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/),
   username: z.string().min(1).optional(),
@@ -99,19 +87,28 @@ const mqtt = object({
 }).refine(value => Boolean(value.username) === Boolean(value.password))
   .refine(value => !value.allowPartialTrustChain || (value.url.protocol === 'mqtts:' && Boolean(value.ca)));
 
-const bridge = object({
+export const bridgeSchema = object({
   id,
   label: z.string().min(1).max(80),
   cameraIds: z.array(id).max(128).refine(unique).default([]),
-  commands: z.enum(['http', 'mqtt']),
+  commands: z.enum(['http', 'mqtt']).optional(),
   // Imported once into the database when upgrading existing installations.
   events: legacyEvents.optional(),
   capture: z.literal('mqtt').optional(),
   http: http.optional(),
   ws: ws.optional(),
-  mqtt,
-  callbacks: z.record(id, endpoint({ secure: 'https:', plain: 'http:' })).optional()
+  mqtt: mqtt.optional(),
+  callbacks: z.record(id, endpoint({ secure: 'https:', plain: 'http:', allowPlainRemote: true })).optional()
 }).superRefine((value, ctx) => {
+  if (!value.http && !value.ws && !value.mqtt) {
+    ctx.addIssue({ code: 'custom', message: 'Configure a bridge endpoint' });
+  }
+  if ((value.commands === 'mqtt' || value.capture) && !value.mqtt) {
+    ctx.addIssue({ code: 'custom', path: ['mqtt'], message: 'MQTT commands and captures require a broker' });
+  }
+  if (value.events?.includes('mqtt') && !value.mqtt) {
+    ctx.addIssue({ code: 'custom', path: ['mqtt'], message: 'MQTT events require a broker' });
+  }
   const usesWs = value.events?.includes('ws') ?? Boolean(value.ws || value.http);
   if (value.events?.includes('api') && !value.http) {
     ctx.addIssue({ code: 'custom', path: ['http'], message: 'API events require a bridge HTTP endpoint' });
@@ -122,10 +119,10 @@ const bridge = object({
   if ((value.commands === 'http' || value.callbacks) && !value.http) {
     ctx.addIssue({ code: 'custom', path: ['http'], message: 'HTTP commands and callbacks require a bridge HTTP endpoint' });
   }
-  if (!value.http && !usesWs && !(value.mqtt.cameraIds ?? value.cameraIds).length) {
+  if (!value.http && !usesWs && !(value.mqtt?.cameraIds ?? value.cameraIds).length) {
     ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Set exact MQTT camera IDs or configure a bridge endpoint for discovery' });
   }
-  if (value.cameraIds.length && value.mqtt.cameraIds?.some(id => !value.cameraIds.includes(id))) {
+  if (value.cameraIds.length && value.mqtt?.cameraIds?.some(id => !value.cameraIds.includes(id))) {
     ctx.addIssue({ code: 'custom', path: ['mqtt', 'cameraIds'], message: 'Use camera IDs in the bridge scope' });
   }
   if (value.http?.adminToken && value.http.adminToken === value.http.token) {
@@ -156,10 +153,10 @@ export const configSchema = object({
   forward: forward.optional(),
   auth,
   database,
-  eventHistory: eventHistory.default({ backend: 'memory', retention: defaultEventRetention }),
+  eventHistory: eventHistorySchema.default({ backend: 'memory', retention: defaultEventRetention }),
   sessionMinutes: z.number().int().min(5).max(1440).default(480),
   localSessionMinutes: z.number().int().min(5).max(365 * 24 * 60).optional(),
-  bridges: z.array(bridge).max(32).refine(value => unique(value.map(item => item.id))).default([])
+  bridges: z.array(bridgeSchema).max(32).refine(value => unique(value.map(item => item.id))).default([])
 }).superRefine((value, ctx) => {
   if (value.httpApi.mode === 'proxy' && (!value.httpApi.proxy.upstreamBaseUrl || !value.forward)) {
     ctx.addIssue({ code: 'custom', path: ['httpApi'], message: 'Proxy mode requires an authenticated upstream hop' });
@@ -173,7 +170,7 @@ export type Config = z.infer<typeof configSchema>;
 export type BridgeConfig = Config['bridges'][number];
 
 export const availableEventSources = ({ config }: { config: BridgeConfig }) => eventSources.filter(source =>
-  source === 'mqtt' || (source === 'ws' ? Boolean(config.ws || config.http) : Boolean(config.http))
+  source === 'mqtt' ? Boolean(config.mqtt) : source === 'ws' ? Boolean(config.ws || config.http) : Boolean(config.http)
 );
 
 export const readConfig = ({ path = process.env.WUI_CONFIG ?? './local-only/wui.json5' } = {}): Config => {

@@ -13,6 +13,8 @@ import { Failure } from './errors.js';
 import { information } from './cameras.js';
 import { result } from './bridge.js';
 import { eventSourcesSchema } from './config.js';
+import { historyStorageInput } from '../shared/history.js';
+import { bridgeConnections } from './bridge-configuration.js';
 import { record } from './bridge-channels.js';
 import { sendOutcome } from './camera-routes.js';
 
@@ -52,6 +54,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
       permissions, presets, external: runtime.config.auth.mode !== 'local', local: isLocal({ config: runtime.config }),
       bridges: [...runtime.bridges.values()].map(bridge => ({
         id: bridge.config.id, label: bridge.config.label, connected: bridge.feedReady,
+        connections: bridgeConnections(bridge.config),
         eventSources: bridge.eventSources, availableEventSources: bridge.availableEventSources,
         refreshedAt: bridgeRows.find(row => row.id === bridge.config.id)?.refreshed_at,
         enrollment: bridge.has('enrollment'), callbacks: !!bridge.config.callbacks && bridge.has('callbacks')
@@ -120,15 +123,15 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
     return sendOutcome({ reply, value: result });
   });
 
-  api.put(root + '/event-history', async (request, reply) => {
+  api.put(root + '/event-history', { bodyLimit: 131072 }, async (request, reply) => {
     const admin = await runtime.admin({ request, mutate: true });
-    const { operationId: id, limit } = input({
-      schema: object({ operationId, limit: z.number().int().min(0).max(maxEventRetention) }), value: request.body
+    const { operationId: id, limit, storage } = input({
+      schema: object({ operationId, limit: z.number().int().min(0).max(maxEventRetention), storage: historyStorageInput.optional() }), value: request.body
     });
     const value = await runtime.ops.run({
-      id, actor: admin.account.id, action: 'event-history.resize', resource: 'event-history',
-      input: limit, correlation: request.id, execute: async () => {
-        await runtime.history.setLimit({ limit });
+      id, actor: admin.account.id, action: storage ? 'event-history.configure' : 'event-history.resize', resource: 'event-history',
+      input: storage ? { limit, storage } : limit, correlation: request.id, execute: async () => {
+        await runtime.history.setOptions({ limit, storage });
         return { outcome: 'confirmed', data: await runtime.history.settings() };
       }
     });

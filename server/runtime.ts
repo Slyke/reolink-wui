@@ -1,8 +1,10 @@
+import { EventEmitter } from 'node:events';
 import type { FastifyRequest } from 'fastify';
 import type { z } from 'zod';
 import { z as schema } from 'zod';
 import { Bridge } from './bridge.js';
-import { availableEventSources, eventSourcesSchema, type Config } from './config.js';
+import { mergeBridgeCredentials } from './bridge-configuration.js';
+import { availableEventSources, bridgeSchema, eventSourcesSchema, type BridgeConfig, type Config } from './config.js';
 import type { EventSource } from '../shared/events.js';
 import { camerasFor, storeCamera, type Account, type CameraRef, type Sql } from './db.js';
 import { Auth } from './auth.js';
@@ -29,13 +31,14 @@ export class Runtime {
   readonly auth: Auth;
   readonly ops: Operations;
   readonly history: EventHistory;
-  private readonly eventObservers: (() => void)[] = [];
+  private readonly eventObservers = new Map<string, () => void>();
+  private readonly bridgeChanges = new EventEmitter().setMaxListeners(0);
   private checking?: Promise<boolean>;
   private monitor?: ReturnType<typeof setInterval>;
   private inventoryInterval = defaultInventoryIntervalSeconds;
   private inventoryTask?: Promise<void>;
   private inventoryUpdates = Promise.resolve();
-  private eventSourceUpdates = Promise.resolve();
+  private bridgeUpdates = Promise.resolve();
   private closing = false;
 
   constructor(readonly config: Config, readonly sql: Sql) {
@@ -47,24 +50,110 @@ export class Runtime {
 
   async start() {
     await this.history.start();
-    for (const config of this.config.bridges) {
-      const initial = JSON.stringify(config.events ?? availableEventSources({ config }));
-      await this.sql.query('INSERT INTO bridges(id,event_sources) VALUES ($1,$2) ON CONFLICT DO NOTHING', config.id, initial);
-      await this.sql.query('UPDATE bridges SET event_sources=$1 WHERE id=$2 AND event_sources IS NULL', initial, config.id);
-      const [row] = await this.sql.query<{ event_sources: string }>('SELECT event_sources FROM bridges WHERE id=$1', config.id);
-      const bridge = new Bridge(config, eventSourcesSchema.parse(JSON.parse(row.event_sources)));
+    const configurations = new Map(this.config.bridges.map(config => [config.id,config]));
+    const overrides = await this.sql.query<{ id: string; connection_config: string }>(
+      'SELECT id,connection_config FROM bridges WHERE connection_config IS NOT NULL'
+    );
+    for (const row of overrides) configurations.set(row.id, bridgeSchema.parse(JSON.parse(row.connection_config)));
+    if (configurations.size > 32) throw new Failure('BAD_INPUT',400);
+    for (const config of configurations.values()) {
+      const sources = await this.sql.transaction(async query => {
+        const initial = JSON.stringify(config.events ?? availableEventSources({config}));
+        await query('INSERT INTO bridges(id,event_sources) VALUES ($1,$2) ON CONFLICT DO NOTHING',config.id,initial);
+        await query('UPDATE bridges SET event_sources=$1 WHERE id=$2 AND event_sources IS NULL',initial,config.id);
+        const [row] = await query<{event_sources:string}>('SELECT event_sources FROM bridges WHERE id=$1',config.id);
+        const available = availableEventSources({config});
+        const preferred = eventSourcesSchema.parse(JSON.parse(row.event_sources)).filter(source => available.includes(source));
+        const selected = preferred.length ? preferred : available;
+        if (JSON.stringify(selected) !== row.event_sources) {
+          await query('UPDATE bridges SET event_sources=$1 WHERE id=$2',JSON.stringify(selected),config.id);
+        }
+        return selected;
+      });
+      const bridge = new Bridge(config,sources);
       const id = config.id;
       this.bridges.set(id, bridge);
-      this.eventObservers.push(bridge.observe(update => {
-        if (update.kind === 'event' && bridge.ids().includes(update.camera)) {
-          this.history.add({ camera: id + '/' + update.camera, entry: update.entry });
-        }
-      }));
+      this.followBridge(bridge);
     }
     await this.sync();
     const { inventoryIntervalSeconds } = await this.settings();
     this.scheduleInventory({ seconds: inventoryIntervalSeconds });
     this.pollInventory();
+  }
+
+  private followBridge(bridge: Bridge) {
+    const id = bridge.config.id;
+    this.eventObservers.get(id)?.();
+    this.eventObservers.set(id, bridge.observe(update => {
+      if (update.kind === 'event' && bridge.ids().includes(update.camera)) {
+        this.history.add({ camera: id + '/' + update.camera, entry: update.entry });
+      }
+    }));
+  }
+
+  observeBridgeChanges(listener: (id: string) => void) {
+    this.bridgeChanges.on('change',listener);
+    return () => this.bridgeChanges.off('change',listener);
+  }
+
+  private updateBridges<T>(work: () => Promise<T>) {
+    const pending = this.bridgeUpdates.then(work);
+    this.bridgeUpdates = pending.then(() => {}, () => {});
+    return pending;
+  }
+
+  private async installBridge(config: BridgeConfig, sources: EventSource[]) {
+    const previous = this.bridges.get(config.id);
+    const bridge = new Bridge(config,sources);
+    this.bridges.set(config.id,bridge);
+    this.followBridge(bridge);
+    await bridge.check().catch(() => false);
+    await bridge.scanInventory().catch(() => false);
+    await this.sync();
+    this.bridgeChanges.emit('change',config.id);
+    await previous?.close();
+    return bridge;
+  }
+
+  configureBridge({value,id}: {value: Record<string,unknown>; id: string}) {
+    return this.updateBridges(async () => {
+      if (!this.bridges.has(id) && this.bridges.size >= 32) throw new Failure('BAD_INPUT',400);
+      const {config,sources} = await this.sql.transaction(async query => {
+        const [row] = await query<{event_sources:string;connection_config:string|null}>(
+          'SELECT event_sources,connection_config FROM bridges WHERE id=$1',id
+        );
+        const previous = row?.connection_config ? bridgeSchema.parse(JSON.parse(row.connection_config))
+          : this.bridges.get(id)?.config;
+        const config = input({schema:bridgeSchema,value:mergeBridgeCredentials({value,previous,id})});
+        const available = availableEventSources({config});
+        const preferred = row?.event_sources ? eventSourcesSchema.parse(JSON.parse(row.event_sources)) : config.events ?? available;
+        const selected = preferred.filter(source => available.includes(source));
+        const sources = selected.length ? selected : available;
+        await query(
+          'INSERT INTO bridges(id,event_sources,connection_config) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET event_sources=excluded.event_sources,connection_config=excluded.connection_config',
+          id,JSON.stringify(sources),JSON.stringify(config)
+        );
+        return {config,sources};
+      });
+      await this.installBridge(config,sources);
+    });
+  }
+
+  private syncConnections() {
+    return this.updateBridges(async () => {
+      const rows = await this.sql.query<{ id: string; event_sources: string; connection_config: string | null }>(
+        'SELECT id,event_sources,connection_config FROM bridges'
+      );
+      for (const row of rows) {
+        const config = row.connection_config ? bridgeSchema.parse(JSON.parse(row.connection_config))
+          : this.config.bridges.find(config => config.id === row.id);
+        if (!config) continue;
+        const sources = eventSourcesSchema.parse(JSON.parse(row.event_sources));
+        const current = this.bridges.get(row.id);
+        if (!current || JSON.stringify(current.config) !== JSON.stringify(config)) await this.installBridge(config,sources);
+        else current.setEventSources(sources);
+      }
+    });
   }
 
   async sync() {
@@ -98,12 +187,12 @@ export class Runtime {
 
   setEventSources({ bridge, sources }: { bridge: Bridge; sources: EventSource[] }) {
     if (sources.some(source => !bridge.availableEventSources.includes(source))) throw new Failure('BAD_INPUT', 400);
-    const change = this.eventSourceUpdates.then(async () => {
+    return this.updateBridges(async () => {
+      const current = this.bridges.get(bridge.config.id);
+      if (!current || sources.some(source => !current.availableEventSources.includes(source))) throw new Failure('BAD_INPUT',400);
       await this.sql.query('UPDATE bridges SET event_sources=$1 WHERE id=$2', JSON.stringify(sources), bridge.config.id);
-      bridge.setEventSources(sources);
+      current.setEventSources(sources);
     });
-    this.eventSourceUpdates = change.catch(() => {});
-    return change;
   }
 
   private scheduleInventory({ seconds }: { seconds: number }) {
@@ -143,33 +232,25 @@ export class Runtime {
 
   ready() {
     const updates = this.inventoryUpdates;
-    const eventUpdates = this.eventSourceUpdates;
-    this.checking ??= Promise.all([
-      this.sql.query<{ id: string; event_sources: string }>('SELECT id,event_sources FROM bridges')
-        .then(rows => {
-          if (this.eventSourceUpdates === eventUpdates) {
-            for (const row of rows) {
-              this.bridges.get(row.id)?.setEventSources(eventSourcesSchema.parse(JSON.parse(row.event_sources)));
-            }
-          }
-          return true;
-        }, () => false),
+    this.checking ??= this.syncConnections().then(() => Promise.all([
       this.sql.query<{ inventory_interval_seconds: number }>('SELECT inventory_interval_seconds FROM instance_settings WHERE id=1')
         .then(([row]) => {
           if (row && this.inventoryUpdates === updates) this.scheduleInventory({ seconds: row.inventory_interval_seconds });
           return !!row;
         }, () => false),
+      this.history.settings().then(() => true, () => false),
       this.auth.ready(), ...[...this.bridges.values()].map(bridge => bridge.check().catch(() => false))
-    ]).then(items => items.every(Boolean)).finally(() => { this.checking = undefined; });
+    ])).then(items => items.every(Boolean)).finally(() => { this.checking = undefined; });
     return this.checking;
   }
 
   async close() {
     this.closing = true;
     clearInterval(this.monitor);
-    await Promise.all([this.inventoryTask, this.inventoryUpdates, this.eventSourceUpdates]);
+    await Promise.all([this.inventoryTask, this.inventoryUpdates, this.bridgeUpdates]);
     this.eventObservers.forEach(stop => stop());
-    this.history.close();
+    this.bridgeChanges.removeAllListeners();
+    await this.history.close();
     return Promise.all([...this.bridges.values()].map(bridge => bridge.close()).concat([this.sql.close(), Promise.resolve(this.auth.close()).then(() => undefined)]));
   }
 

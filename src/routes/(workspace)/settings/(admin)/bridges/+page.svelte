@@ -1,6 +1,7 @@
 <script lang="ts">
   import { t } from '$lib/api.js';
   import EventSourceSettings from '$lib/EventSourceSettings.svelte';
+  import BridgeConnections from '$lib/BridgeConnections.svelte';
   import { minInventoryIntervalSeconds, maxInventoryIntervalSeconds } from '../../../../../../shared/upstreams.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import { useAdministration } from '$lib/workspace.js';
@@ -17,6 +18,8 @@
 </script>
 
 <svelte:head><title>{t('bridges')} · {t('title')}</title></svelte:head>
+
+<BridgeConnections />
 
 <section class="panel stack" aria-labelledby="bridges-title">
   <div class="panel-title row between">

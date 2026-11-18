@@ -93,7 +93,12 @@
 <section class="panel event-feed" aria-labelledby={id + '-title'}>
   <div class="row between panel-title">
     <h2 id={id + '-title'}>{t('event-feed')}</h2>
-    <button type="button" aria-haspopup="dialog" onclick={() => show()}>{t('event-expand')}</button>
+    <button class="icon-button" type="button" title={t('event-expand')} aria-label={t('event-expand')}
+      aria-haspopup="dialog" onclick={() => show()}>
+      <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
+      </svg>
+    </button>
   </div>
   {@render filters()}
   {#if historyError}<p class="notice" role="status">{t('history-unavailable')}</p>{/if}

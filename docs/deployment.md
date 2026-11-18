@@ -18,6 +18,10 @@ For trusted header modes configure `auth.ingress = { issuer, peers, secret, iden
 
 ## Bridges
 
+Use **Settings → Private bridges → Bridge connections** to add bridges and edit each bridge's HTTP API, custom WebSocket endpoint, MQTT broker, command transport, and callback destinations. Connection overrides are stored in `bridges.connection_config` in the configured SQL database. Saved tokens and passwords are retained when their fields are left blank and are masked in UI/API responses. Manual connection credentials are stored with these database overrides.
+
+The startup `bridges` array also accepts multiple connections. WUI overrides take precedence for the matching bridge ID. A bridge can use HTTP, WebSocket, MQTT, or a combination. Omit `commands` to disable camera commands. WebSocket defaults to `/ws` on the HTTP endpoint, while an explicit `ws` record supplies independent connection details. Add a separate bridge ID for each upstream service. Camera grants remain scoped to that bridge and its camera IDs.
+
 Configure one record per bridge. Set `http` for the bridge API and `mqtt` for its broker connection. Choose `commands: "http"` or `commands: "mqtt"` and set `capture: "mqtt"` for on-demand image capture. The broker identity needs read access to each camera's event and state topics and command results. For MQTT commands or captures it also needs write access to each camera's command requests. [Bridge HTTP API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md)
 
 WUI queries `GET /api/inventory` and subscribes to the exact topics for active cameras. With neither camera list configured, new cameras are picked up once the bridge activates them and the broker ACL permits access. Use `cameraIds` to restrict the visible cameras. `mqtt.cameraIds` limits MQTT subscriptions and also supplies the visible scope if `cameraIds` is omitted. For an older bridge without the HTTP inventory endpoint, enter the exact camera IDs.
@@ -72,9 +76,13 @@ Each WUI API process shares one upstream video connection per camera and stream 
 
 ## Event history
 
+**Settings → Event history** selects **Use configuration defaults**, **In memory**, or **Valkey**. Defaults use the `eventHistory` block in the startup JSON5 configuration. In-memory mode overrides a configured Valkey backend. Manual Valkey mode accepts a `redis://` or `rediss://` URL, key prefix, optional password, and optional TLS CA certificate. The screen reports connection status and remains usable when Valkey is offline. Saved passwords are masked and are retained for the same address when left blank.
+
+Backend selection, manual Valkey values, and the event count are persisted in `event_history_settings` in the WUI SQL database and apply immediately. Manual Valkey values remain available while another storage mode is selected. Each backend supplies its own history. Memory history is process-local, and returning to Valkey reads its retained history.
+
 Set the count per camera in **Settings → Event history**. The starting count is 100 and the settings range is 0–1000. Set 0 to clear stored history while keeping the live feed. The default memory backend keeps events until the API restarts and persists the retention setting in the WUI database.
 
-Set `eventHistory: { backend: "valkey", url: "${WUI_VALKEY_URL}", keyPrefix: "reolink-wui", retention: 100 }` in WUI config to store events and the retention setting across WUI restarts. Use a dedicated Valkey key prefix per deployment. Enable Valkey persistence to survive a Valkey restart. Remote servers use a `rediss://` URL and can set `eventHistory.ca` for a private CA. A loopback instance can use `redis://`. The WUI records events as they arrive from the connected bridge.
+Set `eventHistory: { backend: "valkey", url: "${WUI_VALKEY_URL}", keyPrefix: "reolink-wui", retention: 100 }` in WUI config to store events and the retention setting across WUI restarts. Use a dedicated Valkey key prefix per deployment. Enable Valkey persistence to survive a Valkey restart. Use `redis://` for a plain connection or `rediss://` for TLS. Set `eventHistory.ca` for a private CA. The WUI records events as they arrive from the connected bridge.
 
 ## Database and probes
 
@@ -86,7 +94,7 @@ For SQLite use a single API process with its database and WAL on a protected per
 
 The configured SQLite file or PostgreSQL database stores accounts, grants, sessions, camera playback options, inventory timing, installation appearance defaults, and per-bridge event source arrays. The priority array is JSON in `bridges.event_sources`. Preserve the SQLite file and its WAL directory on writable persistent storage, or back up the configured PostgreSQL database.
 
-The startup JSON5 file supplies database connections, bridge endpoints, authentication settings, secret references, and the event-history backend. Its path defaults to `./local-only/wui.json5` and can be selected with `WUI_CONFIG`. Personal appearance choices are saved in browser local storage under `reolink-wui:appearance:<account-id>`. Event history uses memory by default, or the configured Valkey backend.
+The startup JSON5 file supplies database connections, default bridge endpoints, authentication settings, secret references, and event-history defaults. Its path defaults to `./local-only/wui.json5` and can be selected with `WUI_CONFIG`. Personal appearance choices are saved in browser local storage under `reolink-wui:appearance:<account-id>`. Event history uses memory by default, or the configured Valkey backend.
 
 ## Container
 
@@ -105,6 +113,10 @@ Supply real commit values in CI and tag the image with both version and short ha
 
 Open **Recordings** to select a camera, search a date in the camera's local time, view total/used/free storage, and play SD-card footage with the video player's seek controls. The bridge must expose the storage and recordings API. The WUI account requires `recordings.view`. Instance administrators have this permission, and the Camera admin preset includes it when newly assigned. Other accounts can receive it under Camera grants.
 
+The bridge checks `api.recordings.temporaryDirectory` before advertising playback. Its default is `/tmp`, and `null` disables recorded-video playback. A missing or unwritable directory disables the Play buttons while card usage and file searches remain available. After fixing the directory, refresh the Recordings page.
+
 The bridge downloads and prepares a private temporary MP4 on first playback. Subsequent range reads use that cached clip. Camera credentials and native recording file names remain in the bridge. Search again if the private recording reference has expired. [Bridge recordings API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#sd-card-recordings)
 
 **Settings → Camera settings → Image orientation** shows supported camera-side horizontal/vertical flip and clockwise/counterclockwise rotation controls. They require `settings.image.write` and use fresh camera reads followed by verified readback. Camera-admin grants include the image-setting permissions. Quarter-turn rotation requires an advertised camera range.
+
+The Image orientation card explains when the connected bridge needs an update or the camera has not reported orientation controls. Camera-side settings are read before each supported change and verified by readback.

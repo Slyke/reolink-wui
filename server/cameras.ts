@@ -148,7 +148,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
       || (key === 'motion' && (grant.has('alerts.read') || grant.has('alerts.write')))) {
       settings[key] = {
         ...fields, read: grant.has('settings.' + key + '.read' as Permission),
-        write: grant.has('settings.' + key + '.write' as Permission)
+        write: bridge.canCommand() && grant.has('settings.' + key + '.write' as Permission)
       };
     }
   };
@@ -164,23 +164,28 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     const ai = record(ctrls['ai_' + name]);
     return [name, { sensitivity: bool(ai.sensitivity), delaySeconds: bool(ai.delay_seconds) }];
   })) });
+  const imageGrant = grant.has('settings.image.read') || grant.has('settings.image.write');
+  const imageOrientation = imageGrant ? (Object.keys(orientation).length ? 'available'
+    : bridge.hasImageSettings() ? 'unsupported' : 'bridge-update-required') : undefined;
   const media = grant.has('media.live') ? (proxy ? ['main'] : bridge.streams(remote)) : [];
   const bridgePreview = grant.has('media.live') && bridge.hasPreview(remote);
   return {
     discovered: !!caps,
+    imageOrientation,
     events: grant.has('events'),
-    recordings: grant.has('recordings.view') && bridge.hasRecordings(remote),
+    recordings: grant.has('recordings.view') && bridge.hasStorage(remote),
+    recordingPlayback: grant.has('recordings.view') && bridge.hasRecordings(remote),
     capture: grant.has('capture') && bridge.canCapture(remote),
     mediaAllowed: grant.has('media.live'),
     preview: bridgePreview,
     bridgePreview,
     viaProxy: proxy && grant.has('media.live'),
     media,
-    alerts: { read: grant.has('alerts.read'), write: grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
+    alerts: { read: grant.has('alerts.read'), write: bridge.canCommand() && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
     rotate: grant.has('device.rotate') && bridge.has('enrollment'),
     freshSettings: bridge.has('v1'),
     ptz: grant.has('ptz.read') || grant.has('ptz.write') ? {
-      discovery, supported: bool(raw.supported), read: grant.has('ptz.read'), write: grant.has('ptz.write'),
+      discovery, supported: bool(raw.supported), read: grant.has('ptz.read'), write: bridge.canCommand() && grant.has('ptz.write'),
       pan: bool(raw.pan), tilt: bool(raw.tilt), diagonal: bool(raw.diagonal), directionalZoom: bool(raw.directional_zoom),
       presets: bool(raw.presets), speed: range(raw.speed_range), zoom: range(raw.zoom_range), duration: range(raw.duration_ms)
     } : undefined,

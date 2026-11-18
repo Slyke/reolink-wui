@@ -10,7 +10,7 @@
 
 <svelte:head><title>{t('callbacks')} · {t('title')}</title></svelte:head>
 
-{#if data.bridges.some(bridge => bridge.callbacks)}
+{#if data.bridges.length}
   <Callbacks csrf={workspace.current().csrf} bridges={data.bridges} cameras={data.cameras} />
 {:else}
   <section class="panel stack">

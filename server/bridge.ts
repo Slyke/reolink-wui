@@ -51,7 +51,7 @@ export class Bridge {
   private readonly recent = new Map<string, { source: EventSource; expires: number }>();
   private reportedIds?: Set<string>;
   private readonly allowed = new Set<string>();
-  private readonly broker: BrokerChannel;
+  private readonly broker?: BrokerChannel;
   private socket?: SocketChannel;
   private apiChannel?: ApiChannel;
   private priority: EventSource[] = [];
@@ -61,6 +61,8 @@ export class Bridge {
   private readonly mediaStreams = new Map<string, string[]>();
   private previewCameras = new Set<string>();
   private recordingCameras = new Set<string>();
+  private imageSettings = false;
+  private storageCameras = new Set<string>();
   private httpState?: boolean;
   private interruption?: BridgeInterruption;
   private get activeFeed() {
@@ -74,21 +76,21 @@ export class Bridge {
   get eventSources() { return [...this.priority]; }
 
   constructor(readonly config: BridgeConfig, sources: EventSource[]) {
-    const scope = config.cameraIds.length ? config.cameraIds : config.mqtt.cameraIds ?? [];
+    const scope = config.cameraIds.length ? config.cameraIds : config.mqtt?.cameraIds ?? [];
     scope.forEach(id => this.allowed.add(id));
 
     if (config.http) this.http = { ...config.http, agent: dispatcher({ ca: config.http.ca }) };
     const secureSocket = config.ws ? config.ws.url.protocol === 'wss:' : config.http?.url.protocol === 'https:';
     const transports: Record<EventSource, Transport> = {
       ws: secureSocket ? 'WSS' : 'WS',
-      mqtt: config.mqtt.url.protocol === 'mqtts:' ? 'MQTT TLS' : 'MQTT',
+      mqtt: config.mqtt?.url.protocol === 'mqtts:' ? 'MQTT TLS' : 'MQTT',
       api: config.http?.url.protocol === 'https:' ? 'HTTPS' : 'HTTP'
     };
     for (const source of this.availableEventSources) {
       this.feeds.set(source, { transport: transports[source], cache: new Map() });
     }
-    this.broker = new BrokerChannel(
-      config.mqtt, config.mqtt.cameraIds ?? scope, config.commands === 'mqtt' || !!config.capture,
+    if (config.mqtt) this.broker = new BrokerChannel(
+      config.mqtt, config.mqtt?.cameraIds ?? scope, config.commands === 'mqtt' || !!config.capture,
       this.channelChanges({ source: 'mqtt', feed: this.feeds.get('mqtt')! }), sources.includes('mqtt')
     );
     this.setEventSources(sources);
@@ -119,7 +121,7 @@ export class Bridge {
       this.apiChannel = undefined;
       this.feeds.get('api')!.ready = false;
     }
-    this.broker.setEvents(sources.includes('mqtt'));
+    this.broker?.setEvents(sources.includes('mqtt'));
     if (this.activeFeed) this.lastFeed = this.activeFeed;
     if (previous !== this.activeFeed) this.channel.emit('update', { kind: 'feed' });
   }
@@ -129,7 +131,7 @@ export class Bridge {
     const updateBrokerTargets = () => {
       // Legacy bridges can disclose the exact camera IDs in their WebSocket snapshots.
       if ((source === 'ws' || source === 'api') && !this.reportedIds && !this.allowed.size && !this.bridgeVersion.inventory) {
-        this.broker.setCameraIds([...feed.cache.keys()]);
+        this.broker?.setCameraIds([...feed.cache.keys()]);
       }
     };
     return {
@@ -229,7 +231,7 @@ export class Bridge {
   }) {
     if (!this.includes(camera)) throw new Failure('CAMERA_UNKNOWN', 404);
     const route = capture ? this.config.capture : this.config.commands;
-    if (route === 'mqtt') return this.broker.request({ camera, id, command, snapshot: capture });
+    if (route === 'mqtt' && this.broker) return this.broker.request({ camera, id, command, snapshot: capture });
     if (route !== 'http' || !this.http) throw new Failure('UNSUPPORTED', 422);
     try {
       const response = await request({
@@ -286,14 +288,20 @@ export class Bridge {
     return this.bridgeVersion[feature];
   }
 
+  canCommand() { return Boolean(this.config.commands); }
+
   canCapture(camera: string) {
-    return this.config.capture === 'mqtt' && this.broker.includes(camera)
+    return this.config.capture === 'mqtt' && Boolean(this.broker?.includes(camera))
       && Boolean(this.state(camera).get('capabilities')?.baichuan);
   }
 
   streams(camera: string) {
     return this.has('media') ? this.mediaStreams.get(camera) ?? [] : [];
   }
+
+  hasImageSettings() { return this.imageSettings; }
+
+  hasStorage(camera: string) { return this.has("v1") && this.storageCameras.has(camera); }
 
   hasRecordings(camera: string) {
     return this.has('v1') && this.recordingCameras.has(camera);
@@ -358,9 +366,9 @@ export class Bridge {
     if (config.commands === 'mqtt') uses.push('commands');
     if (config.capture) uses.push('capture');
     if (!uses.length) uses.push('connectivity');
-    connections.push({
+    if (config.mqtt && this.broker) connections.push({
       id: 'mqtt', transport: config.mqtt.url.protocol === 'mqtts:' ? 'MQTT TLS' : 'MQTT',
-      uses, state: state({ connected: this.broker.ready }), feed: eventRole({ source: 'mqtt' })
+      uses, state: state({ connected: this.broker?.ready }), feed: eventRole({ source: 'mqtt' })
     });
     return { id: config.id, label: config.label, connections };
   }
@@ -375,7 +383,7 @@ export class Bridge {
       )).slice(0, 128);
       const ids = new Set(cameras.map(camera => camera.id));
       const active = new Set(cameras.filter(camera => camera.active !== false).map(camera => camera.id));
-      const mqttIds = this.config.mqtt.cameraIds?.filter(id => active.has(id)) ?? [...active];
+      const mqttIds = this.config.mqtt?.cameraIds?.filter(id => active.has(id)) ?? [...active];
       for (const { cache } of this.feeds.values()) {
         for (const id of cache.keys()) {
           if (!active.has(id)) cache.delete(id);
@@ -383,7 +391,7 @@ export class Bridge {
       }
       const previous = this.reportedIds;
       this.reportedIds = ids;
-      const topicsChanged = this.broker.setCameraIds(mqttIds);
+      const topicsChanged = this.broker?.setCameraIds(mqttIds);
       if (topicsChanged || !previous || ids.size !== previous.size || [...ids].some(id => !previous.has(id))) {
         this.channel.emit('update', { kind: 'feed' });
       }
@@ -402,8 +410,9 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.storageCameras]]);
     const ok = contract.version === 1;
+    this.imageSettings = ok && Array.isArray(contract.settings) && contract.settings.includes('image');
     this.bridgeVersion.v1 = ok;
     this.bridgeVersion.inventory = ok && contract.inventory === true;
     this.bridgeVersion.media = ok && this.config.http?.relay === true && contract.media === true;
@@ -419,9 +428,12 @@ export class Bridge {
     }
     this.recordingCameras = new Set(ok && Array.isArray(contract.recordingsCameras)
       ? contract.recordingsCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
+    const storage = Array.isArray(contract.storageCameras) ? contract.storageCameras : contract.recordingsCameras;
+    this.storageCameras = new Set(ok && Array.isArray(storage)
+      ? storage.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.storageCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 
@@ -445,12 +457,12 @@ export class Bridge {
   async check() {
     if (this.http) this.httpState = await this.checkHttp(this.http);
     const knownInventory = this.reportedIds !== undefined || this.allowed.size > 0 || !!this.cache?.size || this.socket?.ready;
-    return this.httpState !== false && !!knownInventory && this.feedReady && (this.config.commands !== 'mqtt' || this.broker.ready);
+    return this.httpState !== false && !!knownInventory && this.feedReady && (this.config.commands !== 'mqtt' || this.broker?.ready === true);
   }
 
   async close() {
     this.socket?.close();
-    await Promise.all([this.apiChannel?.close(), this.broker.close(), this.http?.agent.destroy()]);
+    await Promise.all([this.apiChannel?.close(), this.broker?.close(), this.http?.agent.destroy()]);
   }
 }
 

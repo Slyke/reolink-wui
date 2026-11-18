@@ -13,6 +13,7 @@ export const storageResponse = z.object({
     number: z.number().int().min(0), kind: z.enum(['sd', 'hdd']), mounted: z.boolean(), formatted: z.boolean(),
     totalBytes: size, usedBytes: size, freeBytes: size
   })).max(64),
+  playbackAvailable: z.boolean().optional(),
   cameraTime: wallTime.nullable(), refreshedAt: z.string().datetime(),
   streams: z.array(recordingStream).min(1).max(2)
 });

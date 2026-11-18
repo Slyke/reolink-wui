@@ -10,6 +10,7 @@
   let selected = $state('');
   const camera = $derived(cameras.find(item => item.id === selected));
   let storage = $state<StorageInfo>();
+  const playbackAvailable = $derived(Boolean(storage?.playbackAvailable ?? camera?.capabilities.recordingPlayback));
   let listing = $state<RecordingList>();
   let recording = $state<RecordingList['recordings'][number]>();
   let date = $state('');
@@ -160,6 +161,7 @@
       <button disabled={loading || reading || !date}>{t('recordings-search')}</button>
     </form>
     <p class="muted">{t('recordings-camera-time')}</p>
+    {#if !playbackAvailable}<p class="notice">{t('recording-workspace-unavailable')}</p>{/if}
     {#if loading}
       <p role="status">{t('recordings-searching')}</p>
     {:else if listing?.recordings.length}
@@ -172,7 +174,7 @@
               <tr>
                 <td>{item.start.replace('T', ' ')}</td><td>{item.end.replace('T', ' ')}</td>
                 <td>{item.kind ?? t('empty-value')}</td><td>{size(item.sizeBytes)}</td>
-                <td><button onclick={() => { recording = item; playbackError = false; }}>{t('recording-play')}</button></td>
+                <td><button disabled={!playbackAvailable} onclick={() => { recording = item; playbackError = false; }}>{t('recording-play')}</button></td>
               </tr>
             {/each}
           </tbody>
@@ -183,7 +185,7 @@
     {/if}
     {#if listing?.truncated}<p class="notice">{t('recordings-truncated')}</p>{/if}
   </section>
-  {#if recording}
+  {#if recording && playbackAvailable}
     <section class="panel stack" aria-labelledby="recording-playback">
       <div class="row between panel-title">
         <h2 id="recording-playback">{t('recording-playback')}</h2>

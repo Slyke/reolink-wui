@@ -28,7 +28,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
   const root = path + '/cameras/:id';
   const camera = async (request: Parameters<Runtime['camera']>[0]['request'], id: string) => {
     const result = await runtime.camera({ request, id, permission: 'recordings.view' });
-    if (!result.bridge.hasRecordings(result.row.remote_id)) throw new Failure('UNSUPPORTED', 422);
+    if (!result.bridge.hasStorage(result.row.remote_id)) throw new Failure('UNSUPPORTED', 422);
     return result;
   };
   api.get<{ Params: { id: string } }>(root + '/storage', async request => {
@@ -48,6 +48,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
   api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/video', async (request, reply) => {
     const id = input({ schema: recordingId, value: request.params.recording });
     const { bridge, row, session } = await camera(request, request.params.id);
+    if (!bridge.hasRecordings(row.remote_id)) throw new Failure('UNSUPPORTED', 422);
     const range = request.headers.range;
     if (range && !/^bytes=(\d+-\d*|-\d+)$/.test(range)) throw new Failure('BAD_INPUT', 400);
     const controller = new AbortController();
@@ -60,7 +61,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     };
     const validate = async () => {
       const active = await camera(request, row.id);
-      if (active.session.token !== session.token) return stop();
+      if (active.session.token !== session.token || !active.bridge.hasRecordings(active.row.remote_id)) return stop();
       if (!controller.signal.aborted) checking = setTimeout(() => void validate().catch(stop), 700);
     };
     checking = setTimeout(() => void validate().catch(stop), 700);

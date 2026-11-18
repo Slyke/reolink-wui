@@ -274,7 +274,7 @@ export class BrokerChannel {
   ready = false;
 
   constructor(
-    private readonly config: BridgeConfig['mqtt'], ids: string[],
+    private readonly config: NonNullable<BridgeConfig['mqtt']>, ids: string[],
     private readonly controls: boolean, private readonly changes?: ChannelChanges, private events = true
   ) {
     this.targets = new Set(ids);

@@ -30,8 +30,10 @@ const expectHover = async (page, button) => {
 
 for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
+    test.setTimeout(45000);
     page.setDefaultTimeout(6000);
     const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true,apiEvents:true });
+    const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false});
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
     const apiPort = await reserve();
@@ -189,7 +191,10 @@ for (const mode of ['browser','proxy']) {
       await expect(detail).toBeVisible();
       await page.mouse.click(2,2);
       await expect(detail).toBeHidden();
-      await feed.getByRole('button',{name:'Expand',exact:true}).click();
+      const expandEvents=feed.getByRole('button',{name:'Expand',exact:true});
+      await expect(expandEvents.locator('svg')).toHaveCount(1);
+      await expect(expandEvents).toHaveText('');
+      await expandEvents.click();
       const expanded = page.getByRole('dialog',{name:'Event feed'});
       await expect(expanded).toBeVisible();
       await expanded.getByRole('button',{name:/^Motion detection /}).click();
@@ -378,6 +383,26 @@ for (const mode of ['browser','proxy']) {
       await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
       await page.reload();
       await expect(limit).toHaveValue('7');
+      if(process.env.WUI_TEST_VALKEY) {
+        const endpoint=new URL(process.env.WUI_TEST_VALKEY), password=decodeURIComponent(endpoint.password);
+        endpoint.password='';
+        const storagePicker=page.getByRole('button',{name:/^Event storage /});
+        await storagePicker.click();
+        await page.getByRole('option',{name:'Valkey',exact:true}).click();
+        await page.getByLabel('Valkey URL',{exact:true}).fill(endpoint.href);
+        await page.getByLabel('Key prefix',{exact:true}).fill('browser-'+mode+'-'+uuid());
+        await page.getByLabel('Password',{exact:true}).fill(password);
+        await page.getByRole('button',{name:'Save changes',exact:true}).click();
+        await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
+        await page.reload();
+        await expect(page.getByLabel('Valkey URL',{exact:true})).toHaveValue(endpoint.href);
+        await expect(page.getByLabel('Password',{exact:true})).toHaveValue('');
+        await expect(page.getByLabel('Password',{exact:true})).toHaveAttribute('placeholder','Saved. Leave blank to keep.');
+        await storagePicker.click();
+        await page.getByRole('option',{name:'In memory',exact:true}).click();
+        await page.getByRole('button',{name:'Save changes',exact:true}).click();
+        await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
+      }
 
       await page.getByRole('link',{name:'Private bridges',exact:true}).click();
       const inventoryInterval = page.getByRole('spinbutton',{name:'Inventory scan interval (seconds)'});
@@ -391,7 +416,7 @@ for (const mode of ['browser','proxy']) {
       await expect(inventoryInterval).toHaveValue('2');
       const sourceForm=page.getByRole('form',{name:'Fixture bridge event sources'});
       await sourceForm.getByRole('button',{name:/^Add event source/}).click();
-      await page.getByRole('option',{name:'HTTP API',exact:true}).click();
+      await sourceForm.getByRole('option',{name:'HTTP API',exact:true}).click();
       await sourceForm.getByRole('button',{name:'Move HTTP API up',exact:true}).click();
       await sourceForm.getByRole('button',{name:'Save event sources'}).click();
       await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
@@ -401,6 +426,42 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('button',{name:'Refresh inventory'}).click();
       await expect(page.locator('time')).toHaveText(/^Refreshed at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
       await expect(page.getByText('Confirmed',{exact:true})).toHaveCount(0);
+      const connectionPanel=page.getByRole('region',{name:'Bridge connections',exact:true});
+      await connectionPanel.getByRole('button',{name:'Add bridge',exact:true}).click();
+      const connectionForm=page.getByRole('form',{name:'Bridge connection settings'});
+      await connectionForm.getByLabel('Bridge ID',{exact:true}).fill('remote');
+      await connectionForm.getByLabel('Bridge name',{exact:true}).fill('Remote bridge');
+      await connectionForm.getByLabel('HTTP API URL',{exact:true}).fill(remoteBridge.config.http.url);
+      await connectionForm.getByLabel('HTTP API token',{exact:true}).fill(remoteBridge.config.http.token);
+      await connectionForm.getByRole('button',{name:'Add destination'}).click();
+      await connectionForm.getByLabel('Destination name',{exact:true}).fill('notify');
+      await connectionForm.getByLabel('Destination URL',{exact:true}).fill(remoteBridge.config.callbacks.fixture);
+      await connectionForm.getByRole('button',{name:'Add bridge',exact:true}).click();
+      await expect(connectionForm.getByLabel('Bridge ID',{exact:true})).toHaveValue('remote');
+      await page.reload();
+      await connectionPanel.getByRole('button',{name:/^Bridge /}).click();
+      await page.getByRole('option',{name:/Remote bridge/}).click();
+      await expect(connectionForm.getByLabel('HTTP API token',{exact:true})).toHaveValue('');
+      await expect(connectionForm.getByLabel('HTTP API token',{exact:true})).toHaveAttribute('placeholder','Saved. Leave blank to keep.');
+      const remoteCamera=await eventually(async()=> {
+        const rows=await runtime.sql.query('SELECT id FROM cameras WHERE bridge_id=$1 AND remote_id=$2','remote','alpha');
+        return rows[0]?.id;
+      });
+      await page.getByRole('link',{name:'Bridge callbacks',exact:true}).click();
+      await page.getByRole('button',{name:/^Bridge /}).click();
+      await page.getByRole('option',{name:/Remote bridge/}).click();
+      await page.getByLabel('Callback ID',{exact:true}).fill('remote-browser-callback');
+      await page.getByRole('button',{name:/^Approved destination /}).click();
+      await page.getByRole('option',{name:'notify',exact:true}).click();
+      await page.getByLabel('Remote Loading dock',{exact:true}).check();
+      await page.getByRole('button',{name:'Add callback',exact:true}).click();
+      await expect(page.getByText('remote-browser-callback',{exact:true})).toBeVisible();
+      await page.getByRole('button',{name:/^Bridge /}).click();
+      await page.getByRole('option',{name:/Fixture bridge/}).click();
+      await expect(page.getByText('remote-browser-callback',{exact:true})).toHaveCount(0);
+      await page.goto(publicOrigin+'/settings/cameras?camera='+remoteCamera);
+      await expect(page.getByRole('heading',{name:'Image orientation',exact:true})).toBeVisible();
+      await expect(page.getByText('The connected bridge does not expose image orientation. Update reolink-bridge and refresh camera settings.')).toBeVisible();
 
       await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
       const settingsRefresh = page.getByRole('button',{name:/^Refresh/});
@@ -473,11 +534,12 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('link',{name:'Status',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/status');
       const upstreamTable = page.getByRole('table');
-      const eventRows=upstreamTable.getByRole('row').filter({hasText:'Events and camera state'});
+      const fixtureRows=upstreamTable.getByRole('row').filter({hasText:'Fixture bridge'});
+      const eventRows=fixtureRows.filter({hasText:'Events and camera state'});
       await expect(eventRows.filter({hasText:'MQTT'})).toHaveCount(1);
       await expect(eventRows.filter({hasText:'HTTP'})).toHaveCount(1);
-      await expect(upstreamTable.getByRole('row').filter({hasText:'Commands'})).toContainText('HTTP');
-      await expect(upstreamTable.getByText('Online',{exact:true})).toHaveCount(3);
+      await expect(fixtureRows.filter({hasText:'Commands'})).toContainText('HTTP');
+      await expect(fixtureRows.getByText('Online',{exact:true})).toHaveCount(3);
 
       await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
       const orientationPanel=page.locator('article').filter({has:page.getByRole('heading',{name:'Image orientation',exact:true})});
@@ -499,6 +561,16 @@ for (const mode of ['browser','proxy']) {
       const seek=await page.request.get(new URL(await recordingVideo.getAttribute('src'),publicOrigin).toString(),{headers:{range:'bytes=0-31'}});
       expect(seek.status()).toBe(206);
       expect((await seek.body()).length).toBe(32);
+      bridge.setPlaybackAvailable(false);
+      await runtime.ready();
+      await page.reload();
+      await expect(page.getByRole('button',{name:'Play',exact:true})).toBeDisabled();
+      await expect(page.getByText('64 GB',{exact:true})).toBeVisible();
+      await expect(page.getByText(/Recording playback requires a writable temporary directory/)).toBeVisible();
+      bridge.setPlaybackAvailable(true);
+      await runtime.ready();
+      await page.getByRole('button',{name:'Refresh',exact:true}).click();
+      await expect(page.getByRole('button',{name:'Play',exact:true})).toBeEnabled();
       await page.goto(publicOrigin+'/settings/enrollment');
       await page.getByLabel('Device UID').fill('TESTWUI001');
       const enrollmentButton = page.getByRole('button',{name:'Show enrollment QR'});
@@ -547,6 +619,7 @@ for (const mode of ['browser','proxy']) {
       app.server.closeAllConnections?.();
       await app.close();
       await bridge.close();
+      await remoteBridge.close();
       await rm(directory,{recursive:true, force:true});
     }
   });

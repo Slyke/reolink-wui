@@ -13,6 +13,7 @@ import { recordingRoutes } from './recording-routes.js';
 import { liveRoutes } from './live.js';
 import { cameraRoutes } from './camera-routes.js';
 import { adminRoutes } from './admin-routes.js';
+import { bridgeSettingsRoutes } from './bridge-settings.js';
 import { enrollmentRoutes } from './enrollment-routes.js';
 
 export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions }) => {
@@ -100,6 +101,7 @@ export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions
 
   cameraRoutes({ api: app, path, runtime });
   adminRoutes({ api: app, path, runtime });
+  bridgeSettingsRoutes({ api: app, path, runtime });
   enrollmentRoutes({ api: app, path, runtime });
   liveRoutes({ api: app, path, runtime });
   recordingRoutes({ api: app, path, runtime });

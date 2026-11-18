@@ -14,7 +14,7 @@
   const load = async () => {
     const current = ++generation;
     list = []; destinations = [];
-    if (!bridge) return;
+    if (!bridge || !bridges.find(item => item.id === bridge)?.callbacks) return;
     try {
       const data = await api<{ callbacks: Callback[]; destinations: string[] }>({ path: endpoint() });
       if (current !== generation) return;
@@ -48,17 +48,18 @@
     } catch (err) { error = errorText(err); }
     finally { busy = false; }
   };
+  $effect(() => { const selected = bridge; const available = bridges.find(item => item.id === selected)?.callbacks; void available; void load(); });
 </script>
 
-{#if bridges.some(item => item.callbacks)}
+{#if bridges.length}
   <section class="panel stack">
     <h2 class="panel-title">{t('callbacks')}</h2>
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if message}<p role="status">{message}</p>{/if}
     <SearchSelect label={t('bridge')} bind:value={bridge} disabled={busy}
-      options={bridges.filter(item => item.callbacks).map(item => ({ value: item.id, label: item.label }))}
-      onchange={() => { edit = false; callbackId = ''; selected = []; destination = ''; void load(); }} />
-    {#if bridge}
+      options={bridges.map(item => ({ value: item.id, label: item.label, detail: item.id }))}
+      onchange={() => { edit = false; callbackId = ''; selected = []; destination = ''; filters = ''; error = ''; message = ''; }} />
+    {#if bridge && bridges.find(item => item.id === bridge)?.callbacks}
       <ul class="events">
         {#each list as item (item.id)}
           <li class="row between">
@@ -88,6 +89,7 @@
           {#if edit}<button type="button" onclick={() => { edit = false; callbackId = ''; selected = []; destination = ''; }}>{t('callback-new')}</button>{/if}
         </div>
       </form>
+    {:else if bridge}<p class="muted">{t('callbacks-unavailable')}</p>
     {/if}
   </section>
 {/if}

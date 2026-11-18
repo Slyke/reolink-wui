@@ -1,4 +1,6 @@
 import { test } from 'node:test';
+import { createServer as tcp } from 'node:net';
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -562,7 +564,10 @@ for (const eventHistory of historyBackends) test('camera history limits, restart
   t.after(() => next.app.close());
   const nextHeaders = await next.signIn('timeline-admin');
   await eventually(async () => (await next.incoming({ path:settings, headers:nextHeaders })).statusCode === 200);
-  assert.deepEqual((await next.incoming({path:settings,headers:nextHeaders})).json(), {backend:eventHistory.backend,limit:2});
+  const saved=(await next.incoming({path:settings,headers:nextHeaders})).json();
+  assert.equal(saved.backend,eventHistory.backend);
+  assert.equal(saved.limit,2);
+  assert.equal(saved.storage.mode,'defaults');
   assert.equal((await read(next,alpha,nextHeaders)).json().events.length, eventHistory.backend === 'valkey' ? 2 : 0);
   assert.equal((await limit(next,0,nextHeaders)).statusCode,200);
   assert.deepEqual((await read(next,alpha,nextHeaders)).json(), {limit:0,events:[]});
@@ -700,4 +705,168 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   const orientation=await incoming({path:root+'/settings/image?fresh=true',headers:privileged});
   assert.deepEqual(orientation.json().values.image,{hflip:true,vflip:true,rotation:0});
   assert.ok(admin);
+});
+
+test('multiple bridge connections persist, retain secrets and isolate cameras and callbacks', async t => {
+  const a=await fixtureBridge();
+  const b=await fixtureBridge({websocket:true,apiEvents:true,token:'other-bridge-fixture-token-4433',namePrefix:'Remote '});
+  t.after(()=>a.close()); t.after(()=>b.close());
+  const directory=await mkdtemp(join(tmpdir(),'wui-bridge-settings-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const database={driver:'sqlite',path:join(directory,'app.sqlite')};
+  const apps=[];
+  t.after(async()=>{for(const app of apps) await app.app.close();});
+  const first=await launch({bridges:[a.config],database});apps.push(first);
+  await first.seed({username:'bridge-admin',admin:true});
+  await first.seed({username:'bridge-viewer'});
+  const headers=await first.signIn('bridge-admin'), denied=await first.signIn('bridge-viewer');
+  const original=first.runtime.bridges.get('lab');
+  const configuration={...b.config,id:'remote',label:'Remote bridge',mqtt:undefined,events:undefined};
+  const addId=uuid();
+  const add=(auth=headers)=>first.incoming({method:'POST',path:'/admin/bridges',headers:auth,payload:{operationId:addId,configuration}});
+  assert.equal((await add(denied)).statusCode,403);
+  const added=await add();assert.equal(added.statusCode,200,added.body);
+  assert.equal((await add()).json().outcome,'confirmed');
+  assert.equal(first.runtime.bridges.size,2);
+  await eventually(()=>first.runtime.bridges.get('remote').feedReady);
+  assert.equal(first.runtime.bridges.get('lab'),original);
+  const admin=(await first.incoming({path:'/admin',headers})).json();
+  assert.equal(admin.bridges.length,2);
+  assert.ok(!JSON.stringify(admin).includes(b.config.http.token));
+  assert.ok(admin.bridges.find(item=>item.id==='remote').connections.http.tokenConfigured);
+  const cameras=admin.cameras;
+  const alpha=cameras.find(item=>item.bridge==='lab'&&item.label==='Loading dock').id;
+  const remote=cameras.find(item=>item.bridge==='remote'&&item.label==='Remote Loading dock').id;
+  assert.notEqual(alpha,remote);
+  b.event('alpha','remote-event');
+  await eventually(async()=>(await first.incoming({path:'/cameras/'+remote+'/events',headers})).json().events.some(item=>item.event.type==='remote-event'));
+  assert.equal((await first.incoming({path:'/cameras/'+alpha+'/events',headers})).json().events.length,0);
+  const callback=(bridge,camera,id)=>first.incoming({
+    method:'POST',path:'/admin/bridges/'+bridge+'/callbacks',headers,
+    payload:{operationId:uuid(),action:'add',id,destination:'fixture',events:['person'],cameras:[camera]}
+  });
+  assert.equal((await callback('remote',remote,'remote-only')).json().outcome,'confirmed');
+  assert.equal((await callback('remote',alpha,'wrong-bridge')).json().reason,'CALLBACK_INVALID');
+  assert.equal((await callback('lab',alpha,'local-only')).json().outcome,'confirmed');
+  const callbacks=async id=>(await first.incoming({path:'/admin/bridges/'+id+'/callbacks',headers})).json().callbacks;
+  assert.deepEqual((await callbacks('remote')).map(item=>item.id),['remote-only']);
+  assert.deepEqual((await callbacks('lab')).map(item=>item.id),['local-only']);
+  const update=config=>first.incoming({method:'PUT',path:'/admin/bridges/remote',headers,payload:{operationId:uuid(),configuration:config}});
+  const editable={...b.config,id:'remote',label:'Remote bridge',events:undefined,http:{url:b.config.http.url}};
+  assert.equal((await update({...editable,id:'different-bridge'})).statusCode,400);
+  assert.equal((await update(editable)).json().outcome,'confirmed');
+  const sources=await first.incoming({method:'PUT',path:'/admin/bridges/remote/event-sources',headers,
+    payload:{operationId:uuid(),sources:['mqtt','api','ws']}});
+  assert.equal(sources.statusCode,200,sources.body);
+  const nextToken='new-bridge-fixture-token-554433';
+  const edits=await Promise.all([
+    update({...editable,http:{url:b.config.http.url,token:nextToken}}),
+    update({...editable,label:'Remote bridge edited'})
+  ]);
+  for(const response of edits) assert.equal(response.json().outcome,'confirmed',response.body);
+  const [row]=await first.runtime.sql.query('SELECT connection_config FROM bridges WHERE id=$1','remote');
+  assert.equal(JSON.parse(row.connection_config).http.token,nextToken);
+  assert.equal(JSON.parse(row.connection_config).label,'Remote bridge edited');
+  assert.equal(first.runtime.bridges.get('lab'),original);
+  assert.equal((await update({...editable,label:'Remote bridge edited',http:{url:b.config.http.url,token:b.config.http.token}})).json().outcome,'confirmed');
+  await first.app.close();apps.splice(apps.indexOf(first),1);
+  const second=await launch({bridges:[a.config],database});apps.push(second);
+  assert.equal(second.runtime.bridges.size,2);
+  const saved=second.runtime.bridges.get('remote');
+  assert.equal(saved.config.label,'Remote bridge edited');
+  assert.equal(saved.config.http.token,b.config.http.token);
+  assert.deepEqual(saved.eventSources,['mqtt','api','ws']);
+  await eventually(()=>saved.feedReady);
+  assert.equal(a.counts().writes,0);assert.equal(b.counts().writes,0);
+});
+
+if(process.env.WUI_TEST_VALKEY) test('event storage overrides defaults, keeps passwords private and remains editable while offline', async t => {
+  const fixture=await fixtureBridge();t.after(()=>fixture.close());
+  const directory=await mkdtemp(join(tmpdir(),'wui-valkey-settings-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const database={driver:'sqlite',path:join(directory,'app.sqlite')};
+  const apps=[];t.after(async()=>{for(const app of apps) await app.app.close();});
+  const boot={bridges:[fixture.config],database,eventHistory:{backend:'memory',retention:4}};
+  const first=await launch(boot);apps.push(first);
+  await first.seed({username:'cache-admin',admin:true});
+  await first.seed({username:'cache-viewer'});
+  let headers=await first.signIn('cache-admin');
+  const denied=await first.signIn('cache-viewer');
+  await eventually(()=>first.runtime.bridges.get('lab').state('alpha').has('info'));
+  const camera=(await first.incoming({path:'/admin',headers})).json().cameras.find(item=>item.label==='Loading dock').id;
+  let active=first;
+  const get=async()=>(await active.incoming({path:'/admin/event-history',headers})).json();
+  const set=(storage,limit=4,auth=headers)=>active.incoming({method:'PUT',path:'/admin/event-history',headers:auth,
+    payload:{operationId:uuid(),limit,storage}});
+  const read=async()=>(await active.incoming({path:'/cameras/'+camera+'/events',headers})).json();
+  assert.equal((await get()).storage.mode,'defaults');
+  const [owner]=await first.runtime.sql.query('SELECT id FROM accounts WHERE username=$1','cache-admin');
+  const legacyOperation=uuid();
+  await first.runtime.ops.run({
+    id:legacyOperation,actor:owner.id,resource:'event-history',action:'event-history.resize',
+    correlation:uuid(),input:4,execute:async()=>({outcome:'confirmed'})
+  });
+  const replay=await first.incoming({method:'PUT',path:'/admin/event-history',headers,payload:{operationId:legacyOperation,limit:4}});
+  assert.equal(replay.json().outcome,'confirmed',replay.body);
+
+  const privateUrl=new URL(process.env.WUI_TEST_VALKEY), publicUrl=new URL(privateUrl);
+  const password=decodeURIComponent(privateUrl.password);publicUrl.password='';
+  const valkey={url:publicUrl.href,password,keyPrefix:'settings-test-'+uuid()};
+  assert.equal((await set({mode:'valkey',valkey},4,denied)).statusCode,403);
+  const configured=await set({mode:'valkey',valkey});
+  assert.equal(configured.json().outcome,'confirmed',configured.body);
+  if(password) assert.ok(!configured.body.includes(password));
+  let settings=await get();assert.equal(settings.backend,'valkey');assert.equal(settings.connected,true);
+  assert.equal(settings.storage.valkey.passwordConfigured,Boolean(password));
+  fixture.event('alpha','cached-in-valkey');
+  await eventually(async()=>(await read()).events?.at(-1)?.event.type==='cached-in-valkey');
+  const keepPassword={url:publicUrl.href,keyPrefix:valkey.keyPrefix};
+  assert.equal((await set({mode:'valkey',valkey:keepPassword},5)).json().outcome,'confirmed');
+  assert.equal((await read()).events.at(-1).event.type,'cached-in-valkey');
+  assert.equal((await set({mode:'memory'},5)).json().outcome,'confirmed');
+  settings=await get();assert.equal(settings.storage.mode,'memory');
+  assert.equal(settings.storage.valkey.passwordConfigured,Boolean(password));
+  await first.app.close();apps.splice(apps.indexOf(first),1);
+  const fileDefaults={backend:'valkey',url:privateUrl.href,keyPrefix:'file-defaults-'+uuid(),retention:2};
+  active=await launch({...boot,eventHistory:fileDefaults});apps.push(active);
+  headers=await active.signIn('cache-admin');
+  settings=await get();
+  assert.equal(settings.backend,'memory');assert.equal(settings.defaults.backend,'valkey');
+  assert.equal(settings.limit,5);assert.equal(settings.storage.mode,'memory');
+  assert.equal((await set({mode:'valkey',valkey:keepPassword},5)).json().outcome,'confirmed');
+  assert.equal((await read()).events.at(-1).event.type,'cached-in-valkey');
+  assert.equal((await set({mode:'defaults'},5)).json().outcome,'confirmed');
+  settings=await get();assert.equal(settings.defaults.valkey.keyPrefix,fileDefaults.keyPrefix);
+  assert.equal(settings.backend,'valkey');assert.equal(settings.storage.mode,'defaults');
+  if(password) assert.ok(!JSON.stringify(settings).includes(password));
+  assert.equal((await read()).events.length,0);
+  const lease=tcp().listen(0,'127.0.0.1');await once(lease,'listening');
+  const closedPort=lease.address().port;await new Promise(resolve=>lease.close(resolve));
+  const unavailable={url:'redis://127.0.0.1:'+closedPort+'/0',keyPrefix:'offline-settings-'+uuid()};
+  assert.equal((await set({mode:'valkey',valkey:unavailable},5)).json().outcome,'confirmed');
+  settings=await get();assert.equal(settings.connected,false);assert.equal(settings.storage.mode,'valkey');
+  assert.equal((await set({mode:'memory'},5)).json().outcome,'confirmed');
+  assert.equal((await get()).connected,true);
+});
+
+test('recording playback is gated independently from card details and recording searches', async t => {
+  const fixture=await fixtureBridge({recordings:true});t.after(()=>fixture.close());
+  const {app,runtime,incoming,seed,signIn}=await launch({bridges:[fixture.config]});t.after(()=>app.close());
+  await seed({username:'workspace-admin',admin:true});const headers=await signIn('workspace-admin');
+  await eventually(()=>runtime.bridges.get('lab').hasRecordings('alpha'));
+  const {cameras}= (await incoming({path:'/cameras',headers})).json();
+  const camera=cameras.find(item=>item.name==='Loading dock').id;
+  const root='/cameras/'+camera;
+  fixture.setPlaybackAvailable(false);
+  await runtime.ready();
+  const unavailable=(await incoming({path:'/cameras',headers})).json().cameras.find(item=>item.id===camera);
+  assert.equal(unavailable.capabilities.recordings,true);
+  assert.equal(unavailable.capabilities.recordingPlayback,false);
+  const storage=await incoming({path:root+'/storage',headers});
+  assert.equal(storage.statusCode,200,storage.body);
+  assert.equal(storage.json().playbackAvailable,false);
+  assert.equal((await incoming({path:root+'/recordings?date=2026-11-17&stream=sub',headers})).statusCode,200);
+  assert.equal((await incoming({path:root+'/recordings/'+'a'.repeat(64)+'/video',headers})).statusCode,422);
+  fixture.setPlaybackAvailable(true);await runtime.ready();
+  assert.equal((await incoming({path:'/cameras',headers})).json().cameras.find(item=>item.id===camera).capabilities.recordingPlayback,true);
 });
