@@ -21,6 +21,7 @@ type FeedState = {
 
 export type BridgeUpdate = { kind: 'feed' }
   | { kind: 'gap'; details: Extract<FeedGap, { cause: 'bridge-connection' | 'bridge-backlog' }> }
+  | { kind: 'preview'; camera: string; etag: string }
   | { kind: 'snapshot'; camera: string; topic: string }
   | { kind: 'event'; camera: string; topic: string; entry: CameraEvent };
 
@@ -56,11 +57,13 @@ export class Bridge {
   private apiChannel?: ApiChannel;
   private priority: EventSource[] = [];
   private readonly http?: Link;
-  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false };
+  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, previewNotifications: false };
   private scanning?: Promise<boolean>;
   private readonly mediaStreams = new Map<string, string[]>();
+  private readonly previewTags = new Map<string,string>();
   private previewCameras = new Set<string>();
   private recordingCameras = new Set<string>();
+  private recordingMetadataCameras = new Set<string>();
   private recordingPreviewCameras = new Set<string>();
   private imageSettings = false;
   private storageCameras = new Set<string>();
@@ -179,6 +182,14 @@ export class Bridge {
         }
         if (!topics.has(topic) && topics.size >= 256) return;
         topics.set(topic, record(message.payload));
+        if (topic === 'state/preview' && (source === 'ws' || source === 'mqtt')) {
+          const { etag } = record(record(message.payload).preview);
+          if (typeof etag === 'string' && /^"[a-f0-9]{64}"$/.test(etag) && this.previewTags.get(camera) !== etag) {
+            this.previewTags.set(camera,etag);
+            this.channel.emit('update', { kind: 'preview', camera, etag });
+          }
+          return;
+        }
         if (this.activeFeed === source) this.channel.emit('update', { kind: 'snapshot', camera, topic });
       },
       event: (payload) => {
@@ -304,10 +315,17 @@ export class Bridge {
 
   hasStorage(camera: string) { return this.has("v1") && this.storageCameras.has(camera); }
 
+  hasRecordingMetadata(camera: string) { return this.hasRecordings(camera) && this.recordingMetadataCameras.has(camera); }
+
   hasRecordingPreview(camera: string) { return this.has('v1') && this.recordingPreviewCameras.has(camera); }
 
   hasRecordings(camera: string) {
     return this.has('v1') && this.recordingCameras.has(camera);
+  }
+
+  previewPush(camera: string) {
+    return this.hasPreview(camera) && this.bridgeVersion.previewNotifications
+      && this.priority.some(source => (source === 'ws' || source === 'mqtt') && this.feeds.get(source)?.ready);
   }
 
   hasPreview(camera: string) {
@@ -413,10 +431,11 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.storageCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras]]);
     const ok = contract.version === 1;
     this.imageSettings = ok && Array.isArray(contract.settings) && contract.settings.includes('image');
     this.bridgeVersion.v1 = ok;
+    this.bridgeVersion.previewNotifications = ok && contract.previewNotifications === true;
     this.bridgeVersion.inventory = ok && contract.inventory === true;
     this.bridgeVersion.media = ok && this.config.http?.relay === true && contract.media === true;
     this.bridgeVersion.enrollment = ok && !!this.http?.adminToken && contract.enrollment === true;
@@ -429,6 +448,8 @@ export class Bridge {
         }
       }
     }
+    this.recordingMetadataCameras = new Set(ok && Array.isArray(contract.recordingMetadataCameras)
+      ? contract.recordingMetadataCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingPreviewCameras = new Set(ok && Array.isArray(contract.recordingPreviewCameras)
       ? contract.recordingPreviewCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingCameras = new Set(ok && Array.isArray(contract.recordingsCameras)
@@ -438,7 +459,7 @@ export class Bridge {
       ? storage.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.storageCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 

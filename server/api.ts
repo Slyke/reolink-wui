@@ -7,7 +7,7 @@ import { openDb } from './db.js';
 import { correlationPattern } from '../shared/urls.js';
 import { forwardProofHeader, samePeer, sameSecret } from './trusted-proxy.js';
 import { csrfToken } from './auth.js';
-import { buildInfo, Failure, report } from './errors.js';
+import { buildInfo, configureLogging, Failure, report } from './errors.js';
 import { Runtime, input, username, uuid } from './runtime.js';
 import { recordingRoutes } from './recording-routes.js';
 import { liveRoutes } from './live.js';
@@ -17,6 +17,7 @@ import { bridgeSettingsRoutes } from './bridge-settings.js';
 import { enrollmentRoutes } from './enrollment-routes.js';
 
 export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions }) => {
+  configureLogging({ logging: config.logging });
   const sql = await openDb({ config: config.database });
   const runtime = new Runtime(config, sql);
   try {
@@ -63,6 +64,7 @@ export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions
   app.get('/livez', async request => ({ ...buildInfo, ok: true, correlationId: request.id }));
   app.get('/readyz', async (request, reply) => {
     const ok = await runtime.ready();
+    if (!ok) report({ error: new Failure('BRIDGE_UNAVAILABLE',500), correlationId:request.id, caller:'api::readiness' });
     return reply.code(ok ? 200 : 500).send({ ...buildInfo, ok, correlationId: request.id });
   });
 

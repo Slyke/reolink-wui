@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { BridgeConnections } from '../../shared/bridges.js';
+  import InfoTip from './InfoTip.svelte';
   import ConnectionTls from './ConnectionTls.svelte';
   import type { BridgeTest } from '../../shared/bridges.js';
   import { useWorkspace } from './workspace.js';
@@ -9,6 +10,7 @@
   let { configuration, onsaved, oncancel }: {
     configuration?: BridgeConnections; onsaved: (id: string) => void; oncancel?: () => void
   } = $props();
+  const fieldId = $props.id();
   const initial = () => configuration;
   const admin = useAdministration();
   const workspace = useWorkspace();
@@ -78,10 +80,10 @@
 
 <form class="stack" aria-label={t('bridge-connections-form')} onsubmit={event => { event.preventDefault(); void save(); }}>
   <div class="form-grid">
-    <label>{t('bridge-id')}<input bind:value={id} pattern="[A-Za-z0-9_-]+" maxlength="64" required readonly={Boolean(configuration)} disabled={busy} /></label>
+    <div class="field"><div class="field-heading"><label for={fieldId + '-id'}>{t('bridge-id')}</label><InfoTip label={t('bridge-id')} text={t('bridge-id-hint')} /></div>
+      <input id={fieldId + '-id'} bind:value={id} pattern="[A-Za-z0-9_-]+" maxlength="64" required readonly={Boolean(configuration)} disabled={busy} /></div>
     <label>{t('bridge-label')}<input bind:value={label} maxlength="80" required disabled={busy} /></label>
   </div>
-  <p class="muted">{t('bridge-id-hint')}</p>
   <details>
     <summary>{t('bridge-camera-filter')}</summary>
     <label>{t('bridge-camera-ids')}<input bind:value={cameraIds} disabled={busy} /></label>
@@ -94,9 +96,9 @@
       <label>{t('bridge-http-url')}<input type="url" bind:value={httpUrl} required disabled={busy} /></label>
       <label>{t('bridge-http-token')}<input type="password" bind:value={httpToken} autocomplete="new-password"
         required={!configuration?.http?.tokenConfigured} placeholder={configuration?.http?.tokenConfigured ? t('secret-saved') : ''} disabled={busy} /></label>
-      <label>{t('bridge-admin-token')}<input type="password" bind:value={adminToken} autocomplete="new-password"
-        placeholder={configuration?.http?.adminTokenConfigured ? t('secret-saved') : ''} disabled={busy || clearAdmin} /></label>
-      <p class="muted">{t('bridge-admin-token-hint')}</p>
+      <div class="field"><div class="field-heading"><label for={fieldId + '-admin-token'}>{t('bridge-admin-token')}</label><InfoTip label={t('bridge-admin-token')} text={t('bridge-admin-token-hint')} /></div>
+        <input id={fieldId + '-admin-token'} type="password" bind:value={adminToken} autocomplete="new-password"
+          placeholder={configuration?.http?.adminTokenConfigured ? t('secret-saved') : ''} disabled={busy || clearAdmin} /></div>
       {#if configuration?.http?.adminTokenConfigured}<label class="check"><input type="checkbox" bind:checked={clearAdmin} disabled={busy} />{t('bridge-clear-admin')}</label>{/if}
       <label class="check"><input type="checkbox" bind:checked={relay} disabled={busy} />{t('bridge-enable-relay')}</label>
       <ConnectionTls secure={httpUrl.toLowerCase().startsWith('https:')} bind:ca={httpCa} bind:verify={httpVerify} disabled={busy} />
@@ -143,8 +145,7 @@
   </label>
   {#if httpEnabled}
     <fieldset class="stack">
-      <legend>{t('bridge-callback-destinations')}</legend>
-      <p class="muted">{t('bridge-callback-destinations-hint')}</p>
+      <legend>{t('bridge-callback-destinations')} <InfoTip label={t('bridge-callback-destinations')} text={t('bridge-callback-destinations-hint')} /></legend>
       {#each destinations as destination, index}
         <div class="row">
           <label>{t('bridge-destination-name')}<input bind:value={destination.name} pattern="[A-Za-z0-9_-]+" required disabled={busy} /></label>

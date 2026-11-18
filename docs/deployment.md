@@ -65,7 +65,7 @@ On Kubernetes, use top-level bridge `callbacks` entries in a ConfigMap and resta
 
 ## Camera playback
 
-Dashboard and Monitor read cached JPEGs from Reolink Bridge every two seconds. The bridge sets the capture interval and can persist the latest frame in Valkey. **Refresh live view** requests a fresh bridge preview. **Refresh on alert** can request the same refresh when an authorized detection starts. **Take snapshot** independently requests a fresh PNG from the camera through the bridge’s configured MQTT capture path. [Bridge preview settings](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#background-camera-previews)
+Dashboard and Monitor read cached JPEGs from Reolink Bridge. **Camera settings → Playback → Preview update interval** defaults to 2 seconds (50 ms minimum). With a connected, configured WebSocket or MQTT source and a bridge advertising preview notifications, WUI fetches only when the cache changes; the interval sets the minimum wait after a frame finishes loading. Without push notifications, it polls at that interval. The bridge controls its separate camera capture interval and can persist previews in Valkey. **Refresh live view** requests a fresh bridge preview. **Refresh on alert** can request the same refresh when an authorized detection starts. **Take snapshot** independently requests a fresh PNG from the camera through the bridge’s configured MQTT capture path. [Bridge preview settings](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#background-camera-previews)
 
 **Bridge camera relay** is the default source for continuous video. Use a reolink-bridge build with the HTTP media API and FFmpeg. Add a preview entry and video profile to the bridge configuration. This example uses the substream on the camera with ID `lumus`.
 
@@ -134,7 +134,7 @@ Supply real commit values in CI and tag the image with both version and short ha
 
 ## SD-card recordings and orientation
 
-Open **Recordings** to select a camera, search a date in the camera's local time, view total/used/free storage, and browse thumbnails in a grid or table. The layout choice is saved in browser local storage. Results are paginated, and dates and times occupy separate lines in the table. Play opens a modal with seeking, Previous/Next recording, and end-of-recording choices to stop, play the next clip, or loop the current clip. Escape, Close, and the backdrop dismiss the modal. The bridge must expose the storage and recordings API. The WUI account requires `recordings.view`. Instance administrators have this permission, and the Camera admin preset includes it when newly assigned. Other accounts can receive it under Camera grants.
+Open **Recordings** to select a camera, search a date in the camera's local time, view total/used/free storage, and browse thumbnails in a grid or table. Searches include both reported recording qualities, pairing clips whose start and end boundaries differ by up to four seconds. Unmatched clips remain separate. The player offers each available quality. Layout, page size (including All), and end-of-recording behavior are saved in browser local storage. Dates and times occupy separate lines in the table. The timeline highlights rows/cards, opens playback at the selected point, and shows a nearby keyframe on hover. Its recorded-hours view can switch to a whole-day view; unrecorded periods are gaps, not evidence of inactivity. Play opens a modal with seeking, Previous/Next recording, and end-of-recording choices to stop, play the next clip, or loop the current clip. Escape, Close, and the backdrop dismiss the modal. The bridge must expose the storage and recordings API. The WUI account requires `recordings.view`. Instance administrators have this permission, and the Camera admin preset includes it when newly assigned. Other accounts can receive it under Camera grants.
 
 The bridge checks `api.recordings.temporaryDirectory` before advertising playback. Its default is `/tmp`, and `null` disables recorded-video playback. A missing or unwritable directory disables the Play buttons while card usage and file searches remain available. After fixing the directory, refresh the Recordings page.
 
@@ -145,7 +145,7 @@ The bridge downloads and prepares a private temporary MP4 on first playback. Sub
 The Image orientation card explains when the connected bridge needs an update or the camera has not reported orientation controls. Camera-side settings are read before each supported change and verified by readback.
 
 
-Recording previews use the bridge's read-only CoverPreview API to retrieve a keyframe from the clip's start, instead of downloading the whole recording for each thumbnail. The bridge advertises this path in `recordingPreviewCameras`. Older bridges display a preview placeholder until updated.
+Recording previews use the bridge's CoverPreview API with a read-only partial recording-download fallback. Hover requests specify an offset; already prepared MP4s can supply the frame locally. No full recording download is required for an uncached thumbnail. The bridge advertises this path in `recordingPreviewCameras`. Older bridges display a preview placeholder until updated.
 
 Image orientation buttons are shown in Camera settings. Only reported camera controls are enabled. When a camera reports flips but no 90° rotation support, the UI keeps the rotation buttons disabled and explains that capability. The UI does not emulate a camera setting with a browser transform.
 
@@ -153,3 +153,26 @@ Image orientation buttons are shown in Camera settings. Only reported camera con
 Live view places camera Recordings, Camera settings, Refresh and Expand actions in the heading toolbar as icons with accessible names and tooltips. These controls are shared by Monitor and Dashboard. The expanded live-view dialog has the same navigation and still-frame refresh actions.
 
 Valkey history keys upgrade from lists to sorted sets to enforce individual event expiry. To roll back to an older WUI build that only understands lists, restore a matching Valkey backup or use a separate key prefix.
+
+
+Once the selected video has loaded, the player warms the next and previous recordings sequentially at the selected quality. Changing or closing playback cancels obsolete preload requests. This uses the bridge's shared media cache. Detection metadata is read from the same prepared recording when its API is advertised; it does not open a second native download. Available normalized boxes are aligned to media time and can be inspected as JSON. A camera may omit coordinates from its recording payload.
+
+Live coordinate events require the bridge camera's coordinates.allowVideoStream option. When disabled, WUI says so in Event details, alongside always-available normalized event JSON. Enabling this bridge option reads the camera's metadata stream; it does not alter camera settings. ONVIF boolean alerts alone cannot supply bounding boxes.
+
+## Keyed error logging
+
+All WUI API failures, including 4xx responses, generate structured errors with correlation IDs. Configure the style-guide logger using a top-level logging block in the WUI configuration. Sinks and per-error gates control output; an error is generated even when all of its sinks are disabled.
+
+~~~json5
+logging: {
+  sinks: {
+    console: { enabled: true, format: "json", levels: ["warn", "error"] },
+  },
+  gates: {
+    ACCESS_DENIED: { console: false },
+    MEDIA_UNAVAILABLE: { console: true },
+  },
+}
+~~~
+
+The bridge has the same sink/gate model. Thumbnail fallback diagnostics use API_RECORDING_PREVIEW_FALLBACK (warning by default); a failed fallback uses API_RECORDING_PREVIEW_FAILED. Both carry correlation IDs. The bridge's HTTP middleware also reports framework rejections, failed readiness, and API errors that previously returned without a log. Already reported errors are not logged twice.

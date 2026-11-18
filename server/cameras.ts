@@ -174,6 +174,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     imageOrientation,
     events: grant.has('events'),
     recordings: grant.has('recordings.view') && bridge.hasStorage(remote),
+    recordingMetadata: grant.has('recordings.view') && bridge.hasRecordingMetadata(remote),
     recordingPreview: grant.has('recordings.view') && bridge.hasRecordingPreview(remote),
     recordingPlayback: grant.has('recordings.view') && bridge.hasRecordings(remote),
     capture: grant.has('capture') && bridge.canCapture(remote),
@@ -255,13 +256,15 @@ export const readback = ({ raw, group, className }: { raw: Envelope; group: Sett
 
 export const visibleState = ({ bridge, remote, grant }: { bridge: Bridge; remote: string; grant: Set<Permission> }) => {
   const cached = bridge.state(remote);
+  const coordinates = record(cached.get('capabilities')?.coordinate_stream);
   const settings = cached.get('state/settings') ?? {};
   return {
     availability: available({ bridge, remote }),
+    coordinateStream: { enabled: bool(coordinates.enabled) ?? (coordinates.transport ? true : undefined), connected: bool(coordinates.connected), overlayObserved: bool(coordinates.overlay_observed) },
     settings: Object.fromEntries(settingsGroups.filter(group => grant.has('settings.' + group + '.read' as Permission))
       .map(group => [group, settingValues({ raw: settings, group })])),
     position: grant.has('ptz.read') && cached.has('state/ptz') ? statusPtz({ raw: cached.get('state/ptz')! }) : undefined,
-    detections: grant.has('events') ? [...cached.entries()].filter(([topic]) => topic.startsWith('state/') && !['state/settings', 'state/ptz'].includes(topic))
+    detections: grant.has('events') ? [...cached.entries()].filter(([topic]) => topic.startsWith('state/') && !['state/settings', 'state/ptz', 'state/preview'].includes(topic))
       .map(([topic, raw]) => ({ type: topic.slice(6), active: bool(raw.active), last: eventData({ raw: record(raw.last) }) })) : undefined
   };
 };

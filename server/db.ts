@@ -81,7 +81,8 @@ const migrations = [
   INSERT INTO instance_settings(id) VALUES (1);`,
   `ALTER TABLE bridges ADD COLUMN event_sources TEXT;`,
   `ALTER TABLE bridges ADD COLUMN connection_config TEXT;
-  ALTER TABLE event_history_settings ADD COLUMN storage TEXT NOT NULL DEFAULT '{"mode":"defaults"}';`
+  ALTER TABLE event_history_settings ADD COLUMN storage TEXT NOT NULL DEFAULT '{"mode":"defaults"}';`,
+  `UPDATE cameras SET preview_interval_ms=2000;`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {
@@ -210,7 +211,7 @@ export const camerasFor = async ({ sql, account, id }: { sql: Sql; account: Acco
 
 export const storeCamera = async ({ sql, bridge, remote }: { sql: Sql; bridge: string; remote: string }) => {
   const [camera] = await sql.query<CameraRef>(
-    'INSERT INTO cameras(id,bridge_id,remote_id) VALUES ($1,$2,$3) ON CONFLICT (bridge_id,remote_id) DO UPDATE SET remote_id=excluded.remote_id RETURNING *',
+    'INSERT INTO cameras(id,bridge_id,remote_id,preview_interval_ms) VALUES ($1,$2,$3,2000) ON CONFLICT (bridge_id,remote_id) DO UPDATE SET remote_id=excluded.remote_id RETURNING *',
     randomUUID(), bridge, remote
   );
   return camera;

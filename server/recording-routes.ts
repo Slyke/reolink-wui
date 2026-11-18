@@ -9,7 +9,7 @@ import { jsonResponse, responseBytes } from './net.js';
 import { audit } from './db.js';
 import { correlationPattern } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
-import { recordingStages, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
+import { recordingStages, recordingMetadataResponse, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
 
 const object = z.strictObject;
 const bridgeRead = async ({ bridge, path, search, correlation, schema }: {
@@ -56,12 +56,28 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
       search: '?' + new URLSearchParams(query), schema: recordingsResponse
     });
   });
+  api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/metadata', async request => {
+    const id = input({ schema: recordingId, value: request.params.recording });
+    const { bridge, row } = await camera(request, request.params.id);
+    if (!bridge.hasRecordingMetadata(row.remote_id)) throw new Failure('UNSUPPORTED',422);
+    const response = await bridge.api({
+      path: '/cameras/' + row.remote_id + '/recordings/' + id + '/metadata',
+      correlation: request.id, signal: AbortSignal.timeout(48_000)
+    });
+    if (!response.ok) throw await mediaFailure({ response });
+    const result = recordingMetadataResponse.safeParse(await jsonResponse({ response, limit: 8 * 1024 * 1024 }));
+    if (!result.success) throw new Failure('MEDIA_UNAVAILABLE',502);
+    await camera(request,row.id);
+    return result.data;
+  });
   api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/preview', async (request, reply) => {
     const id = input({ schema: recordingId, value: request.params.recording });
+    const query = input({ schema: object({ offsetMs: z.coerce.number().int().min(0).max(86_400_000).default(0) }), value: request.query });
     const { bridge, row } = await camera(request, request.params.id);
     if (!bridge.hasRecordingPreview(row.remote_id)) throw new Failure('UNSUPPORTED',422);
     const response = await bridge.api({
       path: '/cameras/' + row.remote_id + '/recordings/' + id + '/preview',
+      search: '?' + new URLSearchParams({ offsetMs: String(query.offsetMs) }),
       correlation: request.id, signal: AbortSignal.timeout(40_000)
     });
     if (!response.ok) throw await mediaFailure({ response });

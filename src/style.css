@@ -148,6 +148,8 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
   transition: background-color var(--transition), border-color var(--transition), color var(--transition);
 }
 .pill.detection-state::before { flex: none; }
+.detection-lines { display: grid; gap: .1rem; min-width: 0; }
+.pill.detection-state { padding-block: .45rem; }
 .viewport { display: grid; place-items: center; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-sm); aspect-ratio: 16 / 9; overflow: hidden; color: var(--color-text-muted); text-align: center; }
 .viewport img { width: 100%; height: 100%; object-fit: contain; }
 .preview-viewport { position: relative; }
@@ -285,3 +287,32 @@ meter::-moz-meter-bar { background: var(--color-warning); border-radius: 1rem; }
 .recording-facts { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin: 0; }
 .recording-facts dt { color: var(--color-text-muted); }
 .recording-facts dd { margin: .25rem 0 0; }
+
+.field { display: grid; gap: .45rem; min-width: 0; }
+.field-heading { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+.field-heading label { margin: 0; }
+.info-tip { display: inline-flex; vertical-align: middle; }
+button.info-button { border-radius: 50%; width: 1.35rem; height: 1.35rem; min-height: 0; padding: 0; font: inherit; font-size: .8rem; font-weight: 700; box-shadow: none; }
+.info-popover { position: fixed; inset: auto; margin: 0; width: min(22rem,calc(100vw - 1.5rem)); max-height: calc(100dvh - 1.5rem); overflow: auto; padding: .85rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel-strong); color: var(--color-text); box-shadow: var(--shadow-panel); font-size: .9rem; line-height: 1.5; z-index: 20; }
+.recording-page-size { width: min(100%,18rem); }
+.recording-card[data-highlighted="true"], .recordings-table tr[data-highlighted="true"] { background: var(--color-start-fill); outline: 2px solid var(--color-start); outline-offset: -2px; }
+.recording-timeline { padding-block: .5rem; }
+.timeline-legend { gap: .4rem; font-size: .85rem; color: var(--color-text-muted); }
+.timeline-key { display: inline-block; width: .8rem; height: .8rem; border: 1px solid var(--color-border); background: var(--color-panel); }
+.timeline-key.busy { background: var(--color-start); }
+.timeline-rail { position: relative; height: 2.5rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-panel); }
+button.timeline-segment { position: absolute; top: 0; height: 100%; min-height: 0; min-width: 3px; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: var(--color-start); }
+button.timeline-segment:hover, button.timeline-segment[data-highlighted="true"] { background: var(--color-mid); z-index: 1; transform: none; }
+button.timeline-segment:focus-visible { outline: 3px solid var(--color-warning); outline-offset: 2px; z-index: 2; }
+.timeline-hours { display: flex; justify-content: space-between; font-size: .8rem; color: var(--color-text-muted); }
+.timeline-hover { position: absolute; bottom: calc(100% + .65rem); transform: translateX(-50%); width: min(18rem,70vw); padding: .5rem; border: 1px solid var(--color-border); background: var(--color-panel-strong); border-radius: var(--radius-sm); box-shadow: var(--shadow-panel); z-index: 5; pointer-events: none; gap: .4rem; }
+.timeline-hover .recording-preview { aspect-ratio: 16 / 9; }
+.recording-picture { position: relative; }
+.recording-boxes { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.recording-boxes rect { fill: none; stroke: var(--color-mid); stroke-width: 2; vector-effect: non-scaling-stroke; }
+select.timeline-range { width: auto; max-width: 100%; }
+.detection-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.recording-controls { align-items: end; }
+select.recording-quality { width: auto; min-width: min(100%,12rem); max-width: 100%; }
+
+.recording-controls > .row { flex: 1 1 30rem; }

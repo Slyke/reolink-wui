@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { previewAlerts, type PreviewAlert } from '../../shared/playback.js';
+  import InfoTip from './InfoTip.svelte';
+  import { minPreviewIntervalMs, maxPreviewIntervalMs, previewAlerts, type PreviewAlert } from '../../shared/playback.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
 
   let { base, csrf, bridgePreview }: { base: string; csrf: string; bridgePreview: boolean } = $props();
   let source = $state<'direct' | 'proxy'>('direct');
   let proxyUrl = $state('');
+  const fieldId = $props.id();
+  let previewIntervalSeconds = $state(2);
   let refreshOnAlert = $state<PreviewAlert>('off');
   let busy = $state(false);
   let loaded = $state(false);
@@ -17,8 +20,9 @@
     busy = true;
     try {
       const settings = await api<{
-        source: 'direct' | 'proxy'; proxyUrl?: string; refreshOnAlert: PreviewAlert
+        source: 'direct' | 'proxy'; proxyUrl?: string; previewIntervalMs: number; refreshOnAlert: PreviewAlert
       }>({ path });
+      previewIntervalSeconds = settings.previewIntervalMs / 1000;
       source = settings.source;
       proxyUrl = settings.proxyUrl ?? '';
       refreshOnAlert = settings.refreshOnAlert;
@@ -35,7 +39,7 @@
       const value = await api<Outcome>({
         path, csrf, method: 'PUT',
         body: {
-          operationId: operationId(), source, refreshOnAlert,
+          operationId: operationId(), source, refreshOnAlert, previewIntervalMs: Math.round(previewIntervalSeconds * 1000),
           ...(source === 'proxy' ? { proxyUrl: proxyUrl.trim() } : {})
         }
       });
@@ -77,7 +81,12 @@
           {#each previewAlerts as value}<option {value}>{t(value === 'any' ? 'preview-alert-any' : value)}</option>{/each}
         </select>
       </label>
-      <p class="muted">{t(bridgePreview ? 'preview-bridge-settings-hint' : 'preview-bridge-configure')}</p>
+      <div class="field">
+        <div class="field-heading"><label for={fieldId + '-interval'}>{t('preview-poll-interval')}</label><InfoTip label={t('preview-poll-interval')} text={t('preview-poll-hint')} /></div>
+        <input id={fieldId + '-interval'} type="number" min={minPreviewIntervalMs / 1000} max={maxPreviewIntervalMs / 1000}
+          step="0.001" required bind:value={previewIntervalSeconds} />
+      </div>
+      {#if !bridgePreview}<p class="muted">{t('preview-bridge-configure')}</p>{/if}
       <div class="row"><button class="primary" disabled={busy}>{t('save')}</button></div>
     </form>
   {:else if busy}

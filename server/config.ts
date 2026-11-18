@@ -133,6 +133,7 @@ export const bridgeSchema = object({
 });
 
 export const configSchema = object({
+  logging: z.record(z.string(),z.unknown()).default({}),
   publicOrigin: endpoint({ secure: 'https:', plain: 'http:', originOnly: true }),
   httpApi: object({
     mode: z.enum(['browser', 'proxy']).default('browser'),

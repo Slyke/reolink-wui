@@ -26,6 +26,7 @@
   let eventLimit = defaultEventRetention;
   let revision = $state(0);
   let alertFrameRequest = $state(0);
+  let previewTags = $state<Record<string,string>>({});
   let source: EventSource | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let loadSequence = 0;
@@ -128,7 +129,8 @@
     };
     source.onmessage = event => {
       const message = JSON.parse(event.data);
-      if (message.kind === 'event') {
+      if (message.kind === 'preview') previewTags[message.camera] = message.etag;
+      else if (message.kind === 'event') {
         const entry = { id: message.id, observedAt: message.observedAt, event: message.event };
         if (message.camera === historyCamera && !events.some(previous => previous.id === entry.id)) {
           events = [...events, entry].slice(-Math.max(1, eventLimit));
@@ -206,7 +208,7 @@
       </nav>
     </aside>
     {#key camera.id}
-      <CameraPanel {camera} {revision} {events} {historyError} {alertFrameRequest}
+      <CameraPanel {camera} {revision} previewTag={previewTags[camera.id]} pushConnected={feed} {events} {historyError} {alertFrameRequest}
         administer={workspace.current().user.admin} csrf={workspace.current().csrf} />
     {/key}
   </div>

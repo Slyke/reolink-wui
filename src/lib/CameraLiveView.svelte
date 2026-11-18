@@ -1,12 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
-  import { bridgePreviewPollIntervalMs } from '../../shared/playback.js';
   import { api, errorText, fetchPreview, operationId, outcomeText, t, UiError, url, type Outcome } from './api.js';
   import { dismissOnBackdrop } from './dialog.js';
   import type { Camera } from './models.js';
 
-  let { camera, name, csrf, administer, compact = false, refreshRequest = 0, headingId, actions }: {
-    camera: Camera; name: string; csrf: string; administer: boolean;
+  let { previewTag, pushConnected = false, camera, name, csrf, administer, compact = false, refreshRequest = 0, headingId, actions }: {
+    previewTag?: string; pushConnected?: boolean; camera: Camera; name: string; csrf: string; administer: boolean;
     compact?: boolean; refreshRequest?: number; headingId?: string; actions?: Snippet;
   } = $props();
   const id = $props.id();
@@ -23,6 +22,7 @@
   let manualFrameRequest = $state(0);
   let previousRequest: number | undefined;
   let enqueue: (() => void) | undefined;
+  let notifyPreview: ((tag: string) => void) | undefined;
   let resumePreview: (() => void) | undefined;
 
   let stream = $state<'main' | 'sub'>('main');
@@ -97,7 +97,7 @@
   });
   $effect(() => {
     // Resume when the selected surface or playback changes.
-    void [enabled, expanded, playback];
+    void [enabled, expanded, playback, camera.previewIntervalMs, camera.previewPush, pushConnected];
     untrack(() => resumePreview?.());
   });
   $effect(() => {
@@ -107,12 +107,15 @@
     if (!valid) stream = supported.includes('sub') ? 'sub' : 'main';
   });
 
+  $effect(() => { const tag = previewTag; if (tag) untrack(() => notifyPreview?.(tag)); });
+
   onDestroy(stopLive);
   onMount(() => {
     let stopped = false;
     let visible = typeof IntersectionObserver === 'undefined';
     let running = false;
     let urgent = false;
+    let pending = false;
     let finishedAt: number | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let request: AbortController | undefined;
@@ -126,8 +129,8 @@
     };
     const schedule = () => {
       clearTimeout(timer);
-      if (canFetch() && !running && finishedAt !== undefined) {
-        timer = setTimeout(update, Math.max(0, Math.ceil(finishedAt + bridgePreviewPollIntervalMs - performance.now())));
+      if (canFetch() && !running && finishedAt !== undefined && (!camera.previewPush || !pushConnected || pending)) {
+        timer = setTimeout(update, Math.max(0, Math.ceil(finishedAt + camera.previewIntervalMs - performance.now())));
       }
     };
     const update = async () => {
@@ -135,22 +138,31 @@
       clearTimeout(timer);
       const query = urgent ? '?refresh=true' : '';
       urgent = false;
+      pending = false;
       running = true;
       request = new AbortController();
       try {
         const next = await fetchPreview({ path: base + '/preview' + query, etag, signal: request.signal });
         if (!stopped && enabled) {
-          etag = next.etag;
           if (next.image) {
+            const candidate = URL.createObjectURL(next.image);
+            try {
+              const decoded = new Image(); decoded.src = candidate;
+              await decoded.decode();
+              if (stopped || !enabled) { URL.revokeObjectURL(candidate); return; }
+            } catch (error) { URL.revokeObjectURL(candidate); throw error; }
             const previous = image;
-            image = URL.createObjectURL(next.image);
+            image = candidate;
             if (previous) URL.revokeObjectURL(previous);
           }
+          etag = next.etag;
+          if (previewTag === next.etag) pending = false;
           failed = false;
         }
       } catch (error) {
         if (!stopped && enabled) {
           failed = true;
+          pending = true;
           if (error instanceof UiError && ['ACCESS_DENIED', 'NOT_AUTHENTICATED', 'CAMERA_UNKNOWN'].includes(error.reason)) clear();
         }
       } finally {
@@ -159,6 +171,11 @@
         if (urgent && canFetch()) void update();
         else schedule();
       }
+    };
+    notifyPreview = tag => {
+      if (tag === etag) return;
+      pending = true;
+      resume();
     };
     resumePreview = () => {
       if (!enabled) {
@@ -189,6 +206,7 @@
       stopped = true;
       enqueue = undefined;
       resumePreview = undefined;
+      notifyPreview = undefined;
       observer?.disconnect();
       document.removeEventListener('visibilitychange', resume);
       request?.abort();

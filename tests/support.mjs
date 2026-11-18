@@ -32,10 +32,10 @@ export const eventually = async (check, ms = 9000) => {
 
 export const launch = async ({
   auth = { mode: 'local' }, proxy = false, bridges = [], eventHistory,
-  database = { driver: 'sqlite', path: ':memory:' }, sessionMinutes, localSessionMinutes
+  database = { driver: 'sqlite', path: ':memory:' }, sessionMinutes, localSessionMinutes, logging
 } = {}) => {
   const config = configSchema.parse({
-    auth, database, publicOrigin, bridges, eventHistory, sessionMinutes, localSessionMinutes,
+    auth, database, publicOrigin, bridges, eventHistory, sessionMinutes, localSessionMinutes, logging,
     ...(proxy ? {
       httpApi: { mode: 'proxy', proxy: { basePath: '/front', upstreamBaseUrl: 'http://127.0.0.1:8080', upstreamBasePath: '/private' } },
       forward: { secret: hop, peers: ['127.0.0.1'] }
@@ -120,9 +120,9 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
-  const previewRequests = [];
-  let previewJpeg = jpeg;
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
+  const previewRequests = [], recordingRequests = [];
+  let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
   let motion = true;
   let sensitivity = 40;
@@ -233,7 +233,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
       version:1, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
-      previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
+      previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
@@ -255,14 +255,22 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       const query = new URL(req.url,'http://127.0.0.1').searchParams;
       return res.end(JSON.stringify({
         date:query.get('date'),stream:query.get('stream'),truncated:false,
-        recordings:Array.from({length:recordingCount},(_,index)=>({id:(index+10).toString(16).repeat(64).slice(0,64),start:query.get('date')+'T12:'+String(index).padStart(2,'0')+':00',end:query.get('date')+'T12:'+String(index).padStart(2,'0')+':02',stream:query.get('stream'),sizeBytes:recordedMp4.length,kind:'motion'}))
+        recordings:Array.from({length:recordingCount},(_,index)=>({id:(index+10+(query.get('stream')==='main'?100:0)).toString(16).repeat(64).slice(0,64),start:query.get('date')+'T12:'+String(index).padStart(2,'0')+':00',end:query.get('date')+'T12:'+String(index).padStart(2,'0')+':02',stream:query.get('stream'),sizeBytes:recordedMp4.length,kind:'motion'}))
       }));
     }
-    if (recordings && /\/recordings\/[a-f0-9]{64}\/preview$/.test(req.url)) {
+    if (recordings && /\/recordings\/[a-f0-9]{64}\/preview(?:\?.*)?$/.test(req.url)) {
+      recordingRequests.push({url:req.url,kind:'preview',at:performance.now()});
       res.writeHead(200,{'content-type':'image/jpeg'});
       return res.end(jpeg);
     }
+    if (recordings && /\/recordings\/[a-f0-9]{64}\/metadata$/.test(req.url)) {
+      return res.end(JSON.stringify({source:'recording',truncated:false,frames:[
+        {offsetMs:0,objects:[{class:'person',confidence:.92,bounding_box:{left:.1,top:.2,right:.4,bottom:.8,coordinate_space:'normalized_top_left',reference_frame:'fixture'}}]},
+        {offsetMs:1000,objects:[]}
+      ]}));
+    }
     if (recordings && /\/recordings\/[a-f0-9]{64}\/video$/.test(req.url)) {
+      recordingRequests.push({url:req.url,kind:'video',range:req.headers.range,at:performance.now()});
       if (playbackFailure) {
         res.writeHead(playbackFailure.status,{'content-type':'application/json'});
         return res.end(JSON.stringify({stage:playbackFailure.stage,correlation_id:playbackFailure.correlation,secret:token}));
@@ -340,11 +348,17 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http', events:'mqtt',
       http:{url:root,token:token}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
     },
-    correlations, requests, previewRequests,
+    correlations, requests, previewRequests, recordingRequests,
     setPlaybackAvailable: value => { playbackAvailable = value; },
     setRecordingFailure: value => { playbackFailure = value; },
+    setPreviewNotifications: value => { previewNotifications = value; },
+    announcePreview: (camera_id='alpha', transport) => {
+      const topic='state/preview', payload={preview:{etag:'"' + createHash('sha256').update(previewJpeg).digest('hex') + '"',captured_at:new Date().toISOString()}};
+      if (transport !== 'mqtt') broadcast(camera_id,{op:'snapshot',snapshot:{camera_id,topic,payload}},transport);
+      if (transport !== 'ws' && transport !== 'api') broker.client.publish(baseTopic+'/'+camera_id+'/'+topic,JSON.stringify(payload),{retain:true});
+    },
     changePreview: () => {
-      const comment = Buffer.from([0xff, 0xfe, 0, 3, 1]);
+      const comment = Buffer.from([0xff, 0xfe, 0, 3, ++previewRevision % 256]);
       previewJpeg = Buffer.concat([jpeg.subarray(0, 2), comment, jpeg.subarray(2)]);
     },
     counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads, callbacks:callbacks.length }),

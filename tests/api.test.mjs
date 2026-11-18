@@ -48,7 +48,7 @@ for (const database of dbs) test('authorization, operations and live revocation:
     path:profileUrl, method:'PUT', headers:allowed, payload:{operationId:uuid(),source:'direct',...fields}
   });
   assert.deepEqual((await incoming({ path:profileUrl,headers:allowed })).json(),
-    {source:'direct',previewIntervalMs:5000,refreshOnAlert:'off'});
+    {source:'direct',previewIntervalMs:2000,refreshOnAlert:'off'});
   assert.equal((await setProfile({previewIntervalMs:49})).statusCode,400);
   assert.equal((await setProfile({refreshOnAlert:'unknown-type'})).statusCode,400);
   assert.equal((await setProfile({previewIntervalMs:50,refreshOnAlert:'person'})).statusCode,200);
@@ -690,6 +690,14 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal(preview.statusCode,200,preview.body);
   assert.equal(preview.headers['content-type'],'image/jpeg');
   assert.equal(preview.rawPayload[0],255);assert.equal(preview.rawPayload[1],216);
+  assert.equal((await incoming({path:previewPath+'?offsetMs=-1',headers:privileged})).statusCode,400);
+  assert.equal((await incoming({path:previewPath+'?offsetMs=86400001',headers:privileged})).statusCode,400);
+  assert.equal((await incoming({path:previewPath+'?offsetMs=1000',headers:privileged})).statusCode,200);
+  const metadataPath=root+'/recordings/'+recording.id+'/metadata';
+  assert.equal((await incoming({path:metadataPath,headers:restricted})).statusCode,403);
+  const metadata=await incoming({path:metadataPath,headers:privileged});
+  assert.equal(metadata.statusCode,200,metadata.body);
+  assert.equal(metadata.json().frames[0].objects[0].bounding_box.left,.1);
 
   assert.equal((await incoming({path,headers:restricted})).statusCode,403);
   const partial=await incoming({path,headers:{...privileged,range:'bytes=0-31'}});

@@ -3,10 +3,10 @@
   import { t } from './api.js';
   import { dismissOnBackdrop } from './dialog.js';
   import { formatLocalTimestamp } from './dates.js';
-  import type { CameraEvent } from './models.js';
+  import type { CameraEvent, CameraDetail } from './models.js';
   import SearchSelect from './SearchSelect.svelte';
 
-  let { events, historyError }: { events: CameraEvent[]; historyError: boolean } = $props();
+  let { events, historyError, coordinateStream }: { events: CameraEvent[]; historyError: boolean; coordinateStream?: CameraDetail['coordinateStream'] } = $props();
   const id = $props.id();
   let dialog: HTMLDialogElement;
   let title = $state<HTMLHeadingElement>();
@@ -142,6 +142,10 @@
             <dd><time datetime={event.cameraTime}>{formatLocalTimestamp(event.cameraTime)}</time></dd>
           {/if}
         </dl>
+        <details><summary>{t('event-json')}</summary><pre>{JSON.stringify(entry,null,2)}</pre></details>
+        {#if !event.objects?.length}
+          <p class="muted">{t(coordinateStream?.enabled === false ? 'event-coordinates-disabled' : 'event-coordinates-not-sent')}</p>
+        {/if}
         {#if event.objects?.length}
           {#if !event.objects.some(({ box }) => [box.left, box.top, box.right, box.bottom].some(Number.isFinite))}
             <p class="muted">{t('event-coordinates-unavailable')}</p>

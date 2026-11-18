@@ -21,6 +21,7 @@ const playbackFields = {
 
 const eventFilter = z.strictObject({ camera: uuid.optional(), type: z.string().max(120).optional() });
 type LiveUpdate = { kind: 'feed' }
+  | { kind: 'preview'; camera: string; etag: string }
   | { kind: 'state'; camera: string }
   | ({ kind: 'event'; camera: string } & CameraEvent);
 type DeliveryGap = Extract<FeedGap, { cause: 'delivery-backlog' }>;
@@ -92,6 +93,9 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
         if (update.kind === 'feed') return enqueue({ kind: 'feed' });
         const mapped = byBridge.get(id + '/' + update.camera);
         if (!mapped) return;
+        if (update.kind === 'preview' && mapped.grants.has('media.live')) {
+          return enqueue({ kind: 'preview', camera: mapped.camera, etag: update.etag });
+        }
         if (update.kind === 'event' && mapped.grants.has('events')
           && (!filter.type || [update.topic, update.entry.event.vendorTopic].includes(filter.type))) {
           enqueue({ kind: 'event', camera: mapped.camera, ...update.entry });

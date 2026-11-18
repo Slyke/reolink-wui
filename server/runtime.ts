@@ -85,6 +85,7 @@ export class Runtime {
     const id = bridge.config.id;
     this.eventObservers.get(id)?.();
     this.eventObservers.set(id, bridge.observe(update => {
+      if (update.kind === 'preview') return;
       if (update.kind === 'event' && bridge.ids().includes(update.camera)) {
         this.history.add({ camera: id + '/' + update.camera, entry: update.entry });
       }
@@ -282,7 +283,7 @@ export class Runtime {
       return [{
         id: row.id, ...information({ state: bridge.state(row.remote_id) }),
         availability: available({ bridge, remote: row.remote_id }),
-        previewIntervalMs: row.preview_interval_ms, refreshOnAlert: row.preview_refresh_on_alert,
+        previewIntervalMs: row.preview_interval_ms, previewPush: bridge.previewPush(row.remote_id), refreshOnAlert: row.preview_refresh_on_alert,
         capabilities: capabilities({ bridge, remote: row.remote_id, grant, proxy: !!row.rtsp_proxy })
       }];
     });

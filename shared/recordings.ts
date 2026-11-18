@@ -29,3 +29,25 @@ export type RecordingList = z.infer<typeof recordingsResponse>;
 
 export type Recording = RecordingList['recordings'][number];
 export const recordingStages = ['camera-download', 'conversion', 'cache-limit', 'busy', 'timeout', 'temporary-storage', 'preparation'] as const;
+
+
+export const recordingMetadataResponse = z.object({
+  source: z.literal('recording'),
+  truncated: z.boolean(),
+  frames: z.array(z.object({
+    offsetMs: z.number().int().min(0).max(86_400_000),
+    objects: z.array(z.object({
+      class: z.string().max(120).optional(),
+      tracking_id: z.string().max(120).optional(),
+      confidence: z.number().min(0).max(1).optional(),
+      bounding_box: z.object({
+        left: z.number(), top: z.number(), right: z.number(), bottom: z.number(),
+        coordinate_space: z.enum(['normalized_top_left','pixels_top_left']),
+        reference_frame: z.string().max(200),
+        frame_width: z.number().int().positive().optional(),
+        frame_height: z.number().int().positive().optional()
+      }).optional()
+    })).max(32)
+  })).max(4096)
+});
+export type RecordingMetadata = z.infer<typeof recordingMetadataResponse>;

@@ -2,9 +2,12 @@ import { randomUUID } from 'node:crypto';
 import logger from './styleguide-logger.cjs';
 import codes from './errors.json' with { type: 'json' };
 
-export const logs = logger.debugAndErrors({ errorCodeMap: codes }) as {
+export let logs = logger.debugAndErrors({ errorCodeMap: codes }) as {
   generateLog: (options: { caller: string; level: string; loggerKey: string; message: string; context?: object }) => unknown;
   generateError: (options: { caller: string; reason: string; errorKey: string; correlationId?: string; includeStackTrace: boolean }) => unknown;
+};
+export const configureLogging = ({ logging }: { logging: Record<string,unknown> }) => {
+  logs = logger.debugAndErrors({ settings: { logging }, errorCodeMap: codes });
 };
 export const buildInfo = {
   service: 'reolink-wui',
@@ -32,8 +35,6 @@ export const report = ({ error, correlationId = randomUUID(), caller = 'api::req
   error: Failure; correlationId?: string; caller?: string;
 }) => {
   const errorCode = codes[error.key];
-  if (error.status >= 500) {
-    logs.generateError({ caller, reason: error.key, errorKey: error.key, correlationId, includeStackTrace: false });
-  }
+  logs.generateError({ caller, reason: error.key, errorKey: error.key, correlationId, includeStackTrace: false });
   return { error: error.key, errorKey: error.key, errorCode, correlationId, outcome: error.outcome, ...(error.details ? { details: error.details } : {}) };
 };

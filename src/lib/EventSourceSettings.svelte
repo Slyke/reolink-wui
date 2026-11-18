@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { EventSource } from '../../shared/events.js';
   import type { BridgeSummary } from './models.js';
+  import InfoTip from './InfoTip.svelte';
   import SearchSelect from './SearchSelect.svelte';
   import { t } from './api.js';
   import { useAdministration } from './workspace.js';
@@ -25,8 +26,8 @@
 
 <form class="stack" aria-label={t('event-source-form', { bridge: bridge.label })}
   onsubmit={event => { event.preventDefault(); void save(); }}>
-  <h3>{t('event-source-form', { bridge: bridge.label })}</h3>
-  <p class="muted">{t('event-source-help')}</p>
+  <div class="field-heading"><h3>{t('event-source-form', { bridge: bridge.label })}</h3>
+    <InfoTip label={t('event-source-form', { bridge: bridge.label })} text={t('event-source-help')} /></div>
   <ol class="source-priority" aria-label={t('event-source-priority')}>
     {#each sources as source, index (source)}
       <li>

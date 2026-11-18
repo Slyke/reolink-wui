@@ -6,8 +6,8 @@
   import CameraLiveView from './CameraLiveView.svelte';
   import EventFeed from './EventFeed.svelte';
 
-  let { camera, events, historyError, csrf, revision, alertFrameRequest, administer }: {
-    camera: Camera; events: CameraEvent[]; historyError: boolean; csrf: string; revision: number;
+  let { previewTag, pushConnected, camera, events, historyError, csrf, revision, alertFrameRequest, administer }: {
+    previewTag?: string; pushConnected?: boolean; camera: Camera; events: CameraEvent[]; historyError: boolean; csrf: string; revision: number;
     alertFrameRequest: number; administer: boolean
   } = $props();
   let info = $state<CameraDetail>();
@@ -99,7 +99,7 @@
   </section>
   <div class="monitor-columns" class:with-events={camera.capabilities.events}>
     <section class="panel stack" aria-labelledby={liveTitle}>
-      <CameraLiveView headingId={liveTitle} {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
+      <CameraLiveView {previewTag} {pushConnected} headingId={liveTitle} {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
         {#snippet actions()}
           {#if camera.capabilities.capture}
             <button disabled={!online || busy} onclick={snapshot}>{t(busy ? 'pending' : 'snapshot')}</button>
@@ -111,7 +111,7 @@
         <a href={capture} download="snapshot.png">{t('download')}</a>
       {/if}
     </section>
-    {#if camera.capabilities.events}<EventFeed {events} {historyError} />{/if}
+    {#if camera.capabilities.events}<EventFeed coordinateStream={info?.coordinateStream} {events} {historyError} />{/if}
   </div>
   {#if info?.detections?.length}
     <section class="panel stack">
@@ -120,7 +120,7 @@
         {#each info.detections as item (item.type)}
           {@const status = item.active === true ? 'triggered' : item.active === false ? 'cleared' : 'observed'}
           <span class="pill detection-state" data-status={online ? status : 'stale'}>
-            <span class="wrap">{t(item.type)} · {t(item.active === undefined ? 'event-observed' : item.active ? 'event-active' : 'event-clear')}</span>
+            <span class="detection-lines"><span class="detection-label" title={t(item.type)}>{t(item.type)}</span><span>{t(item.active === undefined ? 'event-observed' : item.active ? 'event-active' : 'event-clear')}</span></span>
           </span>
         {/each}
       </div>

@@ -13,9 +13,11 @@
   let busy = $state(false);
   let loading = $state(true);
   let error = $state('');
+  let pushConnected = $state(false);
+  let previewTags = $state<Record<string,string>>({});
   let frameRequests = $state<Record<string, number>>({});
   let reconnect = $state(0);
-  const watchAlerts = $derived(cameras.some(camera => camera.capabilities.events && camera.capabilities.preview && camera.refreshOnAlert !== 'off'));
+  const watchAlerts = $derived(cameras.some(camera => camera.capabilities.preview));
 
   const refresh = async () => {
     if (busy) return;
@@ -40,9 +42,13 @@
     if (!watchAlerts) return;
     const source = new EventSource(url('/api/v1/events'));
     let active = true;
+    source.onopen = () => { pushConnected = true; void refresh(); };
+    source.onerror = () => { pushConnected = false; };
     source.onmessage = event => {
       const message = JSON.parse(event.data);
-      if (message.kind === 'event') {
+      if (message.kind === 'preview') previewTags[message.camera] = message.etag;
+      else if (message.kind === 'feed') void refresh();
+      else if (message.kind === 'event') {
         const camera = cameras.find(item => item.id === message.camera);
         if (camera?.capabilities.preview && matchesPreviewAlert({ selected: camera.refreshOnAlert, event: message.event })) {
           frameRequests[camera.id] = (frameRequests[camera.id] ?? 0) + 1;
@@ -54,6 +60,7 @@
     };
     return () => {
       active = false;
+      pushConnected = false;
       source.close();
     };
   });
@@ -85,7 +92,7 @@
           <span class="pill" data-status={cameraStatus(camera)}>{t(cameraStatus(camera))}</span>
         </div>
         <CameraLiveView {camera} {name} compact csrf={workspace.current().csrf} administer={workspace.current().user.admin}
-          refreshRequest={frameRequests[camera.id] ?? 0} />
+          previewTag={previewTags[camera.id]} {pushConnected} refreshRequest={frameRequests[camera.id] ?? 0} />
       </article>
     {/each}
   </div>
