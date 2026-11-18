@@ -17,8 +17,7 @@
     // {
     //   id: "bridge", label: "Private bridge", cameraIds: [],
     //   commands: "http", capture: "mqtt",
-    //   // Defaults to WS/WSS primary and MQTT standby when http is configured.
-    //   // events: { primary: "mqtt", secondary: "ws" },
+    //   // Set event source priority in Settings > Private bridges.
     //   // Supply ws: { url, token, ca } for a custom WebSocket endpoint.
     //   // For credential administration, also configure http.adminToken.
     //   http: { url: "https://bridge.example.invalid:8080", token: "${BRIDGE_HTTP_TOKEN}", ca: "${file:bridge-ca.pem}" },

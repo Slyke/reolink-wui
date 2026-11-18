@@ -78,7 +78,8 @@ const migrations = [
     appearance TEXT NOT NULL DEFAULT '{}',
     inventory_interval_seconds INTEGER NOT NULL DEFAULT 10 CHECK (inventory_interval_seconds BETWEEN 1 AND 86400)
   );
-  INSERT INTO instance_settings(id) VALUES (1);`
+  INSERT INTO instance_settings(id) VALUES (1);`,
+  `ALTER TABLE bridges ADD COLUMN event_sources TEXT;`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {

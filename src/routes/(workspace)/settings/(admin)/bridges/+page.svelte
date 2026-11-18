@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from '$lib/api.js';
+  import EventSourceSettings from '$lib/EventSourceSettings.svelte';
   import { minInventoryIntervalSeconds, maxInventoryIntervalSeconds } from '../../../../../../shared/upstreams.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import { useAdministration } from '$lib/workspace.js';
@@ -33,19 +34,22 @@
     <p class="muted">{t('inventory-cadence', { seconds: interval })}</p>
   </form>
   {#if bridges.length}
-    <ul class="events">
+    <ul class="bridge-settings">
       {#each bridges as bridge (bridge.id)}
-        <li class="row between">
-          <div class="bridge-label">
-            <span class="wrap">{bridge.label}</span>
-            {#if bridge.refreshedAt}
-              <time class="muted" aria-live="polite" datetime={bridge.refreshedAt}>
-                {t('inventory-refreshed', { time: formatLocalTimestamp(bridge.refreshedAt) })}
-              </time>
-            {/if}
+        <li class="stack">
+          <div class="row between">
+            <div class="bridge-label">
+              <span class="wrap">{bridge.label}</span>
+              {#if bridge.refreshedAt}
+                <time class="muted" aria-live="polite" datetime={bridge.refreshedAt}>
+                  {t('inventory-refreshed', { time: formatLocalTimestamp(bridge.refreshedAt) })}
+                </time>
+              {/if}
+            </div>
+            <span class="pill" data-status={bridge.connected ? 'online' : 'offline'}>{t(bridge.connected ? 'online' : 'offline')}</span>
+            <button disabled={admin.busy()} onclick={() => admin.mutate({ suffix: '/bridges/' + bridge.id + '/sync', body: {}, announce: false })}>{t('sync')}</button>
           </div>
-          <span class="pill" data-status={bridge.connected ? 'online' : 'offline'}>{t(bridge.connected ? 'online' : 'offline')}</span>
-          <button disabled={admin.busy()} onclick={() => admin.mutate({ suffix: '/bridges/' + bridge.id + '/sync', body: {}, announce: false })}>{t('sync')}</button>
+          {#key bridge.eventSources.join(',')}<EventSourceSettings {bridge} />{/key}
         </li>
       {/each}
     </ul>

@@ -2,18 +2,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Agent } from 'undici';
 import type { ActionResult } from './operations.js';
-import type { BridgeConfig } from './config.js';
-import type { ConnectionState, Upstream, UpstreamConnection } from '../shared/upstreams.js';
+import { availableEventSources, type BridgeConfig } from './config.js';
+import type { ConnectionState, Transport, Upstream, UpstreamConnection } from '../shared/upstreams.js';
 import { at, dispatcher, jsonResponse } from './net.js';
-import { BrokerChannel, SocketChannel, record, type ChannelChanges, type Envelope } from './bridge-channels.js';
+import { ApiChannel, BrokerChannel, SocketChannel, record, type ChannelChanges, type Envelope } from './bridge-channels.js';
 import { Failure } from './errors.js';
 import { correlationPattern, segment } from '../shared/urls.js';
 
 import { eventData, type CameraEvent } from './cameras.js';
-import type { FeedConnectionFailure, FeedGap } from '../shared/events.js';
+import type { EventSource, FeedConnectionFailure, FeedGap } from '../shared/events.js';
 
 type BridgeInterruption = Extract<FeedGap, { cause: 'bridge-connection' }>;
-type EventSource = BridgeConfig['events']['primary'];
 type FeedState = {
   transport: BridgeInterruption['transport'];
   cache: Map<string, Map<string, Envelope>>;
@@ -53,7 +52,9 @@ export class Bridge {
   private reportedIds?: Set<string>;
   private readonly allowed = new Set<string>();
   private readonly broker: BrokerChannel;
-  private readonly socket?: SocketChannel;
+  private socket?: SocketChannel;
+  private apiChannel?: ApiChannel;
+  private priority: EventSource[] = [];
   private readonly http?: Link;
   private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false };
   private scanning?: Promise<boolean>;
@@ -63,43 +64,71 @@ export class Bridge {
   private httpState?: boolean;
   private interruption?: BridgeInterruption;
   private get activeFeed() {
-    return [...this.feeds].find(([, feed]) => feed.ready)?.[0];
+    return this.priority.find(source => this.feeds.get(source)?.ready);
   }
 
   get feedReady() { return this.activeFeed !== undefined; }
   get feedGap() { return this.interruption; }
 
-  constructor(readonly config: BridgeConfig) {
+  get availableEventSources() { return availableEventSources({ config: this.config }); }
+  get eventSources() { return [...this.priority]; }
+
+  constructor(readonly config: BridgeConfig, sources: EventSource[]) {
     const scope = config.cameraIds.length ? config.cameraIds : config.mqtt.cameraIds ?? [];
     scope.forEach(id => this.allowed.add(id));
 
-    const { primary, secondary } = config.events;
-    const ws = config.ws ?? (config.http && {
-      url: at({ base: config.http.url, path: '/ws' }),
-      token: config.http.token, ca: config.http.ca
-    });
-    if (ws && !config.ws) ws.url.protocol = ws.url.protocol === 'https:' ? 'wss:' : 'ws:';
-    for (const name of [primary, secondary]) {
-      if (!name) continue;
-      const transport = name === 'ws' ? (ws?.url.protocol === 'wss:' ? 'WSS' : 'WS')
-        : (config.mqtt.url.protocol === 'mqtts:' ? 'MQTT TLS' : 'MQTT');
-      this.feeds.set(name, { transport, cache: new Map() });
+    if (config.http) this.http = { ...config.http, agent: dispatcher({ ca: config.http.ca }) };
+    const secureSocket = config.ws ? config.ws.url.protocol === 'wss:' : config.http?.url.protocol === 'https:';
+    const transports: Record<EventSource, Transport> = {
+      ws: secureSocket ? 'WSS' : 'WS',
+      mqtt: config.mqtt.url.protocol === 'mqtts:' ? 'MQTT TLS' : 'MQTT',
+      api: config.http?.url.protocol === 'https:' ? 'HTTPS' : 'HTTP'
+    };
+    for (const source of this.availableEventSources) {
+      this.feeds.set(source, { transport: transports[source], cache: new Map() });
     }
-    const mqtt = this.feeds.get('mqtt');
     this.broker = new BrokerChannel(
       config.mqtt, config.mqtt.cameraIds ?? scope, config.commands === 'mqtt' || !!config.capture,
-      mqtt && this.channelChanges({ source: 'mqtt', feed: mqtt })
+      this.channelChanges({ source: 'mqtt', feed: this.feeds.get('mqtt')! }), sources.includes('mqtt')
     );
-    const socket = this.feeds.get('ws');
-    if (socket && ws) this.socket = new SocketChannel(ws, scope, this.channelChanges({ source: 'ws', feed: socket }));
-    if (config.http) this.http = { ...config.http, agent: dispatcher({ ca: config.http.ca }) };
+    this.setEventSources(sources);
+  }
+
+  setEventSources(sources: EventSource[]) {
+    if (this.priority.join(',') === sources.join(',')) return;
+    const previous = this.activeFeed;
+    this.priority = [...sources];
+    const { config } = this;
+    const ws = config.ws ?? (config.http && {
+      url: at({ base: config.http.url, path: '/ws' }), token: config.http.token, ca: config.http.ca
+    });
+    if (ws && !config.ws) ws.url.protocol = ws.url.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (sources.includes('ws') && ws && !this.socket) {
+      this.socket = new SocketChannel(ws, [...this.allowed], this.channelChanges({ source: 'ws', feed: this.feeds.get('ws')! }));
+    }
+    if (!sources.includes('ws') && this.socket) {
+      this.socket.close();
+      this.socket = undefined;
+      this.feeds.get('ws')!.ready = false;
+    }
+    if (sources.includes('api') && this.http && !this.apiChannel) {
+      this.apiChannel = new ApiChannel(this.http, [...this.allowed], this.channelChanges({ source: 'api', feed: this.feeds.get('api')! }));
+    }
+    if (!sources.includes('api') && this.apiChannel) {
+      void this.apiChannel.close();
+      this.apiChannel = undefined;
+      this.feeds.get('api')!.ready = false;
+    }
+    this.broker.setEvents(sources.includes('mqtt'));
+    if (this.activeFeed) this.lastFeed = this.activeFeed;
+    if (previous !== this.activeFeed) this.channel.emit('update', { kind: 'feed' });
   }
 
   private channelChanges({ source, feed }: { source: EventSource; feed: FeedState }): ChannelChanges {
     const bridgeSource = { bridge: this.config.label, transport: feed.transport };
     const updateBrokerTargets = () => {
       // Legacy bridges can disclose the exact camera IDs in their WebSocket snapshots.
-      if (source === 'ws' && !this.reportedIds && !this.allowed.size && !this.bridgeVersion.inventory) {
+      if ((source === 'ws' || source === 'api') && !this.reportedIds && !this.allowed.size && !this.bridgeVersion.inventory) {
         this.broker.setCameraIds([...feed.cache.keys()]);
       }
     };
@@ -156,7 +185,7 @@ export class Bridge {
         if (typeof payload.received_at === 'string') {
           const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('base64url');
           const delivered = this.recent.get(fingerprint);
-          // WS and MQTT can deliver the same bridge event on opposite sides of a failover.
+          // Multiple feeds can deliver the same bridge event on opposite sides of a failover.
           if (delivered && delivered.source !== source && delivered.expires > now) return;
           this.recent.delete(fingerprint);
           this.recent.set(fingerprint, { source, expires: now + 10_000 });
@@ -309,18 +338,23 @@ export class Bridge {
       });
     }
     const eventRole = ({ source }: { source: EventSource }): UpstreamConnection['feed'] => {
-      if (this.feeds.size < 2 || !this.feeds.get(source)?.ready) return undefined;
+      if (this.priority.length < 2 || !this.priority.includes(source) || !this.feeds.get(source)?.ready) return undefined;
       return this.activeFeed === source ? 'active' : 'standby';
     };
     const socket = this.feeds.get('ws');
-    if (socket) {
+    if (socket && this.priority.includes('ws')) {
       connections.push({
         id: 'ws', transport: socket.transport, uses: ['events'],
         state: state({ connected: socket.ready }), feed: eventRole({ source: 'ws' })
       });
     }
+    const api = this.feeds.get('api');
+    if (api && this.priority.includes('api')) connections.push({
+      id: 'api', transport: api.transport, uses: ['events'],
+      state: state({ connected: api.ready }), feed: eventRole({ source: 'api' })
+    });
     const uses: UpstreamConnection['uses'] = [];
-    if (this.feeds.has('mqtt')) uses.push('events');
+    if (this.priority.includes('mqtt')) uses.push('events');
     if (config.commands === 'mqtt') uses.push('commands');
     if (config.capture) uses.push('capture');
     if (!uses.length) uses.push('connectivity');
@@ -416,7 +450,7 @@ export class Bridge {
 
   async close() {
     this.socket?.close();
-    await Promise.all([this.broker.close(), this.http?.agent.destroy()]);
+    await Promise.all([this.apiChannel?.close(), this.broker.close(), this.http?.agent.destroy()]);
   }
 }
 

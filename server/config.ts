@@ -3,7 +3,7 @@ import { isIP } from 'node:net';
 import JSON5 from 'json5';
 import { z } from 'zod';
 import { relativePrefix, segment } from '../shared/urls.js';
-import { defaultEventRetention, maxEventRetention } from '../shared/events.js';
+import { defaultEventRetention, maxEventRetention, eventSources } from '../shared/events.js';
 import { resolveReferences } from './references.js';
 
 const object = z.strictObject;
@@ -80,6 +80,14 @@ const http = object({
 });
 const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:' }), token: bearer, ca: tlsRoot });
 const eventTransport = z.enum(['ws', 'mqtt']);
+export const eventSourcesSchema = z.array(z.enum(eventSources)).min(1).max(eventSources.length).refine(unique);
+const legacyEvents = z.union([
+  eventSourcesSchema, eventTransport, object({ primary: eventTransport, secondary: eventTransport.optional() })
+]).transform(value => {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value;
+  return value.secondary ? [value.primary, value.secondary] : [value.primary];
+}).refine(unique);
 const mqtt = object({
   url: endpoint({ secure: 'mqtts:', plain: 'mqtt:', originOnly: true }),
   cameraIds: z.array(id).min(1).max(128).refine(unique).optional(),
@@ -96,23 +104,17 @@ const bridge = object({
   label: z.string().min(1).max(80),
   cameraIds: z.array(id).max(128).refine(unique).default([]),
   commands: z.enum(['http', 'mqtt']),
-  events: z.union([eventTransport, object({ primary: eventTransport, secondary: eventTransport.optional() })]).optional(),
+  // Imported once into the database when upgrading existing installations.
+  events: legacyEvents.optional(),
   capture: z.literal('mqtt').optional(),
   http: http.optional(),
   ws: ws.optional(),
   mqtt,
   callbacks: z.record(id, endpoint({ secure: 'https:', plain: 'http:' })).optional()
-}).transform(value => {
-  const defaults = value.ws || value.http
-    ? { primary: 'ws' as const, secondary: 'mqtt' as const }
-    : { primary: 'mqtt' as const };
-  const events = value.events ?? defaults;
-  return { ...value, events: typeof events === 'string' ? { primary: events } : events };
 }).superRefine((value, ctx) => {
-  const { primary, secondary } = value.events;
-  const usesWs = primary === 'ws' || secondary === 'ws';
-  if (primary === secondary) {
-    ctx.addIssue({ code: 'custom', path: ['events', 'secondary'], message: 'Choose a different secondary transport' });
+  const usesWs = value.events?.includes('ws') ?? Boolean(value.ws || value.http);
+  if (value.events?.includes('api') && !value.http) {
+    ctx.addIssue({ code: 'custom', path: ['http'], message: 'API events require a bridge HTTP endpoint' });
   }
   if (usesWs && !value.http && !value.ws) {
     ctx.addIssue({ code: 'custom', path: ['ws'], message: 'Set a WebSocket or bridge HTTP endpoint' });
@@ -169,6 +171,10 @@ export const configSchema = object({
 
 export type Config = z.infer<typeof configSchema>;
 export type BridgeConfig = Config['bridges'][number];
+
+export const availableEventSources = ({ config }: { config: BridgeConfig }) => eventSources.filter(source =>
+  source === 'mqtt' || (source === 'ws' ? Boolean(config.ws || config.http) : Boolean(config.http))
+);
 
 export const readConfig = ({ path = process.env.WUI_CONFIG ?? './local-only/wui.json5' } = {}): Config => {
   let parsed: unknown;

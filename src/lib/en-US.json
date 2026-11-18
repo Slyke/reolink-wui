@@ -463,5 +463,17 @@
   "reolink-wui-image-counterclockwise": "Rotate counterclockwise",
   "reolink-wui-image-rotation": "Rotation",
   "reolink-wui-grant-permission-settings.image.read": "Read image orientation",
-  "reolink-wui-grant-permission-settings.image.write": "Change image orientation"
+  "reolink-wui-grant-permission-settings.image.write": "Change image orientation",
+  "reolink-wui-event-source-form": "{$bridge} event sources",
+  "reolink-wui-event-source-priority": "Event source priority",
+  "reolink-wui-event-source-help": "The first connected source supplies camera events and state. If it disconnects, the next connected source takes over. Earlier sources take priority again when they recover.",
+  "reolink-wui-event-source-ws": "WebSocket",
+  "reolink-wui-event-source-mqtt": "MQTT",
+  "reolink-wui-event-source-api": "HTTP API",
+  "reolink-wui-event-source-up": "Move {$source} up",
+  "reolink-wui-event-source-down": "Move {$source} down",
+  "reolink-wui-event-source-remove": "Remove {$source}",
+  "reolink-wui-event-source-add": "Add event source",
+  "reolink-wui-event-source-save": "Save event sources",
+  "reolink-wui-event-source-unavailable": "Endpoint unavailable"
 }

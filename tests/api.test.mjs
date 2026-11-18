@@ -242,6 +242,72 @@ test('explicit MQTT preference uses WebSocket while the broker is down', async t
   await eventually(() => role('mqtt') === 'active' && role('ws') === 'standby');
 });
 
+test('admin event-source arrays apply live, fail over across all feeds and survive restart', async t => {
+  const fixture=await fixtureBridge({websocket:true,apiEvents:true});
+  t.after(()=>fixture.close());
+  const directory=await mkdtemp(join(tmpdir(),'wui-source-priority-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const database={driver:'sqlite',path:join(directory,'app.sqlite')};
+  const first=await launch({bridges:[{...fixture.config,events:undefined}],database});
+  t.after(()=>first.app.close());
+  await first.seed({username:'priority-admin',admin:true});
+  await first.seed({username:'priority-viewer'});
+  const headers=await first.signIn('priority-admin');
+  const restricted=await first.signIn('priority-viewer');
+  const bridge=first.runtime.bridges.get('lab');
+  const role=id=>bridge.upstream().connections.find(connection=>connection.id===id)?.feed;
+  await eventually(()=>role('ws')==='active'&&role('mqtt')==='standby'&&role('api')==='standby');
+  assert.deepEqual(bridge.eventSources,['ws','mqtt','api']);
+  const save=(sources,auth=headers)=>first.incoming({
+    method:'PUT',path:'/admin/bridges/lab/event-sources',headers:auth,
+    payload:{operationId:uuid(),sources}
+  });
+  for(const sources of [[],['api','api'],['http'],['api','mqtt','ws','api']]) {
+    assert.equal((await save(sources)).statusCode,400);
+  }
+  assert.equal((await save(['api'],restricted)).statusCode,403);
+  assert.equal((await save(['api','ws','mqtt'])).statusCode,200);
+  await eventually(()=>role('api')==='active'&&role('ws')==='standby');
+  const delivered=[];
+  const gaps=[];
+  const stop=bridge.observe(update=>{
+    if(update.kind==='event') delivered.push(update.topic);
+    if(update.kind==='gap') gaps.push(update.details);
+  });
+  t.after(stop);
+  const initial=fixture.event('alpha','person',{},'api');
+  await eventually(()=>delivered.length===1);
+  fixture.disconnectApi();
+  await eventually(()=>role('ws')==='active');
+  fixture.publishEvent(initial,'ws');
+  fixture.event('alpha','pet',{},'ws');
+  await eventually(()=>delivered.includes('pet'));
+  fixture.disconnectWs();
+  await eventually(()=>role('mqtt')==='active');
+  fixture.event('alpha','vehicle',{},'mqtt');
+  await eventually(()=>delivered.includes('vehicle'));
+  assert.deepEqual(delivered,['person','pet','vehicle']);
+  assert.deepEqual(gaps,[]);
+  fixture.reconnectApi();
+  await eventually(()=>role('api')==='active');
+  assert.equal((await save(['api'])).statusCode,200);
+  fixture.disconnectApi();
+  await eventually(()=>bridge.feedGap?.transport==='HTTP');
+  fixture.reconnectApi();
+  await eventually(()=>bridge.feedReady&&bridge.feedGap===undefined);
+  assert.equal((await save(['mqtt','api','ws'])).statusCode,200);
+  await eventually(()=>role('mqtt')==='active');
+  const persisted=(await first.incoming({path:'/admin',headers})).json().bridges[0];
+  assert.deepEqual(persisted.eventSources,['mqtt','api','ws']);
+  assert.deepEqual(persisted.availableEventSources,['ws','mqtt','api']);
+  await first.app.close();
+  const second=await launch({bridges:[{...fixture.config,events:{primary:'ws'}}],database});
+  t.after(()=>second.app.close());
+  assert.deepEqual(second.runtime.bridges.get('lab').eventSources,['mqtt','api','ws']);
+  await eventually(()=>second.runtime.bridges.get('lab').upstream().connections.find(item=>item.id==='mqtt')?.feed==='active');
+  assert.equal(fixture.counts().writes,0);
+});
+
 test('HTTP reply loss reports unknown while the MQTT feed reconnects', async t => {
   const bridge = await fixtureBridge();
   t.after(() => bridge.close());

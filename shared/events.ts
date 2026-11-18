@@ -1,3 +1,8 @@
+import type { Transport } from './upstreams.js';
+
+export const eventSources = ['ws', 'mqtt', 'api'] as const;
+export type EventSource = typeof eventSources[number];
+
 export const defaultEventRetention = 100;
 export const maxEventRetention = 1000;
 export const maxFeedGapReports = 6;
@@ -7,7 +12,7 @@ export type FeedConnectionFailure = 'tls' | 'authorization' | 'subscription' | '
 
 type DetectedGap = { id: string; detectedAt: number };
 type ConnectionGap = DetectedGap & { recoveredAt?: number };
-type BridgeSource = { bridge: string; transport: 'WS' | 'WSS' | 'MQTT' | 'MQTT TLS' };
+type BridgeSource = { bridge: string; transport: Transport };
 type MissedEvent = { camera: string; type?: string; observedAt: number };
 
 export type FeedGap =

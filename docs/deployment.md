@@ -24,9 +24,11 @@ WUI queries `GET /api/inventory` and subscribes to the exact topics for active c
 
 Configure the inventory scan interval under **Settings → Private bridges**. It defaults to 10 seconds and accepts 1 through 86400. The **Refreshed at** timestamp in Settings records the last manual inventory refresh.
 
-Omit `events` to use WS/WSS as the primary event and state feed when a bridge endpoint is configured. MQTT is the default standby. The WUI keeps both feeds subscribed and uses the preferred one when it is ready. Status marks the active and standby connections.
+Configure each bridge's **Event source priority** under **Settings → Private bridges**. Preferences are saved as an ordered array such as `["ws", "mqtt", "api"]` in the WUI database. The first connected source supplies events and camera state. Selected standby feeds stay connected, and an earlier source takes over again when it recovers. Reorder, add, or remove sources in the WUI and save to apply the change immediately.
 
-Set `events: { primary: "mqtt", secondary: "ws" }` to prefer MQTT. The `events: "mqtt"` and `events: "ws"` forms select a single event feed. By default WS/WSS uses `/ws` at the `http` endpoint with the same token and CA. For a custom path or credential, set `ws: { url, token, ca }`. If using a scoped bridge API token, enable `api.events` on the bridge for WebSocket read access.
+New bridges default to `["ws", "mqtt", "api"]` when HTTP is configured. Available sources depend on the configured endpoints. Existing file-based `events` preferences are imported into the database once during upgrade, including the earlier primary/secondary object and string forms. Subsequent WUI changes take precedence across restarts.
+
+By default WS/WSS uses `/ws` at the `http` endpoint with the same token and CA. For a custom path or credential, set `ws: { url, token, ca }`. The `api` source uses the bridge's authenticated `GET /api/events` HTTP event stream with initial state snapshots, live updates, heartbeats, and gap reporting. Use a bridge build that exposes this endpoint. For a scoped bridge API token, enable `api.events` to permit both WebSocket and HTTP event subscriptions.
 
 For MQTT TLS over an authenticated tunnel that provides only the broker leaf certificate, set `mqtt.ca` to the explicitly trusted certificate and `mqtt.allowPartialTrustChain: true`. The client still verifies the hostname and certificate validity. With an issuer CA available, configure that CA and leave partial trust disabled.
 
@@ -79,6 +81,12 @@ Set `eventHistory: { backend: "valkey", url: "${WUI_VALKEY_URL}", keyPrefix: "re
 For SQLite use a single API process with its database and WAL on a protected persistent local volume. Use `sqlite3 PATH ".backup 'backup.sqlite'"` for a consistent backup; stop the API before restoring and keep backups protected. For PostgreSQL use `database: { driver: "postgres", url: "${WUI_DATABASE_URL}", tls: { ca: "${file:pg-ca.pem}" } }`. Provide managed or file-backed credentials; a URL may not override TLS via query parameters. Take regular `pg_dump -Fc` backups and restore to a fresh database with `pg_restore` before switching the API. Both drivers apply the same versioned migrations on startup. Protect and back up the bridge vault independently of the WUI database.
 
 `/livez` checks the process. `/readyz` checks the API's database, selected bridge transports and required OIDC discovery with bounded timeouts. Individual camera offline/stale status is shown only to authorized users. In browser layout route public probes to the API when probing the whole deployment; in proxy layout UI readiness follows the API. Set `LOG_CONSOLE_ENABLED`, `LOG_CONSOLE_FORMAT`, `LOG_CONSOLE_LEVELS`, and `LOG_RUNTIME_ENABLED` using the shared logger contract. The WUI logs generated correlation IDs and safe error keys. Do not log cookies, enrollment request bodies, or upstream payloads at ingress.
+
+## Settings storage
+
+The configured SQLite file or PostgreSQL database stores accounts, grants, sessions, camera playback options, inventory timing, installation appearance defaults, and per-bridge event source arrays. The priority array is JSON in `bridges.event_sources`. Preserve the SQLite file and its WAL directory on writable persistent storage, or back up the configured PostgreSQL database.
+
+The startup JSON5 file supplies database connections, bridge endpoints, authentication settings, secret references, and the event-history backend. Its path defaults to `./local-only/wui.json5` and can be selected with `WUI_CONFIG`. Personal appearance choices are saved in browser local storage under `reolink-wui:appearance:<account-id>`. Event history uses memory by default, or the configured Valkey backend.
 
 ## Container
 

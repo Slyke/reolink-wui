@@ -3,7 +3,8 @@ import mqtt, { type MqttClient } from 'mqtt';
 import { randomUUID } from 'node:crypto';
 import type { ConnectionOptions } from 'node:tls';
 import { Failure } from './errors.js';
-import { trust } from './net.js';
+import { at, trust } from './net.js';
+import type { Agent } from 'undici';
 import type { BridgeConfig } from './config.js';
 import type { FeedConnectionFailure } from '../shared/events.js';
 
@@ -163,6 +164,101 @@ export class SocketChannel {
   }
 }
 
+export class ApiChannel {
+  private readonly stop = new AbortController();
+  private retry?: ReturnType<typeof setTimeout>;
+  private request?: AbortController;
+  private ended = false;
+  private task: Promise<void>;
+
+  constructor(
+    private readonly conf: Pick<NonNullable<BridgeConfig['http']>, 'url' | 'token'> & { agent: Agent },
+    private readonly ids: string[], private readonly changes: ChannelChanges
+  ) {
+    this.task = this.open();
+  }
+
+  private async open() {
+    const request = new AbortController();
+    this.request = request;
+    let failure: FeedConnectionFailure = 'transport';
+    let heartbeat: ReturnType<typeof setTimeout> | undefined;
+    const subscription = setTimeout(() => {
+      failure = 'subscription';
+      request.abort();
+    }, 4500);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const response = await fetch(at({
+        base: this.conf.url, path: '/api/events', search: new URLSearchParams({ cameras: this.ids.join(',') }).toString()
+      }), {
+        headers: { authorization: 'Bearer ' + this.conf.token, accept: 'text/event-stream' },
+        dispatcher: this.conf.agent, redirect: 'error',
+        signal: AbortSignal.any([request.signal, this.stop.signal])
+      } as RequestInit & { dispatcher: Agent });
+      if ([401, 403].includes(response.status)) failure = 'authorization';
+      if (response.status !== 200 || !response.headers.get('content-type')?.startsWith('text/event-stream') || !response.body) {
+        await response.body?.cancel();
+        throw new Error('Event stream unavailable');
+      }
+      reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8', { fatal: true });
+      let buffer = '';
+      let ready = false;
+      while (!this.ended) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        clearTimeout(heartbeat);
+        heartbeat = setTimeout(() => { failure = 'heartbeat'; request.abort(); }, 20_000);
+        buffer += decoder.decode(value, { stream: true });
+        buffer = buffer.replace(/\r\n/g, '\n');
+        if (buffer.length > 2_000_000) throw new Error('Event message too large');
+        let boundary: number;
+        while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const data = frame.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
+          if (!data) continue;
+          const message = record(JSON.parse(data));
+          if (message.op === 'ready' || (ready && message.op === 'gap')) {
+            if (!Array.isArray(message.snapshots)) throw new Error('Invalid event snapshots');
+            if (ready) this.changes.gap();
+            this.changes.refresh();
+            for (const snapshot of message.snapshots) this.changes.snapshot(record(snapshot));
+            ready = true;
+            clearTimeout(subscription);
+            this.changes.connected(true);
+          } else if (ready && message.op === 'snapshot') this.changes.snapshot(record(message.snapshot));
+          else if (ready && message.op === 'event') this.changes.event(record(message.event));
+          else throw new Error('Invalid event message');
+        }
+      }
+    } catch (error) {
+      if (failure === 'transport' && error instanceof Error) {
+        const cause = (error as Error & { cause?: Error }).cause ?? error;
+        failure = connectionFailure(cause);
+      }
+    } finally {
+      clearTimeout(subscription);
+      clearTimeout(heartbeat);
+      request.abort();
+      await reader?.cancel().catch(() => {});
+      if (!this.ended) {
+        this.changes.connected(false, failure);
+        this.retry = setTimeout(() => { this.task = this.open(); }, 1500);
+      }
+    }
+  }
+
+  async close() {
+    this.ended = true;
+    clearTimeout(this.retry);
+    this.stop.abort();
+    this.request?.abort();
+    await this.task;
+  }
+}
+
 const maxPacket = 25_200_000;
 const eventTopics = ['availability', 'info', 'capabilities', 'rules', 'state/+', 'events'];
 
@@ -179,7 +275,7 @@ export class BrokerChannel {
 
   constructor(
     private readonly config: BridgeConfig['mqtt'], ids: string[],
-    private readonly controls: boolean, private readonly changes?: ChannelChanges
+    private readonly controls: boolean, private readonly changes?: ChannelChanges, private events = true
   ) {
     this.targets = new Set(ids);
     const tlsOptions = { allowPartialTrustChain: config.allowPartialTrustChain } satisfies Pick<ConnectionOptions, 'allowPartialTrustChain'>;
@@ -219,11 +315,22 @@ export class BrokerChannel {
         const message = parse(payload);
         if (typeof message.id === 'string') this.replies.match({ key: id + '/' + message.id, value: message });
       } else if (suffix === 'events') {
-        if (!packet.retain && this.ready) changes?.event({ ...parse(payload), camera_id: id });
-      } else if (/^(availability|info|capabilities|rules|state\/[a-zA-Z0-9_:-]{1,96})$/.test(suffix) && payload.length < 2_000_000) {
+        if (this.events && !packet.retain && this.ready) changes?.event({ ...parse(payload), camera_id: id });
+      } else if (this.events && /^(availability|info|capabilities|rules|state\/[a-zA-Z0-9_:-]{1,96})$/.test(suffix) && payload.length < 2_000_000) {
         changes?.snapshot({ camera_id: id, topic: suffix, payload: parse(payload) });
       }
     });
+  }
+
+  setEvents(enabled: boolean) {
+    if (this.events === enabled) return;
+    this.events = enabled;
+    if (enabled) {
+      this.ready = false;
+      this.changes?.refresh();
+      this.changes?.connected(false);
+    }
+    this.syncSubscriptions();
   }
 
   includes(camera: string) {
@@ -244,7 +351,7 @@ export class BrokerChannel {
 
   private syncSubscriptions() {
     if (this.closed || this.subscribing || !this.client.connected) return;
-    const suffixes = this.changes ? [...eventTopics] : [];
+    const suffixes = this.events && this.changes ? [...eventTopics] : [];
     if (this.controls) suffixes.push('command/result');
     const topics = new Set([...this.targets].flatMap(id => suffixes.map(suffix => this.config.baseTopic + '/' + id + '/' + suffix)));
     const add = [...topics].filter(topic => !this.subscribed.has(topic));

@@ -31,7 +31,7 @@ const expectHover = async (page, button) => {
 for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
     page.setDefaultTimeout(6000);
-    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true });
+    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true,apiEvents:true });
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
     const apiPort = await reserve();
@@ -389,6 +389,15 @@ for (const mode of ['browser','proxy']) {
       await expect(page.getByText(/syncs reported camera inventory every 2 seconds/)).toBeVisible();
       await page.reload();
       await expect(inventoryInterval).toHaveValue('2');
+      const sourceForm=page.getByRole('form',{name:'Fixture bridge event sources'});
+      await sourceForm.getByRole('button',{name:/^Add event source/}).click();
+      await page.getByRole('option',{name:'HTTP API',exact:true}).click();
+      await sourceForm.getByRole('button',{name:'Move HTTP API up',exact:true}).click();
+      await sourceForm.getByRole('button',{name:'Save event sources'}).click();
+      await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
+      await page.reload();
+      await expect(sourceForm.getByRole('listitem').first()).toContainText('HTTP API');
+      await expect(sourceForm.getByRole('listitem').nth(1)).toContainText('MQTT');
       await page.getByRole('button',{name:'Refresh inventory'}).click();
       await expect(page.locator('time')).toHaveText(/^Refreshed at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
       await expect(page.getByText('Confirmed',{exact:true})).toHaveCount(0);
@@ -464,9 +473,11 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('link',{name:'Status',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/status');
       const upstreamTable = page.getByRole('table');
-      await expect(upstreamTable.getByRole('row').filter({hasText:'Events and camera state'})).toContainText('MQTT');
+      const eventRows=upstreamTable.getByRole('row').filter({hasText:'Events and camera state'});
+      await expect(eventRows.filter({hasText:'MQTT'})).toHaveCount(1);
+      await expect(eventRows.filter({hasText:'HTTP'})).toHaveCount(1);
       await expect(upstreamTable.getByRole('row').filter({hasText:'Commands'})).toContainText('HTTP');
-      await expect(upstreamTable.getByText('Online',{exact:true})).toHaveCount(2);
+      await expect(upstreamTable.getByText('Online',{exact:true})).toHaveCount(3);
 
       await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
       const orientationPanel=page.locator('article').filter({has:page.getByRole('heading',{name:'Image orientation',exact:true})});

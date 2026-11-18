@@ -120,7 +120,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, apiEvents = false } = {}) => {
   const previewRequests = [];
   let previewJpeg = jpeg;
   let led = false;
@@ -201,9 +201,21 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     await once(encoder,'exit');
     recordedMp4 = Buffer.concat(parts);
   }
+  const apiSubscribers = new Map();
+  let apiOpen = true;
   const server = createServer(async (req,res) => {
     if (req.url === '/livez') return res.end('{}');
     if (req.headers.authorization !== 'Bearer ' + serviceToken) { res.statusCode=401; return res.end('{}'); }
+    if (apiEvents && new URL(req.url,'http://127.0.0.1').pathname === '/api/events') {
+      if (!apiOpen) {res.statusCode=503;return res.end('{}');}
+      const scope = new Set(new URL(req.url,'http://127.0.0.1').searchParams.get('cameras')?.split(',').filter(Boolean));
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.write('data: '+JSON.stringify({op:'ready',snapshots:snapshots().filter(item=>!scope.size||scope.has(item.camera_id))})+'\n\n');
+      apiSubscribers.set(res,scope);
+      const timer=setInterval(()=>res.write(': heartbeat\n\n'),8000);
+      res.once('close',()=>{clearInterval(timer);apiSubscribers.delete(res);});
+      return;
+    }
     if (req.url.endsWith('/command/exec')) {
       correlations.push(req.headers['x-correlation-id']);
       const result = command(await read(req));
@@ -215,7 +227,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       return res.end(JSON.stringify(result));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      version:1, eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
       previewCameras, recordingsCameras:recordings?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -295,14 +307,17 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     });
     socket.on('close', () => subscribers.delete(socket));
   });
-  const broadcast = (camera, message) => {
-    for (const [socket, scope] of subscribers) {
+  const broadcast = (camera, message, transport) => {
+    if (transport !== 'api') for (const [socket, scope] of subscribers) {
       if ((!scope.size || scope.has(camera)) && socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
+    }
+    if (transport !== 'ws') for (const [response, scope] of apiSubscribers) {
+      if (!scope.size || scope.has(camera)) response.write('data: '+JSON.stringify(message)+'\n\n');
     }
   };
   const publishEvent = (event, transport) => {
-    if (transport !== 'mqtt') broadcast(event.camera_id, {op:'event',event});
-    if (transport !== 'ws') broker.client.publish(baseTopic+'/'+event.camera_id+'/events', JSON.stringify(event));
+    if (transport !== 'mqtt') broadcast(event.camera_id, {op:'event',event},transport);
+    if (transport !== 'ws' && transport !== 'api') broker.client.publish(baseTopic+'/'+event.camera_id+'/events', JSON.stringify(event));
   };
   server.listen(0,'127.0.0.1');
   await once(server,'listening');
@@ -327,6 +342,8 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     disconnect: broker.stop,
     disconnectWs: () => { socketOpen = false; wss?.clients.forEach(socket => socket.terminate()); },
     reconnectWs: () => { socketOpen = true; },
+    disconnectApi: () => { apiOpen = false; for (const response of apiSubscribers.keys()) response.destroy(); },
+    reconnectApi: () => { apiOpen = true; },
     publishEvent,
     reconnect: async () => { await broker.start(); await publishSnapshots(); },
     detection: (camera, type, active) => {

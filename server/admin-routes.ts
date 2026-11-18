@@ -12,6 +12,7 @@ import { input, password, shortLabel, username, uuid, type Runtime } from './run
 import { Failure } from './errors.js';
 import { information } from './cameras.js';
 import { result } from './bridge.js';
+import { eventSourcesSchema } from './config.js';
 import { record } from './bridge-channels.js';
 import { sendOutcome } from './camera-routes.js';
 
@@ -51,6 +52,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
       permissions, presets, external: runtime.config.auth.mode !== 'local', local: isLocal({ config: runtime.config }),
       bridges: [...runtime.bridges.values()].map(bridge => ({
         id: bridge.config.id, label: bridge.config.label, connected: bridge.feedReady,
+        eventSources: bridge.eventSources, availableEventSources: bridge.availableEventSources,
         refreshedAt: bridgeRows.find(row => row.id === bridge.config.id)?.refreshed_at,
         enrollment: bridge.has('enrollment'), callbacks: !!bridge.config.callbacks && bridge.has('callbacks')
       })),
@@ -61,6 +63,24 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
           : [];
       })
     };
+  });
+
+  api.put(root + '/bridges/:id/event-sources', async (request, reply) => {
+    const { account } = await runtime.admin({ request, mutate: true });
+    const { id: bridgeId } = input({ schema: object({ id: key }), value: request.params });
+    const bridge = getBridge({ id: bridgeId });
+    const { operationId: id, sources } = input({
+      schema: object({ operationId, sources: eventSourcesSchema }), value: request.body
+    });
+    if (sources.some(source => !bridge.availableEventSources.includes(source))) throw new Failure('BAD_INPUT', 400);
+    const result = await runtime.ops.run({
+      id, actor: account.id, action: 'events.priority', resource: 'bridge:' + bridgeId, correlation: request.id,
+      input: sources, execute: async () => {
+        await runtime.setEventSources({ bridge, sources });
+        return { outcome: 'confirmed', data: { sources } };
+      }
+    });
+    return sendOutcome({ reply, value: result });
   });
 
   api.get(root + '/event-history', async request => {
