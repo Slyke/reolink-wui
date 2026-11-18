@@ -63,10 +63,11 @@ const http = object({
   url: endpoint({ secure: 'https:', plain: 'http:', allowPlainRemote: true }),
   token: bearer,
   ca: tlsRoot,
+  rejectUnauthorized: z.boolean().default(true),
   adminToken: bearer.optional(),
   relay: z.boolean().default(true)
 });
-const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:', allowPlainRemote: true }), token: bearer, ca: tlsRoot });
+const ws = object({ url: endpoint({ secure: 'wss:', plain: 'ws:', allowPlainRemote: true }), token: bearer, ca: tlsRoot, rejectUnauthorized: z.boolean().default(true) });
 const eventTransport = z.enum(['ws', 'mqtt']);
 export const eventSourcesSchema = z.array(z.enum(eventSources)).min(1).max(eventSources.length).refine(unique);
 const legacyEvents = z.union([
@@ -83,6 +84,7 @@ const mqtt = object({
   username: z.string().min(1).optional(),
   password: z.string().min(1).optional(),
   ca: tlsRoot,
+  rejectUnauthorized: z.boolean().default(true),
   allowPartialTrustChain: z.boolean().default(false)
 }).refine(value => Boolean(value.username) === Boolean(value.password))
   .refine(value => !value.allowPartialTrustChain || (value.url.protocol === 'mqtts:' && Boolean(value.ca)));

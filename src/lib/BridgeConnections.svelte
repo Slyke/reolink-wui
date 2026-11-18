@@ -1,6 +1,7 @@
 <script lang="ts">
   import { t } from './api.js';
   import SearchSelect from './SearchSelect.svelte';
+  import EventSourceSettings from './EventSourceSettings.svelte';
   import BridgeConnectionForm from './BridgeConnectionForm.svelte';
   import { useAdministration } from './workspace.js';
   const admin = useAdministration();
@@ -26,5 +27,6 @@
     {#key bridge.id + JSON.stringify(bridge.connections)}
       <BridgeConnectionForm configuration={bridge.connections} onsaved={saved} />
     {/key}
+    {#key bridge.id + bridge.eventSources.join(',')}<EventSourceSettings {bridge} />{/key}
   {/if}
 </section>

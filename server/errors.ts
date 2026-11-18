@@ -17,7 +17,8 @@ export class Failure extends Error {
   constructor(
     public key: keyof typeof codes,
     public status: number,
-    public outcome?: string
+    public outcome?: string,
+    public details?: { upstreamStatus?: number; bridgeCorrelationId?: string; playbackReason?: string }
   ) {
     super(key);
   }
@@ -34,5 +35,5 @@ export const report = ({ error, correlationId = randomUUID(), caller = 'api::req
   if (error.status >= 500) {
     logs.generateError({ caller, reason: error.key, errorKey: error.key, correlationId, includeStackTrace: false });
   }
-  return { error: error.key, errorKey: error.key, errorCode, correlationId, outcome: error.outcome };
+  return { error: error.key, errorKey: error.key, errorCode, correlationId, outcome: error.outcome, ...(error.details ? { details: error.details } : {}) };
 };

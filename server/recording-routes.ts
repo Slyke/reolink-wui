@@ -5,9 +5,11 @@ import type { Bridge } from './bridge.js';
 import type { Runtime } from './runtime.js';
 import { input } from './runtime.js';
 import { Failure } from './errors.js';
-import { jsonResponse } from './net.js';
+import { jsonResponse, responseBytes } from './net.js';
 import { audit } from './db.js';
-import { recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
+import { correlationPattern } from '../shared/urls.js';
+import { record } from './bridge-channels.js';
+import { recordingStages, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
 
 const object = z.strictObject;
 const bridgeRead = async ({ bridge, path, search, correlation, schema }: {
@@ -22,6 +24,15 @@ const bridgeRead = async ({ bridge, path, search, correlation, schema }: {
   const parsed = schema.safeParse(await jsonResponse({ response }));
   if (!parsed.success) throw new Failure('BRIDGE_UNAVAILABLE', 502);
   return parsed.data;
+};
+
+const mediaFailure = async ({ response }: { response: Response }) => {
+  const body = record(await jsonResponse({ response, limit: 16_384 }).catch(() => ({})));
+  const stage = typeof body.stage === 'string' && recordingStages.includes(body.stage as typeof recordingStages[number]) ? body.stage : 'preparation';
+  const bridgeCorrelationId = typeof body.correlation_id === 'string' && correlationPattern.test(body.correlation_id) ? body.correlation_id : undefined;
+  return new Failure('MEDIA_UNAVAILABLE', [404,413,422,503,504].includes(response.status) ? response.status : 502, undefined, {
+    upstreamStatus: response.status, bridgeCorrelationId, playbackReason: stage
+  });
 };
 
 export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
@@ -44,6 +55,22 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
       bridge, path: '/cameras/' + row.remote_id + '/recordings', correlation: request.id,
       search: '?' + new URLSearchParams(query), schema: recordingsResponse
     });
+  });
+  api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/preview', async (request, reply) => {
+    const id = input({ schema: recordingId, value: request.params.recording });
+    const { bridge, row } = await camera(request, request.params.id);
+    if (!bridge.hasRecordingPreview(row.remote_id)) throw new Failure('UNSUPPORTED',422);
+    const response = await bridge.api({
+      path: '/cameras/' + row.remote_id + '/recordings/' + id + '/preview',
+      correlation: request.id, signal: AbortSignal.timeout(40_000)
+    });
+    if (!response.ok) throw await mediaFailure({ response });
+    const bytes = await responseBytes({ response, limit: 512 * 1024 });
+    if (response.headers.get('content-type') !== 'image/jpeg' || bytes[0] !== 0xff || bytes[1] !== 0xd8
+      || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) throw new Failure('MEDIA_UNAVAILABLE',502);
+    // Recheck the grant after the bridge read, before releasing the image.
+    await camera(request, row.id);
+    return reply.type('image/jpeg').send(bytes);
   });
   api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/video', async (request, reply) => {
     const id = input({ schema: recordingId, value: request.params.recording });
@@ -72,8 +99,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
         range, correlation: request.id, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(125_000)])
       });
       if (![200, 206, 416].includes(response.status)) {
-        await response.body?.cancel();
-        throw new Failure('MEDIA_UNAVAILABLE', response.status === 404 ? 404 : 502);
+        throw await mediaFailure({ response });
       }
       const contentRange = response.headers.get('content-range');
       if (contentRange && /^bytes (?:(\d+-\d+)|\*)\/\d+$/.test(contentRange)) reply.header('content-range', contentRange);

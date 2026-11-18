@@ -5,13 +5,13 @@ import { record } from './bridge-channels.js';
 export const bridgeConnections = (config: BridgeConfig): BridgeConnections => ({
   id: config.id, label: config.label, cameraIds: [...config.cameraIds], commands: config.commands, capture: config.capture,
   ...(config.http ? { http: {
-    url: config.http.url.href, ca: config.http.ca, relay: config.http.relay,
+    url: config.http.url.href, ca: config.http.ca, rejectUnauthorized: config.http.rejectUnauthorized, relay: config.http.relay,
     tokenConfigured: Boolean(config.http.token), adminTokenConfigured: Boolean(config.http.adminToken)
   } } : {}),
-  ...(config.ws ? { ws: { url: config.ws.url.href, ca: config.ws.ca, tokenConfigured: Boolean(config.ws.token) } } : {}),
+  ...(config.ws ? { ws: { url: config.ws.url.href, ca: config.ws.ca, rejectUnauthorized: config.ws.rejectUnauthorized, tokenConfigured: Boolean(config.ws.token) } } : {}),
   ...(config.mqtt ? { mqtt: {
     url: config.mqtt.url.href, baseTopic: config.mqtt.baseTopic, cameraIds: config.mqtt.cameraIds,
-    username: config.mqtt.username, ca: config.mqtt.ca, allowPartialTrustChain: config.mqtt.allowPartialTrustChain,
+    username: config.mqtt.username, ca: config.mqtt.ca, rejectUnauthorized: config.mqtt.rejectUnauthorized, allowPartialTrustChain: config.mqtt.allowPartialTrustChain,
     passwordConfigured: Boolean(config.mqtt.password)
   } } : {}),
   callbacks: Object.fromEntries(Object.entries(config.callbacks ?? {}).map(([name,url]) => [name,url.href]))

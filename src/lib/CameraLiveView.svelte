@@ -221,17 +221,47 @@
   {/if}
 {/snippet}
 
+{#snippet toolbar(large: boolean)}
+  <div class="row live-toolbar" role="group" aria-label={t('live-actions')}>
+    {#if camera.capabilities.recordings}
+      <a class="button icon-button" href={'/recordings?camera=' + camera.id} aria-label={t('recordings')} title={t('recordings')}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
+        </svg>
+      </a>
+    {/if}
+    {#if camera.capabilities.rotate || Object.keys(camera.capabilities.settings).length || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
+      <a class="button icon-button" href={'/settings/cameras?camera=' + camera.id} aria-label={t('camera-settings')} title={t('camera-settings')}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="m9 3-1 3-3 1-2 3 2 2-2 2 2 3 3 1 1 3h6l1-3 3-1 2-3-2-2 2-2-2-3-3-1-1-3z" /><circle cx="12" cy="12" r="3" />
+        </svg>
+      </a>
+    {/if}
+    {#if camera.capabilities.mediaAllowed}
+      {#if !large || (!playback && !liveBusy)}
+        <button class="icon-button" type="button" aria-label={t('live-refresh')} title={t('live-refresh')}
+          disabled={!enabled} onclick={() => { manualFrameRequest++; }}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />
+          </svg>
+        </button>
+      {/if}
+      {#if !large}
+        <button class="icon-button" type="button" title={t('live-enlarge')} aria-label={t('live-enlarge')}
+          aria-haspopup="dialog" disabled={!enabled && !canStream} onclick={() => show({ play: false })}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
+          </svg>
+        </button>
+      {/if}
+    {/if}
+  </div>
+{/snippet}
+
 <div class="stack">
   <div class="row between panel-title">
     <h2 id={headingId ?? id + '-inline'}>{t('live')}</h2>
-    {#if camera.capabilities.mediaAllowed}
-      <button class="icon-button" type="button" title={t('live-enlarge')} aria-label={t('live-enlarge')}
-        aria-haspopup="dialog" disabled={!enabled && !canStream} onclick={() => show({ play: false })}>
-        <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-          <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
-        </svg>
-      </button>
-    {/if}
+    {@render toolbar(false)}
   </div>
   <div bind:this={panel}>{@render preview()}</div>
   {#if camera.capabilities.mediaAllowed || actions}
@@ -239,9 +269,6 @@
       {#if camera.capabilities.mediaAllowed}
         <button class="primary" type="button" aria-haspopup="dialog" disabled={!canStream || !mediaOnline}
           onclick={() => show({ play: true })}>{t('live-start')}</button>
-        {#if !compact}
-          <button type="button" disabled={!enabled} onclick={() => { manualFrameRequest++; }}>{t('live-refresh')}</button>
-        {/if}
       {/if}
       {@render actions?.()}
     </div>
@@ -254,7 +281,10 @@
     <div class="stack">
       <div class="row between panel-title">
         <h2 class="wrap" id={id + '-title'}>{t('live-dialog-title', { camera: name })}</h2>
-        <form method="dialog"><button>{t('close')}</button></form>
+        <div class="row">
+          {@render toolbar(true)}
+          <form method="dialog"><button>{t('close')}</button></form>
+        </div>
       </div>
       {#if playback}
         {@const path = playback}
@@ -280,7 +310,6 @@
           <button type="button" onclick={() => { void stopLive(); }}>{t('live-stop')}</button>
         {:else}
           <button class="primary" type="button" disabled={!canStream || !mediaOnline} onclick={startLive}>{t('live-start')}</button>
-          <button type="button" disabled={!enabled} onclick={() => { manualFrameRequest++; }}>{t('live-refresh')}</button>
         {/if}
       </div>
       {#if liveBusy || (playback && !playing)}<p role="status" class="muted">{t('live-starting')}</p>{/if}

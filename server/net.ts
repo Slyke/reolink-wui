@@ -4,8 +4,8 @@ import { Failure } from './errors.js';
 
 export const trust = ({ ca }: { ca?: string }) => ca ? [...getCACertificates('default'), ca] : undefined;
 
-export const dispatcher = ({ ca }: { ca?: string }) => new Agent({
-  connect: { ca: trust({ ca }), timeout: 3500 },
+export const dispatcher = ({ ca, rejectUnauthorized = true }: { ca?: string; rejectUnauthorized?: boolean }) => new Agent({
+  connect: { ca: trust({ ca }), rejectUnauthorized, timeout: 3500 },
   headersTimeout: 130_000, bodyTimeout: 45_000,
   connections: 24
 });

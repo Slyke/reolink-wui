@@ -1,8 +1,11 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
-  import { api, errorText, t, url } from '$lib/api.js';
+  import { api, errorText, t } from '$lib/api.js';
   import type { Camera } from '$lib/models.js';
+  import RecordingPlayer from '$lib/RecordingPlayer.svelte';
+  import RecordingPreview from '$lib/RecordingPreview.svelte';
+  import { recordingSize, recordingDuration, recordingKinds } from '$lib/recordings.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
   import type { RecordingList, StorageInfo } from '../../../../shared/recordings.js';
 
@@ -19,7 +22,19 @@
   let loading = $state(false);
   let reading = $state(false);
   let error = $state('');
-  let playbackError = $state(false);
+  let layout = $state<'grid' | 'table'>('grid');
+  let pageNumber = $state(0);
+  const pageSize = 12;
+  const visible = $derived(listing?.recordings.slice(pageNumber * pageSize, (pageNumber + 1) * pageSize) ?? []);
+  const pageCount = $derived(Math.ceil((listing?.recordings.length ?? 0) / pageSize));
+  const chooseLayout = (value: 'grid' | 'table') => {
+    layout = value;
+    try { localStorage.setItem('reolink-wui-recordings-layout', value); } catch { /* Storage can be unavailable. */ }
+  };
+  const renew = async () => {
+    const result = await api<RecordingList>({ path: '/api/v1/cameras/' + selected + '/recordings?' + new URLSearchParams({date,stream}) });
+    listing = result;
+  };
   let controller: AbortController | undefined;
   let listController: AbortController | undefined;
 
@@ -33,7 +48,7 @@
     const combined = signal ? AbortSignal.any([signal, current.signal]) : current.signal;
     loading = true;
     recording = undefined;
-    playbackError = false;
+    pageNumber = 0;
     error = '';
     try {
       const query = new URLSearchParams({ date, stream });
@@ -84,6 +99,10 @@
   });
 
   onMount(() => {
+    try {
+      const saved = localStorage.getItem('reolink-wui-recordings-layout');
+      if (saved === 'grid' || saved === 'table') layout = saved;
+    } catch { /* Storage can be unavailable. */ }
     const request = new AbortController();
     void api<{ cameras: Camera[] }>({ path: '/api/v1/cameras', signal: request.signal }).then(result => {
       if (request.signal.aborted) return;
@@ -148,7 +167,13 @@
   </section>
 
   <section class="panel stack" aria-labelledby="recording-list">
-    <h2 id="recording-list" class="panel-title">{t('recordings')}</h2>
+    <div class="row between panel-title">
+      <h2 id="recording-list">{t('recordings')}</h2>
+      <div class="row" role="group" aria-label={t('recording-layout')}>
+        <button aria-pressed={layout === 'grid'} onclick={() => chooseLayout('grid')}>{t('recording-layout-grid')}</button>
+        <button aria-pressed={layout === 'table'} onclick={() => chooseLayout('table')}>{t('recording-layout-table')}</button>
+      </div>
+    </div>
     <form class="row recording-search" onsubmit={event => { event.preventDefault(); void search(); }}>
       <label>{t('recording-date')}<input type="date" required bind:value={date} /></label>
       <label>{t('live-quality')}
@@ -165,20 +190,48 @@
     {#if loading}
       <p role="status">{t('recordings-searching')}</p>
     {:else if listing?.recordings.length}
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex (Recording rows need keyboard scroll access.) -->
-      <div class="table-scroll" role="region" aria-labelledby="recording-list" tabindex="0">
-        <table>
-          <thead><tr><th>{t('recording-start')}</th><th>{t('recording-end')}</th><th>{t('event-type')}</th><th>{t('recording-size')}</th><th>{t('recording-play')}</th></tr></thead>
-          <tbody>
-            {#each listing.recordings as item (item.id)}
-              <tr>
-                <td>{item.start.replace('T', ' ')}</td><td>{item.end.replace('T', ' ')}</td>
-                <td>{item.kind ?? t('empty-value')}</td><td>{size(item.sizeBytes)}</td>
-                <td><button disabled={!playbackAvailable} onclick={() => { recording = item; playbackError = false; }}>{t('recording-play')}</button></td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+      {#if layout === 'grid'}
+        <div class="recording-grid">
+          {#each visible as item (item.id)}
+            <article class="recording-card stack">
+              <button class="recording-poster" disabled={!playbackAvailable}
+                aria-label={t('recording-play-at', { time: item.start.replace('T',' ') })} onclick={() => { recording = item; }}>
+                <RecordingPreview camera={selected} recording={item.id} available={Boolean(camera.capabilities.recordingPreview)} />
+                <span class="recording-play-overlay" aria-hidden="true">▶</span>
+              </button>
+              <time class="recording-time" datetime={item.start}><span class="muted">{item.start.slice(0,10)}</span><strong>{item.start.slice(11)}</strong></time>
+              <p class="recording-kind">{recordingKinds({ value: item.kind })}</p>
+              <div class="row between"><span class="muted">{recordingDuration({ recording: item })} · {recordingSize({ value: item.sizeBytes })}</span>
+                <button disabled={!playbackAvailable} onclick={() => { recording = item; }}>{t('recording-play')}</button></div>
+            </article>
+          {/each}
+        </div>
+      {:else}
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (The scrollable table supports keyboard access.) -->
+        <div class="table-scroll table-surface" role="region" aria-labelledby="recording-list" tabindex="0">
+          <table class="status-table recordings-table">
+            <thead><tr><th>{t('recording-preview')}</th><th>{t('recording-start')}</th><th>{t('recording-end')}</th><th>{t('recording-duration')}</th><th>{t('event-type')}</th><th>{t('recording-size')}</th><th>{t('recording-play')}</th></tr></thead>
+            <tbody>
+              {#each visible as item (item.id)}
+                <tr>
+                  <td><button class="recording-poster recording-poster-small" disabled={!playbackAvailable}
+                    aria-label={t('recording-play-at', { time: item.start.replace('T',' ') })} onclick={() => { recording = item; }}>
+                    <RecordingPreview camera={selected} recording={item.id} available={Boolean(camera.capabilities.recordingPreview)} />
+                  </button></td>
+                  <td><time class="recording-time" datetime={item.start}><span class="muted">{item.start.slice(0,10)}</span><strong>{item.start.slice(11)}</strong></time></td>
+                  <td><time class="recording-time" datetime={item.end}><span class="muted">{item.end.slice(0,10)}</span><strong>{item.end.slice(11)}</strong></time></td>
+                  <td>{recordingDuration({ recording: item })}</td><td class="recording-kind">{recordingKinds({ value: item.kind })}</td><td>{recordingSize({ value: item.sizeBytes })}</td>
+                  <td><button disabled={!playbackAvailable} onclick={() => { recording = item; }}>{t('recording-play')}</button></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
+      <div class="row between" aria-label={t('recording-pages')}>
+        <button disabled={pageNumber === 0} onclick={() => { pageNumber--; }}>{t('recording-page-previous')}</button>
+        <span>{t('recording-page-count', { page: pageNumber + 1, count: pageCount, total: listing.recordings.length })}</span>
+        <button disabled={pageNumber + 1 >= pageCount} onclick={() => { pageNumber++; }}>{t('recording-page-next')}</button>
       </div>
     {:else if listing}
       <p class="muted">{t('recordings-empty')}</p>
@@ -186,18 +239,7 @@
     {#if listing?.truncated}<p class="notice">{t('recordings-truncated')}</p>{/if}
   </section>
   {#if recording && playbackAvailable}
-    <section class="panel stack" aria-labelledby="recording-playback">
-      <div class="row between panel-title">
-        <h2 id="recording-playback">{t('recording-playback')}</h2>
-        <button onclick={() => { recording = undefined; }}>{t('close')}</button>
-      </div>
-      {#key recording.id}
-        <!-- svelte-ignore a11y_media_has_caption (The camera supplies the recorded footage without caption tracks.) -->
-        <video class="recording-video" controls preload="metadata"
-          src={url('/api/v1/cameras/' + selected + '/recordings/' + recording.id + '/video')}
-          onerror={() => { playbackError = true; }}></video>
-      {/key}
-      {#if playbackError}<p class="error" role="alert">{t('recording-playback-failed')}</p>{/if}
-    </section>
+    <RecordingPlayer camera={selected} name={camera.name ?? t('camera-noun')} {recording} recordings={listing?.recordings ?? []}
+      onselect={item => { recording = item; }} onclose={() => { recording = undefined; }} onrenew={renew} />
   {/if}
 {/if}

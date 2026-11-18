@@ -174,6 +174,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     imageOrientation,
     events: grant.has('events'),
     recordings: grant.has('recordings.view') && bridge.hasStorage(remote),
+    recordingPreview: grant.has('recordings.view') && bridge.hasRecordingPreview(remote),
     recordingPlayback: grant.has('recordings.view') && bridge.hasRecordings(remote),
     capture: grant.has('capture') && bridge.canCapture(remote),
     mediaAllowed: grant.has('media.live'),

@@ -213,12 +213,13 @@
                 {#if orientation.rotation !== undefined}<dt>{t('image-rotation')}</dt><dd>{orientation.rotation}°</dd>{/if}
               </dl>
             {/if}
+            {#if !caps?.rotation}<p class="muted">{t('image-rotation-unsupported')}</p>{/if}
             {#if caps?.write}
               <div class="row">
                 {#each ['hflip','vflip','clockwise','counterclockwise'] as action}
-                  {#if (action === 'hflip' && caps.hflip) || (action === 'vflip' && caps.vflip) || (['clockwise','counterclockwise'].includes(action) && caps.rotation)}
-                    <button disabled={disabled} onclick={() => change({ group, fields: { setting: 'image_orientation', action } })}>{t('image-' + action)}</button>
-                  {/if}
+                  {@const supported = (action === 'hflip' && caps.hflip) || (action === 'vflip' && caps.vflip) || (['clockwise','counterclockwise'].includes(action) && caps.rotation)}
+                  <button disabled={disabled || !supported} title={!supported ? t('image-control-unavailable') : undefined}
+                    onclick={() => change({ group, fields: { setting: 'image_orientation', action } })}>{t('image-' + action)}</button>
                 {/each}
               </div>
             {/if}

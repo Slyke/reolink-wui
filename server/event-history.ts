@@ -5,33 +5,62 @@ import type { Sql } from './db.js';
 import { Failure } from './errors.js';
 import { maxEventRetention } from '../shared/events.js';
 
-const addEvent = `
-local keep = tonumber(ARGV[1])
-if keep > 0 then
-  redis.call('SADD', KEYS[1], KEYS[2])
-  redis.call('LPUSH', KEYS[2], ARGV[2])
-  redis.call('LTRIM', KEYS[2], 0, keep - 1)
+// Upgrade existing list keys in place, keeping event IDs and timestamps.
+const sortedEvents = `
+local function insert(key, score, entry)
+  local newest = redis.call('ZREVRANGE', key, 0, 0, 'WITHSCORES')
+  if newest[2] and math.floor(tonumber(newest[2])) == score then score = tonumber(newest[2]) + 0.001 end
+  redis.call('ZADD', key, score, entry)
+end
+local function upgrade(key)
+  if redis.call('TYPE', key).ok == 'list' then
+    local entries = redis.call('LRANGE', key, 0, -1)
+    redis.call('DEL', key)
+    for i = #entries, 1, -1 do
+      local value = cjson.decode(entries[i])
+      insert(key, value.observedAt, entries[i])
+    end
+  end
+end
+local function trim(key, keep, age, now)
+  upgrade(key)
+  if age > 0 then redis.call('ZREMRANGEBYSCORE', key, '-inf', now - age * 1000) end
+  if keep == 0 then redis.call('DEL', key)
+  elseif keep > 0 then
+    local count = redis.call('ZCARD', key)
+    if count > keep then redis.call('ZREMRANGEBYRANK', key, 0, count - keep - 1) end
+  end
+  if age > 0 then
+    local newest = redis.call('ZREVRANGE', key, 0, 0, 'WITHSCORES')
+    if newest[2] then redis.call('PEXPIREAT', key, math.floor(tonumber(newest[2]) + age * 1000)) end
+  else redis.call('PERSIST', key) end
 end
 `;
-
-const readEvents = `
-local keep = tonumber(ARGV[1])
-if keep == 0 then return {keep, {}} end
-return {keep, redis.call('LRANGE', KEYS[1], 0, keep - 1)}
+const addEvent = sortedEvents + `
+local keep, age, now = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+if keep ~= 0 then
+  upgrade(KEYS[2])
+  redis.call('SADD', KEYS[1], KEYS[2])
+  insert(KEYS[2], tonumber(ARGV[5]), ARGV[4])
+end
+trim(KEYS[2], keep, age, now)
 `;
-
-const resize = `
+const readEvents = sortedEvents + `
+local keep, age, now = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+trim(KEYS[1], keep, age, now)
+return {keep, redis.call('ZRANGE', KEYS[1], -tonumber(ARGV[4]), -1)}
+`;
+const resize = sortedEvents + `
 if redis.call('SCARD', KEYS[2]) ~= #KEYS - 2 then return 0 end
 for i = 3, #KEYS do
   if redis.call('SISMEMBER', KEYS[2], KEYS[i]) == 0 then return 0 end
 end
-local keep = tonumber(ARGV[1])
+local keep, age, now = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
 for i = 3, #KEYS do
-  if keep == 0 then redis.call('DEL', KEYS[i])
-  else redis.call('LTRIM', KEYS[i], 0, keep - 1) end
+  trim(KEYS[i], keep, age, now)
+  if redis.call('EXISTS', KEYS[i]) == 0 then redis.call('SREM', KEYS[2], KEYS[i]) end
 end
-if keep == 0 then redis.call('DEL', KEYS[2]) end
-redis.call('SET', KEYS[1], keep)
+redis.call('SET', KEYS[1], ARGV[4])
 return 1
 `;
 
@@ -50,7 +79,7 @@ class HistoryCache {
     this.prefix = config.backend === 'valkey' ? config.keyPrefix + ':events:' : '';
     if (config.backend === 'valkey') {
       this.client = new Redis(config.url.href, {
-        ...(config.url.protocol === 'rediss:' ? { tls: { ca: config.ca, rejectUnauthorized: true } } : {}),
+        ...(config.url.protocol === 'rediss:' ? { tls: { ca: config.ca, rejectUnauthorized: config.rejectUnauthorized } } : {}),
         lazyConnect: true, connectTimeout: 2000, commandTimeout: 2000, enableReadyCheck: false,
         enableOfflineQueue: false, autoResendUnfulfilledCommands: false, maxRetriesPerRequest: 0,
         retryStrategy: () => 1500
@@ -59,6 +88,11 @@ class HistoryCache {
       this.client.on('ready', () => { if (!this.initializing) void this.resize().catch(() => {}); });
     }
   }
+
+  private get countLimit() {
+    return this.config.backend === 'valkey' ? (this.config.maxEvents === null ? -1 : this.config.maxEvents ?? this.limit) : this.limit;
+  }
+  private get ageLimit() { return this.config.backend === 'valkey' ? this.config.ttlSeconds ?? 0 : 0; }
 
   get connected() { return !this.client || this.client.status === 'ready'; }
   private get settingKey() { return this.prefix + 'limit'; }
@@ -82,7 +116,7 @@ class HistoryCache {
     if (!this.client || !this.connected) return;
     for (let attempt = 0; attempt < 4; attempt++) {
       const cameras = await this.client.smembers(this.indexKey);
-      if (await this.client.eval(resize, cameras.length + 2, this.settingKey, this.indexKey, ...cameras, this.limit) === 1) return;
+      if (await this.client.eval(resize, cameras.length + 2, this.settingKey, this.indexKey, ...cameras, this.countLimit, this.ageLimit, Date.now(), this.limit) === 1) return;
     }
     throw unavailable();
   }
@@ -96,10 +130,10 @@ class HistoryCache {
 
   add({ camera, entry }: { camera: string; entry: CameraEvent }) {
     if (this.client) {
-      if (!this.connected || this.pending >= 256 || !this.limit) return;
+      if (!this.connected || this.pending >= 256 || this.countLimit === 0) return;
       this.pending++;
       void this.client.eval(addEvent, 2, this.indexKey, this.eventKey(camera),
-        this.limit, JSON.stringify(entry)).catch(() => {}).finally(() => { this.pending--; });
+        this.countLimit, this.ageLimit, Date.now(), JSON.stringify(entry), entry.observedAt).catch(() => {}).finally(() => { this.pending--; });
       return;
     }
     if (!this.limit) return;
@@ -110,13 +144,13 @@ class HistoryCache {
   }
 
   async read(camera: string) {
-    if (!this.limit) return { limit: 0, events: [] };
+    if (this.countLimit === 0) return { limit: 0, events: [] };
     if (!this.client) return { limit: this.limit, events: [...(this.memory.get(camera) ?? [])] };
     try {
       const [limit, events] = await this.client.eval(
-        readEvents, 1, this.eventKey(camera), this.limit
+        readEvents, 1, this.eventKey(camera), this.countLimit, this.ageLimit, Date.now(), maxEventRetention
       ) as [number, string[]];
-      return { limit, events: events.reverse().map(serialized => JSON.parse(serialized) as CameraEvent) };
+      return { limit: limit < 0 ? null : limit, events: events.map(serialized => JSON.parse(serialized) as CameraEvent) };
     } catch { throw unavailable(); }
   }
 
@@ -127,7 +161,10 @@ const publicValkey = (config: Valkey) => {
   const url = new URL(config.url);
   const passwordConfigured = Boolean(url.password);
   url.password = '';
-  return { url: url.href, keyPrefix: config.keyPrefix, ca: config.ca, passwordConfigured };
+  return {
+    url: url.href, keyPrefix: config.keyPrefix, ca: config.ca, rejectUnauthorized: config.rejectUnauthorized,
+    maxEvents: config.maxEvents, ttlSeconds: config.ttlSeconds, passwordConfigured
+  };
 };
 
 export class EventHistory {
@@ -144,7 +181,8 @@ export class EventHistory {
     const selected = storage.mode === 'defaults' ? this.defaults
       : storage.mode === 'valkey' ? { ...storage.valkey, backend: 'valkey' as const } : { backend: 'memory' as const };
     return selected.backend === 'memory' ? { backend: 'memory', retention } : {
-      backend: 'valkey', url: selected.url, keyPrefix: selected.keyPrefix, ca: selected.ca, retention
+      backend: 'valkey', url: selected.url, keyPrefix: selected.keyPrefix, ca: selected.ca, rejectUnauthorized: selected.rejectUnauthorized,
+      maxEvents: selected.maxEvents, ttlSeconds: selected.ttlSeconds, retention
     };
   }
 

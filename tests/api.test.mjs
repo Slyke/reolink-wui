@@ -684,6 +684,13 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal(search.statusCode,200,search.body);
   const recording=search.json().recordings[0];
   const path=root+'/recordings/'+recording.id+'/video';
+  const previewPath=root+'/recordings/'+recording.id+'/preview';
+  assert.equal((await incoming({path:previewPath,headers:restricted})).statusCode,403);
+  const preview=await incoming({path:previewPath,headers:privileged});
+  assert.equal(preview.statusCode,200,preview.body);
+  assert.equal(preview.headers['content-type'],'image/jpeg');
+  assert.equal(preview.rawPayload[0],255);assert.equal(preview.rawPayload[1],216);
+
   assert.equal((await incoming({path,headers:restricted})).statusCode,403);
   const partial=await incoming({path,headers:{...privileged,range:'bytes=0-31'}});
   assert.equal(partial.statusCode,206,partial.body);
@@ -704,6 +711,14 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   }
   const orientation=await incoming({path:root+'/settings/image?fresh=true',headers:privileged});
   assert.deepEqual(orientation.json().values.image,{hflip:true,vflip:true,rotation:0});
+  const correlation=uuid();
+  fixture.setRecordingFailure({status:502,stage:'conversion',correlation});
+  const failed=await incoming({path,headers:privileged});
+  assert.equal(failed.statusCode,502);
+  assert.deepEqual(failed.json().details,{upstreamStatus:502,bridgeCorrelationId:correlation,playbackReason:'conversion'});
+  assert.ok(!failed.body.includes(serviceToken));
+  fixture.setRecordingFailure({status:413,stage:'cache-limit',correlation});
+  assert.equal((await incoming({path,headers:privileged})).statusCode,413);
   assert.ok(admin);
 });
 

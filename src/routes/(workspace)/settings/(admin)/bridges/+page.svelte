@@ -1,6 +1,5 @@
 <script lang="ts">
   import { t } from '$lib/api.js';
-  import EventSourceSettings from '$lib/EventSourceSettings.svelte';
   import BridgeConnections from '$lib/BridgeConnections.svelte';
   import { minInventoryIntervalSeconds, maxInventoryIntervalSeconds } from '../../../../../../shared/upstreams.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
@@ -52,7 +51,6 @@
             <span class="pill" data-status={bridge.connected ? 'online' : 'offline'}>{t(bridge.connected ? 'online' : 'offline')}</span>
             <button disabled={admin.busy()} onclick={() => admin.mutate({ suffix: '/bridges/' + bridge.id + '/sync', body: {}, announce: false })}>{t('sync')}</button>
           </div>
-          {#key bridge.eventSources.join(',')}<EventSourceSettings {bridge} />{/key}
         </li>
       {/each}
     </ul>

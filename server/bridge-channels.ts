@@ -42,7 +42,7 @@ class Replies {
   }
 }
 
-const connectionFailure = (error: Error): FeedConnectionFailure => {
+export const connectionFailure = (error: Error): FeedConnectionFailure => {
   const { code } = error as Error & { code?: number | string };
   if (typeof code === 'string' && /^(?:ERR_TLS_CERT_|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT$|SELF_SIGNED_CERT_IN_CHAIN$|UNABLE_TO_(?:GET_ISSUER_CERT|VERIFY_LEAF_SIGNATURE))/.test(code)) {
     return 'tls';
@@ -78,7 +78,7 @@ export class SocketChannel {
   private open() {
     const socket = new WebSocket(this.conf.url, {
       headers: { authorization: 'Bearer ' + this.conf.token },
-      ca: trust({ ca: this.conf.ca }), handshakeTimeout: 3500, maxPayload: 2_000_000, followRedirects: false
+      ca: trust({ ca: this.conf.ca }), rejectUnauthorized: this.conf.rejectUnauthorized, handshakeTimeout: 3500, maxPayload: 2_000_000, followRedirects: false
     });
     this.socket = socket;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -282,7 +282,7 @@ export class BrokerChannel {
     this.client = mqtt.connect(config.url.toString(), {
       ...tlsOptions,
       protocolVersion: 5, clientId: 'wui-' + randomUUID(), username: config.username, password: config.password,
-      ca: trust({ ca: config.ca }), rejectUnauthorized: true, clean: true, resubscribe: false,
+      ca: trust({ ca: config.ca }), rejectUnauthorized: config.rejectUnauthorized, clean: true, resubscribe: false,
       queueQoSZero: false, reconnectPeriod: 1500, connectTimeout: 3500, keepalive: 10,
       properties: { maximumPacketSize: maxPacket }
     });

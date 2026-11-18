@@ -25,7 +25,7 @@
 
 <form class="stack" aria-label={t('event-source-form', { bridge: bridge.label })}
   onsubmit={event => { event.preventDefault(); void save(); }}>
-  <h3>{t('event-source-priority')}</h3>
+  <h3>{t('event-source-form', { bridge: bridge.label })}</h3>
   <p class="muted">{t('event-source-help')}</p>
   <ol class="source-priority" aria-label={t('event-source-priority')}>
     {#each sources as source, index (source)}

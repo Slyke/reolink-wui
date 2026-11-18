@@ -5,6 +5,7 @@ import { bridgeSchema } from './config.js';
 import { mergeBridgeCredentials } from './bridge-configuration.js';
 import { input, uuid, type Runtime } from './runtime.js';
 import { sendOutcome } from './camera-routes.js';
+import { testBridge } from './bridge-test.js';
 import { Failure } from './errors.js';
 
 export const bridgeSettingsRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
@@ -26,6 +27,15 @@ export const bridgeSettingsRoutes = ({ api, path, runtime }: { api: FastifyInsta
       }
     });
   };
+  api.post(path + '/admin/bridges/test', { bodyLimit: 262144 }, async request => {
+    await runtime.admin({ request, mutate: true });
+    const { configuration } = input({
+      schema: z.strictObject({ configuration: z.record(z.string(), z.unknown()) }), value: request.body
+    });
+    const previous = typeof configuration.id === 'string' ? runtime.bridges.get(configuration.id)?.config : undefined;
+    const config = input({ schema: bridgeSchema, value: mergeBridgeCredentials({ value: configuration, previous }) });
+    return testBridge({ config });
+  });
   api.post(path + '/admin/bridges', { bodyLimit: 262144 }, async (request, reply) =>
     sendOutcome({ reply, value: await save(request) }));
   api.put<{ Params: { id: string } }>(path + '/admin/bridges/:id', { bodyLimit: 262144 }, async (request, reply) => {

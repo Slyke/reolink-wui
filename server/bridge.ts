@@ -61,6 +61,7 @@ export class Bridge {
   private readonly mediaStreams = new Map<string, string[]>();
   private previewCameras = new Set<string>();
   private recordingCameras = new Set<string>();
+  private recordingPreviewCameras = new Set<string>();
   private imageSettings = false;
   private storageCameras = new Set<string>();
   private httpState?: boolean;
@@ -79,7 +80,7 @@ export class Bridge {
     const scope = config.cameraIds.length ? config.cameraIds : config.mqtt?.cameraIds ?? [];
     scope.forEach(id => this.allowed.add(id));
 
-    if (config.http) this.http = { ...config.http, agent: dispatcher({ ca: config.http.ca }) };
+    if (config.http) this.http = { ...config.http, agent: dispatcher(config.http) };
     const secureSocket = config.ws ? config.ws.url.protocol === 'wss:' : config.http?.url.protocol === 'https:';
     const transports: Record<EventSource, Transport> = {
       ws: secureSocket ? 'WSS' : 'WS',
@@ -102,7 +103,7 @@ export class Bridge {
     this.priority = [...sources];
     const { config } = this;
     const ws = config.ws ?? (config.http && {
-      url: at({ base: config.http.url, path: '/ws' }), token: config.http.token, ca: config.http.ca
+      url: at({ base: config.http.url, path: '/ws' }), token: config.http.token, ca: config.http.ca, rejectUnauthorized: config.http.rejectUnauthorized
     });
     if (ws && !config.ws) ws.url.protocol = ws.url.protocol === 'https:' ? 'wss:' : 'ws:';
     if (sources.includes('ws') && ws && !this.socket) {
@@ -303,6 +304,8 @@ export class Bridge {
 
   hasStorage(camera: string) { return this.has("v1") && this.storageCameras.has(camera); }
 
+  hasRecordingPreview(camera: string) { return this.has('v1') && this.recordingPreviewCameras.has(camera); }
+
   hasRecordings(camera: string) {
     return this.has('v1') && this.recordingCameras.has(camera);
   }
@@ -410,7 +413,7 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.storageCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.storageCameras]]);
     const ok = contract.version === 1;
     this.imageSettings = ok && Array.isArray(contract.settings) && contract.settings.includes('image');
     this.bridgeVersion.v1 = ok;
@@ -426,6 +429,8 @@ export class Bridge {
         }
       }
     }
+    this.recordingPreviewCameras = new Set(ok && Array.isArray(contract.recordingPreviewCameras)
+      ? contract.recordingPreviewCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingCameras = new Set(ok && Array.isArray(contract.recordingsCameras)
       ? contract.recordingsCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     const storage = Array.isArray(contract.storageCameras) ? contract.storageCameras : contract.recordingsCameras;
@@ -433,7 +438,7 @@ export class Bridge {
       ? storage.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.storageCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.storageCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 

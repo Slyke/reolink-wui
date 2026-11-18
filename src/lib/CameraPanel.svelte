@@ -176,10 +176,4 @@
       {/if}
     </section>
   {/if}
-  {#if camera.capabilities.recordings}
-    <div class="row"><a class="button" href={'/recordings?camera=' + camera.id}>{t('recordings')}</a></div>
-  {/if}
-  {#if camera.capabilities.rotate || Object.keys(camera.capabilities.settings).length || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
-    <div class="row"><a class="button" href={'/settings/cameras?camera=' + camera.id}>{t('camera-settings')}</a></div>
-  {/if}
 </div>

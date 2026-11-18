@@ -120,7 +120,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
   const previewRequests = [];
   let previewJpeg = jpeg;
   let led = false;
@@ -131,6 +131,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   let inventory = ['alpha','beta'];
   let inventoryReads = 0;
   let playbackAvailable = true;
+  let playbackFailure;
   const ai = { ai_person:{sensitivity:76,delay_seconds:2}, ai_pet:{sensitivity:60,delay_seconds:0} };
   let lose = false;
   let writes = 0;
@@ -232,7 +233,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
       version:1, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
-      previewCameras, storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
+      previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
@@ -254,10 +255,18 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       const query = new URL(req.url,'http://127.0.0.1').searchParams;
       return res.end(JSON.stringify({
         date:query.get('date'),stream:query.get('stream'),truncated:false,
-        recordings:[{id:'a'.repeat(64),start:query.get('date')+'T12:00:00',end:query.get('date')+'T12:00:02',stream:query.get('stream'),sizeBytes:recordedMp4.length,kind:'motion'}]
+        recordings:Array.from({length:recordingCount},(_,index)=>({id:(index+10).toString(16).repeat(64).slice(0,64),start:query.get('date')+'T12:'+String(index).padStart(2,'0')+':00',end:query.get('date')+'T12:'+String(index).padStart(2,'0')+':02',stream:query.get('stream'),sizeBytes:recordedMp4.length,kind:'motion'}))
       }));
     }
+    if (recordings && /\/recordings\/[a-f0-9]{64}\/preview$/.test(req.url)) {
+      res.writeHead(200,{'content-type':'image/jpeg'});
+      return res.end(jpeg);
+    }
     if (recordings && /\/recordings\/[a-f0-9]{64}\/video$/.test(req.url)) {
+      if (playbackFailure) {
+        res.writeHead(playbackFailure.status,{'content-type':'application/json'});
+        return res.end(JSON.stringify({stage:playbackFailure.stage,correlation_id:playbackFailure.correlation,secret:token}));
+      }
       let start=0,end=recordedMp4.length-1;
       const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range??'');
       if (range) {start=Number(range[1]); if(range[2]) end=Math.min(end,Number(range[2]));}
@@ -333,6 +342,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     },
     correlations, requests, previewRequests,
     setPlaybackAvailable: value => { playbackAvailable = value; },
+    setRecordingFailure: value => { playbackFailure = value; },
     changePreview: () => {
       const comment = Buffer.from([0xff, 0xfe, 0, 3, 1]);
       previewJpeg = Buffer.concat([jpeg.subarray(0, 2), comment, jpeg.subarray(2)]);

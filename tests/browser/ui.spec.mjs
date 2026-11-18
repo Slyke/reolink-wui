@@ -32,7 +32,7 @@ for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
     test.setTimeout(45000);
     page.setDefaultTimeout(6000);
-    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true,apiEvents:true });
+    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true,recordingCount:3,apiEvents:true });
     const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false});
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
@@ -273,6 +273,17 @@ for (const mode of ['browser','proxy']) {
       const forcedPreview = request => new URL(request.url()).pathname === prefix+'/v1/cameras/'+camera.id+'/preview'
         && new URL(request.url()).searchParams.get('refresh') === 'true';
       const manualFrame = page.waitForRequest(forcedPreview);
+      const liveTools=liveView.getByRole('group',{name:'Live view actions'});
+      await expect(liveTools.getByRole('link',{name:'Recordings',exact:true})).toHaveAttribute('href','/recordings?camera='+camera.id);
+      await expect(liveTools.getByRole('link',{name:'Camera settings',exact:true})).toHaveAttribute('href','/settings/cameras?camera='+camera.id);
+      for(const name of ['Recordings','Camera settings','Refresh live view','Enlarge live view']) {
+        const action=liveTools.getByRole(name==='Recordings'||name==='Camera settings'?'link':'button',{name,exact:true});
+        await expect(action).toHaveAttribute('title',name);
+        await expect(action.locator('svg')).toHaveCount(1);
+      }
+      const liveHeading=await liveView.getByRole('heading',{name:'Live view',exact:true}).boundingBox();
+      const toolsPosition=await liveTools.boundingBox();
+      expect(Math.abs((liveHeading.y+liveHeading.height/2)-(toolsPosition.y+toolsPosition.height/2))).toBeLessThan(3);
       await liveView.getByRole('button',{name:'Refresh live view'}).click();
       await manualFrame;
       const streamResponse = liveResponse();
@@ -377,7 +388,7 @@ for (const mode of ['browser','proxy']) {
 
       await page.getByRole('link',{name:'Event history',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/settings/events');
-      const limit = page.getByRole('spinbutton',{name:'Events to keep per camera'});
+      const limit = page.getByRole('spinbutton',{name:'In-memory events to keep per camera'});
       await limit.fill('7');
       await page.getByRole('button',{name:'Save changes'}).click();
       await expect(page.getByText('Confirmed',{exact:true})).toBeVisible();
@@ -436,7 +447,9 @@ for (const mode of ['browser','proxy']) {
       await connectionForm.getByRole('button',{name:'Add destination'}).click();
       await connectionForm.getByLabel('Destination name',{exact:true}).fill('notify');
       await connectionForm.getByLabel('Destination URL',{exact:true}).fill(remoteBridge.config.callbacks.fixture);
-      await connectionForm.getByRole('button',{name:'Add bridge',exact:true}).click();
+      await connectionForm.getByRole('button',{name:'Test bridge connection',exact:true}).click();
+      await expect(connectionForm.getByRole('table').getByText('Connected',{exact:true})).toHaveCount(2);
+      await connectionForm.getByRole('button',{name:'Save bridge connection',exact:true}).click();
       await expect(connectionForm.getByLabel('Bridge ID',{exact:true})).toHaveValue('remote');
       await page.reload();
       await connectionPanel.getByRole('button',{name:/^Bridge /}).click();
@@ -554,23 +567,86 @@ for (const mode of ['browser','proxy']) {
       await expect(page.getByRole('heading',{name:'SD card and storage'})).toBeVisible();
       await expect(page.getByText('64 GB',{exact:true})).toBeVisible();
       await expect(page.getByText('16 GB',{exact:true})).toBeVisible();
-      await page.getByRole('button',{name:'Play',exact:true}).click();
+      await expect(page.locator('.recording-grid .recording-card')).toHaveCount(3);
+      await page.locator('.recording-card').first().scrollIntoViewIfNeeded();
+      await expect.poll(()=>page.locator('.recording-preview img').first().evaluate(image=>image.complete&&image.naturalWidth>0)).toBe(true);
+      if(mode==='browser') await page.screenshot({path:test.info().outputPath('recordings-grid.png'),fullPage:true});
+      await page.getByRole('button',{name:'Table',exact:true}).click();
+      const recordingTable=page.locator('.recordings-table');
+      await expect(recordingTable.getByRole('row')).toHaveCount(4);
+      await expect(recordingTable.locator('time').first()).toHaveText('2026-11-1712:00:00');
+      await page.reload();
+      await expect(recordingTable).toBeVisible();
+      const row=recordingTable.getByRole('row').nth(1);
+      await page.mouse.move(0,0);
+      const resting=await row.evaluate(element=>getComputedStyle(element).backgroundColor);
+      await row.hover();
+      await expect.poll(()=>row.evaluate(element=>getComputedStyle(element).backgroundColor)).not.toBe(resting);
+      if(mode==='browser') await page.screenshot({path:test.info().outputPath('recordings-table.png'),fullPage:true});
+      await page.getByRole('button',{name:'Play',exact:true}).first().click();
+      const recordingDialog=page.getByRole('dialog',{name:/Recorded playback/});
+      await expect(recordingDialog).toBeVisible();
+      await expect(recordingDialog.getByRole('button',{name:'Previous recording',exact:true})).toBeDisabled();
       const recordingVideo=page.locator('video.recording-video');
       await expect(recordingVideo).toBeVisible();
       await expect.poll(() => recordingVideo.evaluate(video => video.readyState)).toBeGreaterThanOrEqual(1);
       const seek=await page.request.get(new URL(await recordingVideo.getAttribute('src'),publicOrigin).toString(),{headers:{range:'bytes=0-31'}});
       expect(seek.status()).toBe(206);
       expect((await seek.body()).length).toBe(32);
+      if(mode==='browser') await page.screenshot({path:test.info().outputPath('recordings-player.png')});
+      await recordingDialog.getByLabel('When the recording ends',{exact:true}).selectOption('next');
+      await recordingVideo.evaluate(video=>video.dispatchEvent(new Event('ended')));
+      await expect(recordingDialog.getByText('2026-11-17 12:01:00',{exact:true})).toBeVisible();
+      await expect.poll(()=>recordingVideo.evaluate(video=>video.readyState)).toBeGreaterThanOrEqual(1);
+      await recordingDialog.getByRole('button',{name:'Previous recording',exact:true}).click();
+      await expect(recordingDialog.getByText('2026-11-17 12:00:00',{exact:true})).toBeVisible();
+      await expect.poll(()=>recordingVideo.evaluate(video=>video.readyState)).toBeGreaterThanOrEqual(1);
+      await recordingDialog.getByLabel('When the recording ends',{exact:true}).selectOption('loop');
+      const recordingSource=await recordingVideo.getAttribute('src');
+      await recordingVideo.evaluate(video=>{video.currentTime=1;video.dispatchEvent(new Event('ended'));});
+      await expect.poll(()=>recordingVideo.evaluate(video=>video.currentTime)).toBeLessThan(.8);
+      expect(await recordingVideo.getAttribute('src')).toBe(recordingSource);
+      await recordingDialog.getByLabel('When the recording ends',{exact:true}).selectOption('stop');
+      await recordingVideo.evaluate(video=>video.dispatchEvent(new Event('ended')));
+      await expect(recordingDialog.getByText('2026-11-17 12:00:00',{exact:true})).toBeVisible();
+      await page.mouse.click(2,2);
+      await expect(recordingDialog).toHaveCount(0);
+      let failVideo=true;
+      const videoPath='**'+prefix+'/v1/cameras/*/recordings/*/video';
+      await page.route(videoPath,route=> {
+        if(!failVideo) return route.continue();
+        failVideo=false;
+        return route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({
+          error:'MEDIA_UNAVAILABLE',correlationId:uuid(),details:{playbackReason:'conversion',upstreamStatus:502,bridgeCorrelationId:uuid()}
+        })});
+      });
+      await page.getByRole('button',{name:'Play',exact:true}).first().click();
+      await expect(recordingDialog.getByText('The bridge could not convert this recording to browser-playable video.')).toBeVisible();
+      await expect(recordingVideo).toHaveCount(0);
+      await recordingDialog.getByRole('button',{name:'Retry recording',exact:true}).click();
+      await expect.poll(()=>recordingVideo.evaluate(video=>video.readyState)).toBeGreaterThanOrEqual(1);
+      await recordingDialog.getByRole('button',{name:'Close',exact:true}).click();
+      await page.unroute(videoPath);
+      await page.getByRole('button',{name:'Grid',exact:true}).click();
+      await expect(page.locator('.recording-grid')).toBeVisible();
+      await page.setViewportSize({width:375,height:900});
+      await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+      if(mode==='browser') await page.screenshot({path:test.info().outputPath('recordings-mobile.png'),fullPage:true});
+      await page.getByRole('button',{name:'Play',exact:true}).first().click();
+      await expect(recordingDialog).toBeVisible();
+      expect((await recordingDialog.boundingBox()).width).toBeLessThanOrEqual(375);
+      await recordingDialog.getByRole('button',{name:'Close',exact:true}).click();
+      await page.setViewportSize({width:1280,height:720});
       bridge.setPlaybackAvailable(false);
       await runtime.ready();
       await page.reload();
-      await expect(page.getByRole('button',{name:'Play',exact:true})).toBeDisabled();
+      await expect(page.getByRole('button',{name:'Play',exact:true}).first()).toBeDisabled();
       await expect(page.getByText('64 GB',{exact:true})).toBeVisible();
       await expect(page.getByText(/Recording playback requires a writable temporary directory/)).toBeVisible();
       bridge.setPlaybackAvailable(true);
       await runtime.ready();
       await page.getByRole('button',{name:'Refresh',exact:true}).click();
-      await expect(page.getByRole('button',{name:'Play',exact:true})).toBeEnabled();
+      await expect(page.getByRole('button',{name:'Play',exact:true}).first()).toBeEnabled();
       await page.goto(publicOrigin+'/settings/enrollment');
       await page.getByLabel('Device UID').fill('TESTWUI001');
       const enrollmentButton = page.getByRole('button',{name:'Show enrollment QR'});

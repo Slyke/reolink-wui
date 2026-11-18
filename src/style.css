@@ -231,7 +231,7 @@ fieldset { min-width: 0; border: 1px solid var(--color-border); border-radius: v
 details.panel > summary { cursor: pointer; min-height: 2.35rem; color: var(--color-text); }
 details.panel > summary:hover { color: var(--color-start-ink); }
 details.panel[open] > summary { margin-bottom: var(--space-3); color: var(--color-mid-ink); }
-.qr-dialog, .event-dialog, .live-dialog {
+.qr-dialog, .event-dialog, .live-dialog, .recording-dialog {
   max-height: calc(100dvh - 2rem); padding: var(--space-4); overflow: auto;
   color: var(--color-text); background: var(--color-panel); border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-panel);
@@ -241,7 +241,7 @@ details.panel[open] > summary { margin-bottom: var(--space-3); color: var(--colo
 .live-dialog { width: min(96vw, 90rem); }
 .live-dialog .viewport { max-height: 68dvh; }
 .live-dialog .viewport img { min-width: 0; min-height: 0; }
-.qr-dialog::backdrop, .event-dialog::backdrop, .live-dialog::backdrop { background: var(--color-backdrop); backdrop-filter: blur(4px); }
+.qr-dialog::backdrop, .event-dialog::backdrop, .live-dialog::backdrop, .recording-dialog::backdrop { background: var(--color-backdrop); backdrop-filter: blur(4px); }
 .qr-code { display: block; width: min(100%, 36rem, 73dvh); height: auto; margin-inline: auto; image-rendering: pixelated; }
 
 @media (max-width: 800px) {
@@ -257,9 +257,31 @@ details.panel[open] > summary { margin-bottom: var(--space-3); color: var(--colo
 
 .recording-search { align-items: end; }
 .recording-search > label { min-width: min(100%, 12rem); }
-.recording-video { display: block; width: 100%; max-height: 70dvh; background: var(--color-bg); }
+.recording-video { display: block; width: 100%; max-height: max(12rem, calc(100dvh - 18rem)); background: var(--color-bg); }
 meter { width: 100%; height: .85rem; accent-color: var(--color-warning); }
 
 meter::-webkit-meter-bar { background: var(--color-panel-strong); border: 1px solid var(--color-border); border-radius: 1rem; }
 meter::-webkit-meter-optimum-value { background: var(--color-warning); border-radius: 1rem; }
 meter::-moz-meter-bar { background: var(--color-warning); border-radius: 1rem; }
+
+.table-surface { background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.recordings-table { min-width: 68rem; }
+.recordings-table :is(th, td) { padding: .95rem 1rem; text-align: left; }
+.recording-time { display: grid; gap: .2rem; white-space: nowrap; min-width: 10.5rem; }
+.recording-time strong { font-size: 1.05em; }
+.recording-kind { overflow-wrap: anywhere; min-width: 9rem; }
+.recording-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: 1rem; }
+.recording-card { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 1rem; background: var(--color-bg-elevated); }
+.recording-card:hover { border-color: var(--color-start-border); background: var(--color-start-fill); }
+.recording-poster { display: block; position: relative; width: 100%; padding: 0; overflow: hidden; background: var(--color-bg); }
+.recording-poster-small { width: 8rem; }
+.recording-preview { aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; background: var(--color-bg); }
+.recording-preview img { width: 100%; height: 100%; object-fit: contain; }
+.recording-preview span { padding: .4rem; font-size: .78rem; text-align: center; }
+.recording-play-overlay { position: absolute; inset: 0; display: grid; place-items: center; font-size: 2rem; color: var(--color-start-ink); text-shadow: 0 1px 2px var(--color-bg); }
+.recording-dialog { width: min(96vw, 90rem); }
+.recording-stage { display: grid; place-items: center; min-height: min(50dvh, 24rem); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg); }
+.recording-end-mode { display: grid; gap: .25rem; min-width: min(100%, 17rem); }
+.recording-facts { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin: 0; }
+.recording-facts dt { color: var(--color-text-muted); }
+.recording-facts dd { margin: .25rem 0 0; }

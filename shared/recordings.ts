@@ -26,3 +26,6 @@ export const recordingsResponse = z.object({
 });
 export type StorageInfo = z.infer<typeof storageResponse>;
 export type RecordingList = z.infer<typeof recordingsResponse>;
+
+export type Recording = RecordingList['recordings'][number];
+export const recordingStages = ['camera-download', 'conversion', 'cache-limit', 'busy', 'timeout', 'temporary-storage', 'preparation'] as const;
