@@ -263,6 +263,8 @@
   "reolink-wui-not-supported": "Unavailable with the configured camera and bridge.",
   "reolink-wui-error-INTERNAL": "The server could not complete this request.",
   "reolink-wui-error-BAD_INPUT": "Check the request fields.",
+  "reolink-wui-error-STORAGE_READ_FAILED": "The bridge could not read this camera’s storage details.",
+  "reolink-wui-error-RECORDING_SEARCH_FAILED": "The bridge could not search this camera’s recordings.",
   "reolink-wui-error-UNSUPPORTED": "This action is unavailable with the configured camera and transport.",
   "reolink-wui-error-NOT_AUTHENTICATED": "Sign in again to continue.",
   "reolink-wui-error-ACCESS_DENIED": "Your account does not have access to this action.",

@@ -132,6 +132,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   let inventoryReads = 0;
   let playbackAvailable = true;
   let playbackFailure;
+  let storageFailure;
   const ai = { ai_person:{sensitivity:76,delay_seconds:2}, ai_pet:{sensitivity:60,delay_seconds:0} };
   let lose = false;
   let writes = 0;
@@ -247,6 +248,10 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       return res.end(JSON.stringify({ ok:true, correlation_id:req.headers['x-correlation-id'], callbacks }));
     }
     if (req.url.endsWith('/settings/image')) return res.end(JSON.stringify({values:{image:orientation}}));
+    if (storageFailure && recordings && req.url.endsWith('/storage')) {
+      res.writeHead(storageFailure.status, {'content-type':'application/json'});
+      return res.end(JSON.stringify({errorKey:storageFailure.key, correlation_id:req.headers['x-correlation-id'], secret:token}));
+    }
     if (recordings && req.url.endsWith('/storage')) return res.end(JSON.stringify({
       cards:[{number:0,kind:'sd',mounted:true,formatted:true,totalBytes:64000000000,usedBytes:16000000000,freeBytes:48000000000}],
       playbackAvailable,cameraTime:'2026-11-17T12:30:00',refreshedAt:new Date().toISOString(),streams:['main','sub']
@@ -350,6 +355,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     },
     correlations, requests, previewRequests, recordingRequests,
     setPlaybackAvailable: value => { playbackAvailable = value; },
+    setStorageFailure: value => { storageFailure = value; },
     setRecordingFailure: value => { playbackFailure = value; },
     setPreviewNotifications: value => { previewNotifications = value; },
     announcePreview: (camera_id='alpha', transport) => {

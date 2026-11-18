@@ -12,17 +12,27 @@ import { record } from './bridge-channels.js';
 import { recordingStages, recordingMetadataResponse, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
 
 const object = z.strictObject;
-const bridgeRead = async ({ bridge, path, search, correlation, schema }: {
-  bridge: Bridge; path: string; search?: string; correlation: string; schema: z.ZodType
+const bridgeRead = async ({ bridge, path, search, correlation, schema, failureKey }: {
+  bridge: Bridge; path: string; search?: string; correlation: string; schema: z.ZodType;
+  failureKey: 'STORAGE_READ_FAILED' | 'RECORDING_SEARCH_FAILED'
 }) => {
   const response = await bridge.api({ path, search, correlation, signal: AbortSignal.timeout(48_000) });
   if (!response.ok) {
-    await response.body?.cancel();
-    if (response.status === 422) throw new Failure('UNSUPPORTED', 422);
-    throw new Failure('BRIDGE_UNAVAILABLE', 502);
+    const body = record(await jsonResponse({ response, limit: 16_384 }).catch(() => ({})));
+    const details = {
+      upstreamStatus: response.status,
+      bridgeCorrelationId: typeof body.correlation_id === 'string' && correlationPattern.test(body.correlation_id)
+        ? body.correlation_id : undefined
+    };
+    if (response.status === 422 && body.errorKey === 'API_MEDIA_UNSUPPORTED') {
+      throw new Failure('UNSUPPORTED', 422, undefined, details);
+    }
+    // Older bridges use 422 for a failed device read even when recording search is available.
+    const status = [503, 504].includes(response.status) ? response.status : 502;
+    throw new Failure(failureKey, status, undefined, details);
   }
-  const parsed = schema.safeParse(await jsonResponse({ response }));
-  if (!parsed.success) throw new Failure('BRIDGE_UNAVAILABLE', 502);
+  const parsed = schema.safeParse(await jsonResponse({ response }).catch(() => undefined));
+  if (!parsed.success) throw new Failure(failureKey, 502);
   return parsed.data;
 };
 
@@ -45,7 +55,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
   api.get<{ Params: { id: string } }>(root + '/storage', async request => {
     const { bridge, row } = await camera(request, request.params.id);
     return bridgeRead({
-      bridge, path: '/cameras/' + row.remote_id + '/storage', correlation: request.id, schema: storageResponse
+      bridge, path: '/cameras/' + row.remote_id + '/storage', correlation: request.id, schema: storageResponse, failureKey: 'STORAGE_READ_FAILED'
     });
   });
   api.get<{ Params: { id: string } }>(root + '/recordings', async request => {
@@ -53,7 +63,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     const { bridge, row } = await camera(request, request.params.id);
     return bridgeRead({
       bridge, path: '/cameras/' + row.remote_id + '/recordings', correlation: request.id,
-      search: '?' + new URLSearchParams(query), schema: recordingsResponse
+      search: '?' + new URLSearchParams(query), schema: recordingsResponse, failureKey: 'RECORDING_SEARCH_FAILED'
     });
   });
   api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/metadata', async request => {

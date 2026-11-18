@@ -2,6 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
   import { api, errorText, t } from '$lib/api.js';
+  import { formatLocalTimestamp } from '$lib/dates.js';
   import type { Camera } from '$lib/models.js';
   import RecordingPlayer from '$lib/RecordingPlayer.svelte';
   import RecordingPreview from '$lib/RecordingPreview.svelte';
@@ -17,15 +18,19 @@
   const camera = $derived(cameras.find(item => item.id === selected));
   let storage = $state<StorageInfo>();
   const playbackAvailable = $derived(Boolean(storage?.playbackAvailable ?? camera?.capabilities.recordingPlayback));
-  let listing = $state<{ recordings: RecordingGroup[]; truncated: boolean }>();
+  const defaultStreams = ['sub', 'main'] as const;
+  let listing = $state<{ date: string; recordings: RecordingGroup[]; truncated: boolean; partial: boolean }>();
   let recording = $state<RecordingGroup>();
   let startPosition = $state(0);
   let highlighted = $state<string>();
   let date = $state('');
+  let userSelectedDate = false;
   let initial = $state(true);
   let loading = $state(false);
   let reading = $state(false);
-  let error = $state('');
+  let cameraError = $state('');
+  let storageError = $state('');
+  let searchError = $state('');
   let layout = $state<'grid' | 'table'>('grid');
   let pageNumber = $state(0);
   let pageSize = $state('12');
@@ -48,8 +53,8 @@
       if (index >= 0) pageNumber = Math.floor(index / perPage);
     }
   };
-  const loadListing = async (signal?: AbortSignal) => {
-    const id = selected, currentDate = date, streams = [...(storage?.streams ?? ['sub','main'])];
+  const loadListing = async (signal?: AbortSignal, currentDate = date) => {
+    const id = selected, streams = storage?.streams ?? defaultStreams;
     const results: RecordingList[] = [];
     let failure: unknown;
     for (const stream of streams) {
@@ -61,10 +66,16 @@
       } catch (error) { failure = error; }
     }
     if (!results.length) throw failure;
-    if (results.length < streams.length) error = t('recording-search-partial');
-    return { recordings: groupRecordings({ recordings: results.flatMap(result => result.recordings) }), truncated: results.some(result => result.truncated) };
+    return {
+      date: currentDate, recordings: groupRecordings({ recordings: results.flatMap(result => result.recordings) }),
+      truncated: results.some(result => result.truncated), partial: results.length < streams.length
+    };
   };
-  const renew = async () => { listing = await loadListing(); };
+  const renew = async () => {
+    const signal = listController?.signal;
+    const next = await loadListing(signal, listing?.date);
+    if (!signal?.aborted) listing = next;
+  };
   let controller: AbortController | undefined;
   let listController: AbortController | undefined;
 
@@ -79,12 +90,12 @@
     loading = true;
     recording = undefined;
     pageNumber = 0;
-    error = '';
+    searchError = '';
     try {
       const next = await loadListing(combined);
       if (!combined.aborted) listing = next;
     } catch (err) {
-      if (!combined.aborted) { listing = undefined; error = errorText(err); }
+      if (!combined.aborted) { listing = undefined; searchError = errorText(err); }
     } finally {
       if (listController === current) loading = false;
     }
@@ -95,15 +106,29 @@
     const current = new AbortController();
     controller = current;
     reading = true;
-    error = '';
+    storageError = '';
+    if (!date) date = formatLocalTimestamp(Date.now()).slice(0, 10);
+    const searchedDate = date;
+    const searchedStreams = new Set(storage?.streams ?? defaultStreams);
+    void search({ signal: current.signal });
+    const startedSearch = listController;
     try {
       const next = await api<StorageInfo>({ path: '/api/v1/cameras/' + selected + '/storage', signal: current.signal });
       if (current.signal.aborted) return;
       storage = next;
-      if (!date) date = next.cameraTime?.slice(0, 10) ?? new Date().toISOString().slice(0, 10);
-      await search({ signal: current.signal });
+      // Only refine the automatic search. A newer selection or manual search takes precedence.
+      if (listController === startedSearch && date === searchedDate) {
+        const nextDate = !userSelectedDate && next.cameraTime ? next.cameraTime.slice(0, 10) : date;
+        if (nextDate !== date || next.streams.length !== searchedStreams.size || next.streams.some(stream => !searchedStreams.has(stream))) {
+          date = nextDate;
+          void search({ signal: current.signal });
+        }
+      }
     } catch (err) {
-      if (!current.signal.aborted) error = errorText(err);
+      if (!current.signal.aborted) {
+        storage = undefined;
+        storageError = errorText(err);
+      }
     } finally {
       if (controller === current) reading = false;
     }
@@ -118,7 +143,9 @@
       listing = undefined;
       recording = undefined;
       date = '';
-      error = '';
+      userSelectedDate = false;
+      storageError = '';
+      searchError = '';
       if (id && supported) void refresh();
     });
     return () => { controller?.abort(); listController?.abort(); };
@@ -138,7 +165,7 @@
       const requested = page.url.searchParams.get('camera');
       selected = cameras.find(item => item.id === requested)?.id
         ?? cameras.find(item => item.capabilities.recordings)?.id ?? cameras[0]?.id ?? '';
-    }).catch(err => { if (!request.signal.aborted) error = errorText(err); })
+    }).catch(err => { if (!request.signal.aborted) cameraError = errorText(err); })
       .finally(() => { if (!request.signal.aborted) initial = false; });
     return () => request.abort();
   });
@@ -162,12 +189,13 @@
     <p class="muted">{t('no-cameras')}</p>
   {/if}
   {#if camera && !camera.capabilities.recordings}<p class="muted">{t('recordings-unavailable')}</p>{/if}
-  {#if error}<p role="alert" class="error">{error}</p>{/if}
+  {#if cameraError}<p role="alert" class="error">{cameraError}</p>{/if}
 </section>
 
 {#if camera?.capabilities.recordings}
   <section class="panel stack" aria-labelledby="card-storage">
     <h2 id="card-storage" class="panel-title">{t('storage')}</h2>
+    {#if storageError}<p role="alert" class="error">{storageError}</p>{/if}
     {#if storage}
       <div class="grid">
         {#each storage.cards as card (card.number)}
@@ -203,14 +231,16 @@
       </div>
     </div>
     <form class="row recording-search" onsubmit={event => { event.preventDefault(); void search(); }}>
-      <label>{t('recording-date')}<input type="date" required bind:value={date} /></label>
-      <button disabled={loading || reading || !date}>{t('recordings-search')}</button>
+      <label>{t('recording-date')}<input type="date" required bind:value={date} oninput={() => { userSelectedDate = true; }} /></label>
+      <button disabled={loading || !date}>{t('recordings-search')}</button>
     </form>
+    {#if searchError}<p role="alert" class="error">{searchError}</p>{/if}
+    {#if listing?.partial && !loading}<p class="notice">{t('recording-search-partial')}</p>{/if}
     {#if !playbackAvailable}<p class="notice">{t('recording-workspace-unavailable')}</p>{/if}
     {#if loading}
       <p role="status">{t('recordings-searching')}</p>
     {:else if listing?.recordings.length}
-      <RecordingTimeline camera={selected} recordings={listing.recordings} {date} available={Boolean(camera.capabilities.recordingPreview)}
+      <RecordingTimeline camera={selected} recordings={listing.recordings} date={listing.date} available={Boolean(camera.capabilities.recordingPreview)}
         playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
       <div class="row between">
         <div class="recording-page-size field"><label for={fieldId + '-page-size'}>{t('recording-page-size')}</label>

@@ -680,6 +680,19 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal(storage.json().cards[0].totalBytes,64000000000);
   assert.equal(storage.json().cards[0].usedBytes,16000000000);
   assert.equal((await incoming({path:root+'/recordings?date=2026-02-30',headers:privileged})).statusCode,400);
+  for (const [status, key, expected, error] of [
+    [422,'API_SETTING_READ_FAILED',502,'STORAGE_READ_FAILED'],
+    [502,'API_STORAGE_READ_FAILED',502,'STORAGE_READ_FAILED'],
+    [504,'API_STORAGE_READ_FAILED',504,'STORAGE_READ_FAILED'],
+    [422,'API_MEDIA_UNSUPPORTED',422,'UNSUPPORTED']
+  ]) {
+    fixture.setStorageFailure({status,key});
+    const failure=await incoming({path:root+'/storage',headers:privileged});
+    assert.equal(failure.statusCode,expected);
+    assert.equal(failure.json().errorKey,error);
+    assert.deepEqual(failure.json().details,{upstreamStatus:status,bridgeCorrelationId:failure.json().correlationId});
+    assert.ok(!failure.body.includes(serviceToken));
+  }
   const search=await incoming({path:root+'/recordings?date=2026-11-17&stream=sub',headers:privileged});
   assert.equal(search.statusCode,200,search.body);
   const recording=search.json().recordings[0];
