@@ -34,7 +34,7 @@ export const bridgeSettingsRoutes = ({ api, path, runtime }: { api: FastifyInsta
     });
     const previous = typeof configuration.id === 'string' ? runtime.bridges.get(configuration.id)?.config : undefined;
     const config = input({ schema: bridgeSchema, value: mergeBridgeCredentials({ value: configuration, previous }) });
-    return testBridge({ config });
+    return testBridge({ config,correlationId:request.id });
   });
   api.post(path + '/admin/bridges', { bodyLimit: 262144 }, async (request, reply) =>
     sendOutcome({ reply, value: await save(request) }));

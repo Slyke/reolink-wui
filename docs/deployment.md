@@ -176,3 +176,8 @@ logging: {
 ~~~
 
 The bridge has the same sink/gate model. Thumbnail fallback diagnostics use API_RECORDING_PREVIEW_FALLBACK (warning by default); a failed fallback uses API_RECORDING_PREVIEW_FAILED. Both carry correlation IDs. The bridge's HTTP middleware also reports framework rejections, failed readiness, and API errors that previously returned without a log. Already reported errors are not logged twice.
+
+
+Background WS/MQTT/API feed failures, HTTP connection checks, inventory failures, connection-test failures, event-history connection/write/retention failures, and dropped history writes have distinct error keys. Operation outcomes that are rejected, unknown, or unverified also generate keyed errors even when the API uses HTTP 200 to return their outcome. OPERATION_UNVERIFIED defaults to warning level. Expected cancellation and disabled capabilities do not report failures. Connection-state logs are emitted when the failure changes; each failed HTTP request is still logged separately.
+
+The Svelte UI process uses the same logging configuration. Proxy errors, rejected page requests, and unexpected render errors are gated too. Unexpected render errors return a generic public message without printing an uncontrolled exception to the console.

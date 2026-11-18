@@ -4,11 +4,16 @@ import codes from './errors.json' with { type: 'json' };
 
 export let logs = logger.debugAndErrors({ errorCodeMap: codes }) as {
   generateLog: (options: { caller: string; level: string; loggerKey: string; message: string; context?: object }) => unknown;
-  generateError: (options: { caller: string; reason: string; errorKey: string; correlationId?: string; includeStackTrace: boolean }) => unknown;
+  generateError: (options: { caller: string; reason: string; errorKey: string; correlationId?: string; includeStackTrace: boolean; context?: object }) => unknown;
 };
 export const configureLogging = ({ logging }: { logging: Record<string,unknown> }) => {
-  logs = logger.debugAndErrors({ settings: { logging }, errorCodeMap: codes });
+  const gates = { OPERATION_UNVERIFIED: { level:'warn' }, ...(logging.gates as Record<string,unknown> ?? {}) };
+  logs = logger.debugAndErrors({ settings: { logging: { ...logging,gates } }, errorCodeMap: codes });
 };
+export const recordError = ({ key, caller, correlationId = randomUUID(), context }: {
+  key: keyof typeof codes; caller: string; correlationId?: string; context?: object
+}) => logs.generateError({ caller, reason:key, errorKey:key, correlationId, context, includeStackTrace:false });
+
 export const buildInfo = {
   service: 'reolink-wui',
   version: process.env.APP_VERSION ?? '0.1.0',
@@ -35,6 +40,6 @@ export const report = ({ error, correlationId = randomUUID(), caller = 'api::req
   error: Failure; correlationId?: string; caller?: string;
 }) => {
   const errorCode = codes[error.key];
-  logs.generateError({ caller, reason: error.key, errorKey: error.key, correlationId, includeStackTrace: false });
+  recordError({ key:error.key,caller,correlationId,context:{ httpStatus:error.status,...error.details } });
   return { error: error.key, errorKey: error.key, errorCode, correlationId, outcome: error.outcome, ...(error.details ? { details: error.details } : {}) };
 };

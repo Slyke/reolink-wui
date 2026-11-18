@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { audit, type Sql } from './db.js';
-import { Failure } from './errors.js';
+import { Failure, recordError } from './errors.js';
 
 type Outcome = 'pending' | 'confirmed' | 'unverified' | 'rejected' | 'unknown';
 export type ActionResult<T = unknown> = { outcome: Outcome; reason?: string; bridgeCorrelationId?: string; data?: T };
@@ -69,6 +69,11 @@ export class Operations {
     } catch (error) {
       const known = error instanceof Failure && error.outcome !== 'unknown';
       result = { outcome: known ? 'rejected' : 'unknown', reason: known ? error.key : 'OUTCOME_UNKNOWN' };
+    }
+    if (result.outcome === 'rejected' || result.outcome === 'unknown' || result.outcome === 'unverified') {
+      const key = { rejected:'OPERATION_REJECTED', unknown:'OPERATION_UNKNOWN', unverified:'OPERATION_UNVERIFIED' } as const;
+      recordError({ key:key[result.outcome],caller:'operations::execute',correlationId:correlation,
+        context:{ operation:id,action,resource,outcome:result.outcome,bridgeCorrelationId:result.bridgeCorrelationId } });
     }
     await this.sql.transaction(async query => {
       await query('UPDATE operations SET outcome=$1,reason=$2,bridge_correlation=$3 WHERE id=$4',

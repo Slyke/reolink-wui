@@ -6,7 +6,7 @@ import { availableEventSources, type BridgeConfig } from './config.js';
 import type { ConnectionState, Transport, Upstream, UpstreamConnection } from '../shared/upstreams.js';
 import { at, dispatcher, jsonResponse } from './net.js';
 import { ApiChannel, BrokerChannel, SocketChannel, record, type ChannelChanges, type Envelope } from './bridge-channels.js';
-import { Failure } from './errors.js';
+import { Failure, recordError } from './errors.js';
 import { correlationPattern, segment } from '../shared/urls.js';
 
 import { eventData, type CameraEvent } from './cameras.js';
@@ -17,6 +17,7 @@ type FeedState = {
   transport: BridgeInterruption['transport'];
   cache: Map<string, Map<string, Envelope>>;
   ready?: boolean;
+  failure?: FeedConnectionFailure;
 };
 
 export type BridgeUpdate = { kind: 'feed' }
@@ -59,6 +60,7 @@ export class Bridge {
   private readonly http?: Link;
   private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, previewNotifications: false };
   private scanning?: Promise<boolean>;
+  private inventoryFailed = false;
   private readonly mediaStreams = new Map<string, string[]>();
   private readonly previewTags = new Map<string,string>();
   private previewCameras = new Set<string>();
@@ -141,6 +143,11 @@ export class Bridge {
     return {
       refresh: () => feed.cache.clear(),
       connected: (ready, failure) => {
+        if (!ready && failure && (feed.ready !== false || feed.failure !== failure)) {
+          const keys = { ws:'BRIDGE_WS_FEED_FAILED',mqtt:'BRIDGE_MQTT_FEED_FAILED',api:'BRIDGE_API_FEED_FAILED' } as const;
+          recordError({ key:keys[source],caller:'bridge::feed',context:{ bridge:this.config.id,source,failure } });
+        }
+        feed.failure = ready ? undefined : failure;
         const previous = this.activeFeed;
         feed.ready = ready;
         if (ready) updateBrokerTargets();
@@ -165,6 +172,7 @@ export class Bridge {
       },
       gap: () => {
         if (this.activeFeed !== source) return;
+        recordError({ key:'BRIDGE_FEED_GAP',caller:'bridge::feed',context:{ bridge:this.config.id,source } });
         this.channel.emit('update', {
           kind: 'gap', details: { id: randomUUID(), detectedAt: Date.now(), cause: 'bridge-backlog', ...bridgeSource }
         });
@@ -411,12 +419,17 @@ export class Bridge {
         }
       }
       const previous = this.reportedIds;
+      this.inventoryFailed = false;
       this.reportedIds = ids;
       const topicsChanged = this.broker?.setCameraIds(mqttIds);
       if (topicsChanged || !previous || ids.size !== previous.size || [...ids].some(id => !previous.has(id))) {
         this.channel.emit('update', { kind: 'feed' });
       }
       return true;
+    }).catch(error => {
+      if (!this.inventoryFailed) recordError({ key:'BRIDGE_INVENTORY_FAILED',caller:'bridge::inventory',context:{ bridge:this.config.id } });
+      this.inventoryFailed = true;
+      throw error;
     }).finally(() => { this.scanning = undefined; });
     return this.scanning;
   }
@@ -481,7 +494,11 @@ export class Bridge {
   }
 
   async check() {
-    if (this.http) this.httpState = await this.checkHttp(this.http);
+    if (this.http) {
+      const ready = await this.checkHttp(this.http);
+      if (!ready && this.httpState !== false) recordError({ key:'BRIDGE_HTTP_CHECK_FAILED',caller:'bridge::check',context:{ bridge:this.config.id } });
+      this.httpState = ready;
+    }
     const knownInventory = this.reportedIds !== undefined || this.allowed.size > 0 || !!this.cache?.size || this.socket?.ready;
     return this.httpState !== false && !!knownInventory && this.feedReady && (this.config.commands !== 'mqtt' || this.broker?.ready === true);
   }

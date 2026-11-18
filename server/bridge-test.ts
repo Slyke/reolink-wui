@@ -1,3 +1,4 @@
+import { recordError } from './errors.js';
 import { at, dispatcher, jsonResponse } from './net.js';
 import { BrokerChannel, SocketChannel, connectionFailure, record, type ChannelChanges } from './bridge-channels.js';
 import type { BridgeConfig } from './config.js';
@@ -31,7 +32,7 @@ const channelTest = ({ source, transport, open }: {
 });
 
 // Probes use only API reads and event subscriptions. Draft settings are never persisted.
-export const testBridge = async ({ config }: { config: BridgeConfig }): Promise<BridgeTest> => {
+export const testBridge = async ({ config, correlationId }: { config: BridgeConfig; correlationId?: string }): Promise<BridgeTest> => {
   const ids = new Set(config.cameraIds.length ? config.cameraIds : config.mqtt?.cameraIds ?? []);
   const http = config.http;
   let httpResult: ConnectionTest = { source: 'http', transport: 'HTTP', status: 'disabled', elapsedMs: 0 };
@@ -87,5 +88,10 @@ export const testBridge = async ({ config }: { config: BridgeConfig }): Promise<
       open: changes => new BrokerChannel(config.mqtt!, config.mqtt?.cameraIds ?? [...ids], false, changes)
     }) : Promise.resolve<ConnectionTest>({ source: 'mqtt', transport: 'MQTT', status: 'disabled', elapsedMs: 0 })
   ]);
+  for (const result of [httpResult,ws,mqtt]) if (result.status === 'failed') {
+    const keys = { http:'BRIDGE_HTTP_TEST_FAILED',ws:'BRIDGE_WS_TEST_FAILED',mqtt:'BRIDGE_MQTT_TEST_FAILED' } as const;
+    recordError({ key:keys[result.source],caller:'bridge::test',correlationId,
+      context:{ bridge:config.id,transport:result.transport,failure:result.failure } });
+  }
   return { results: [httpResult, ws, mqtt], cameraCount: ids.size };
 };

@@ -2,7 +2,7 @@ import { Redis } from 'ioredis';
 import type { CameraEvent } from './cameras.js';
 import { historyStorageSchema, type HistoryConfig, type HistoryStorage, type HistoryStorageInput, type HistorySettings, type Valkey } from '../shared/history.js';
 import type { Sql } from './db.js';
-import { Failure } from './errors.js';
+import { Failure, recordError } from './errors.js';
 import { maxEventRetention } from '../shared/events.js';
 
 // Upgrade existing list keys in place, keeping event IDs and timestamps.
@@ -84,8 +84,10 @@ class HistoryCache {
         enableOfflineQueue: false, autoResendUnfulfilledCommands: false, maxRetriesPerRequest: 0,
         retryStrategy: () => 1500
       });
-      this.client.on('error', () => {});
-      this.client.on('ready', () => { if (!this.initializing) void this.resize().catch(() => {}); });
+      this.client.on('error', () => {
+        recordError({ key:'EVENT_HISTORY_CONNECTION_FAILED',caller:'history::valkey' });
+      });
+      this.client.on('ready', () => { if (!this.initializing) void this.resize().catch(() => recordError({key:'EVENT_HISTORY_RETENTION_FAILED',caller:'history::resize'})); });
     }
   }
 
@@ -103,13 +105,13 @@ class HistoryCache {
     if (this.client) {
       await this.client.connect().catch(() => {});
       if (importLimit && this.connected) {
-        const stored = await this.client.get(this.settingKey).catch(() => null);
+        const stored = await this.client.get(this.settingKey).catch(() => { recordError({key:'EVENT_HISTORY_RETENTION_FAILED',caller:'history::restore'}); return null; });
         const count = stored === null ? NaN : Number(stored);
         if (Number.isInteger(count) && count >= 0 && count <= maxEventRetention) this.limit = count;
       }
     }
     this.initializing = false;
-    await this.resize().catch(() => {});
+    await this.resize().catch(() => recordError({key:'EVENT_HISTORY_RETENTION_FAILED',caller:'history::resize'}));
   }
 
   private async resize() {
@@ -125,15 +127,16 @@ class HistoryCache {
     this.limit = limit;
     if (limit === 0) this.memory.clear();
     else for (const events of this.memory.values()) events.splice(0, Math.max(0, events.length - limit));
-    await this.resize().catch(() => {});
+    await this.resize().catch(() => recordError({key:'EVENT_HISTORY_RETENTION_FAILED',caller:'history::resize'}));
   }
 
   add({ camera, entry }: { camera: string; entry: CameraEvent }) {
     if (this.client) {
-      if (!this.connected || this.pending >= 256 || this.countLimit === 0) return;
+      if (!this.connected || this.countLimit === 0) return;
+      if (this.pending >= 256) { recordError({key:'EVENT_HISTORY_BACKLOG',caller:'history::add',context:{camera}}); return; }
       this.pending++;
       void this.client.eval(addEvent, 2, this.indexKey, this.eventKey(camera),
-        this.countLimit, this.ageLimit, Date.now(), JSON.stringify(entry), entry.observedAt).catch(() => {}).finally(() => { this.pending--; });
+        this.countLimit, this.ageLimit, Date.now(), JSON.stringify(entry), entry.observedAt).catch(() => recordError({key:'EVENT_HISTORY_WRITE_FAILED',caller:'history::add',context:{camera}})).finally(() => { this.pending--; });
       return;
     }
     if (!this.limit) return;

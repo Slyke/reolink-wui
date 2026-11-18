@@ -1,16 +1,18 @@
+import strings from './lib/en-US.json';
 import { building } from '$app/environment';
-import type { Handle } from '@sveltejs/kit';
+import type { Handle, HandleServerError } from '@sveltejs/kit';
 import { randomUUID } from 'node:crypto';
 import type { Agent } from 'undici';
 import { suffixAt } from '../shared/urls.js';
 import { readConfig } from '../server/config.js';
 import { at, dispatcher } from '../server/net.js';
-import { boot, buildInfo, Failure, report } from '../server/errors.js';
+import { boot, buildInfo, configureLogging, Failure, recordError, report } from '../server/errors.js';
 import { forwardProofHeader, verifiedIdentityHeader, ingressSubject } from '../server/trusted-proxy.js';
 
 const config = building ? undefined : readConfig();
 const agent = config?.httpApi.mode === 'proxy' ? dispatcher({ ca: config.forward?.ca }) : undefined;
 if (config) {
+  configureLogging({ logging:config.logging });
   if ('ingress' in config.auth && process.env.ADDRESS_HEADER) throw new Error('Proxy identity requires adapter-node socket addresses');
   boot({ caller: 'ui::start' });
 }
@@ -22,17 +24,34 @@ const drop = new Set([
   'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length', 'host', 'content-encoding', 'set-cookie'
 ]);
 
+const requestCorrelations = new WeakMap<Request,string>();
+const reportedErrors = new WeakSet<Request>();
+export const handleError: HandleServerError = ({ event,status }) => {
+  recordError({ key:status >= 500 ? 'UI_RENDER_FAILED' : 'UI_REQUEST_REJECTED',caller:'ui::render',correlationId:requestCorrelations.get(event.request),context:{ httpStatus:status } });
+  reportedErrors.add(event.request);
+  return { message:strings['reolink-wui-error-INTERNAL'] };
+};
+
 export const handle: Handle = async ({ event, resolve }) => {
   const { url, request, getClientAddress } = event;
   const correlationId = randomUUID();
+  requestCorrelations.set(request,correlationId);
+  const resolvePage = async () => {
+    const response = await resolve(event);
+    if (response.status >= 400 && !reportedErrors.has(request)) {
+      recordError({ key:response.status >= 500 ? 'UI_RENDER_FAILED' : 'UI_REQUEST_REJECTED',caller:'ui::request',
+        correlationId,context:{ httpStatus:response.status } });
+    }
+    return response;
+  };
   if (url.pathname === '/livez' || (url.pathname === '/readyz' && config?.httpApi.mode === 'browser')) {
     return Response.json({ ...buildInfo, ok: true, correlationId }, { headers: { 'cache-control': 'no-store', 'x-correlation-id': correlationId } });
   }
-  if (config?.httpApi.mode !== 'proxy' || !config.httpApi.proxy.upstreamBaseUrl || !config.forward) return resolve(event);
+  if (config?.httpApi.mode !== 'proxy' || !config.httpApi.proxy.upstreamBaseUrl || !config.forward) return resolvePage();
   const { basePath, upstreamBasePath, upstreamBaseUrl } = config.httpApi.proxy;
   const suffix = suffixAt({ path: url.pathname, prefix: basePath });
   const ready = url.pathname === '/readyz';
-  if (suffix === null && !ready) return resolve(event);
+  if (suffix === null && !ready) return resolvePage();
   const fail = (error: Failure) => Response.json(
     report({ error, correlationId, caller: 'ui::proxy' }),
     { status: error.status, headers: { 'cache-control': 'no-store', 'x-correlation-id': correlationId } }
