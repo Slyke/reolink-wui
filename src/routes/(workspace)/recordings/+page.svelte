@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
-  import { api, errorText, t } from '$lib/api.js';
+  import { api, errorText, t, url } from '$lib/api.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import type { Camera } from '$lib/models.js';
   import RecordingPlayer from '$lib/RecordingPlayer.svelte';
   import RecordingPreview from '$lib/RecordingPreview.svelte';
   import RecordingTimeline from '$lib/RecordingTimeline.svelte';
+  import { RecordingPreviews } from '$lib/recording-previews.js';
   import { groupRecordings, type RecordingGroup } from '../../../../shared/recording-groups.js';
   import { recordingSize, recordingDuration, recordingKinds } from '$lib/recordings.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
@@ -20,6 +21,12 @@
   const playbackAvailable = $derived(Boolean(storage?.playbackAvailable ?? camera?.capabilities.recordingPlayback));
   const defaultStreams = ['sub', 'main'] as const;
   let listing = $state<{ date: string; recordings: RecordingGroup[]; truncated: boolean; partial: boolean }>();
+  const listedDate = $derived(listing?.date ?? '');
+  const previews = $derived(new RecordingPreviews(selected, listedDate));
+  $effect(() => {
+    const cache = previews;
+    return () => cache.close();
+  });
   let recording = $state<RecordingGroup>();
   let startPosition = $state(0);
   let highlighted = $state<string>();
@@ -159,15 +166,33 @@
       if (size && ['12','24','48','96','all'].includes(size)) pageSize = size;
     } catch { /* Storage can be unavailable. */ }
     const request = new AbortController();
-    void api<{ cameras: Camera[] }>({ path: '/api/v1/cameras', signal: request.signal }).then(result => {
-      if (request.signal.aborted) return;
-      cameras = result.cameras;
-      const requested = page.url.searchParams.get('camera');
-      selected = cameras.find(item => item.id === requested)?.id
-        ?? cameras.find(item => item.capabilities.recordings)?.id ?? cameras[0]?.id ?? '';
-    }).catch(err => { if (!request.signal.aborted) cameraError = errorText(err); })
-      .finally(() => { if (!request.signal.aborted) initial = false; });
-    return () => request.abort();
+    let sequence = 0;
+    const listCameras = async () => {
+      const current = ++sequence;
+      try {
+        const result = await api<{ cameras: Camera[] }>({ path: '/api/v1/cameras', signal: request.signal });
+        if (request.signal.aborted || current !== sequence) return;
+        const requested = selected || page.url.searchParams.get('camera');
+        cameras = result.cameras;
+        selected = cameras.find(item => item.id === requested)?.id
+          ?? cameras.find(item => item.capabilities.recordings)?.id ?? cameras[0]?.id ?? '';
+        cameraError = '';
+      } catch (err) {
+        if (!request.signal.aborted && current === sequence) cameraError = errorText(err);
+      } finally { if (!request.signal.aborted && current === sequence) initial = false; }
+    };
+    void listCameras();
+    const access = new EventSource(url('/api/v1/events'));
+    access.onmessage = event => {
+      if (JSON.parse(event.data).kind !== 'access-changed') return;
+      controller?.abort(); listController?.abort();
+      previews.close();
+      recording = undefined;
+      listing = undefined;
+      cameras = [];
+      void listCameras();
+    };
+    return () => { request.abort(); access.close(); };
   });
 </script>
 
@@ -240,7 +265,7 @@
     {#if loading}
       <p role="status">{t('recordings-searching')}</p>
     {:else if listing?.recordings.length}
-      <RecordingTimeline camera={selected} recordings={listing.recordings} date={listing.date} available={Boolean(camera.capabilities.recordingPreview)}
+      <RecordingTimeline {previews} warming={!recording} recordings={listing.recordings} date={listing.date} available={Boolean(camera.capabilities.recordingPreview)}
         playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
       <div class="row between">
         <div class="recording-page-size field"><label for={fieldId + '-page-size'}>{t('recording-page-size')}</label>
@@ -257,7 +282,7 @@
             <article class="recording-card stack" data-recording={item.id} data-highlighted={highlighted === item.id}>
               <button class="recording-poster" disabled={!playbackAvailable}
                 aria-label={t('recording-play-at', { time: item.start.replace('T',' ') })} onclick={() => select(item)}>
-                <RecordingPreview camera={selected} recording={item.id} available={Boolean(camera.capabilities.recordingPreview)} />
+                <RecordingPreview {previews} recording={item.id} available={Boolean(camera.capabilities.recordingPreview)} />
                 <span class="recording-play-overlay" aria-hidden="true">▶</span>
               </button>
               <time class="recording-time" datetime={item.start}><span class="muted">{item.start.slice(0,10)}</span><strong>{item.start.slice(11)}</strong></time>
@@ -277,7 +302,7 @@
                 <tr data-recording={item.id} data-highlighted={highlighted === item.id}>
                   <td><button class="recording-poster recording-poster-small" disabled={!playbackAvailable}
                     aria-label={t('recording-play-at', { time: item.start.replace('T',' ') })} onclick={() => select(item)}>
-                    <RecordingPreview camera={selected} recording={item.id} available={Boolean(camera.capabilities.recordingPreview)} />
+                    <RecordingPreview {previews} recording={item.id} available={Boolean(camera.capabilities.recordingPreview)} />
                   </button></td>
                   <td><time class="recording-time" datetime={item.start}><span class="muted">{item.start.slice(0,10)}</span><strong>{item.start.slice(11)}</strong></time></td>
                   <td><time class="recording-time" datetime={item.end}><span class="muted">{item.end.slice(0,10)}</span><strong>{item.end.slice(11)}</strong></time></td>

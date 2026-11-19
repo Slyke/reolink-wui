@@ -1,9 +1,16 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { t, url } from './api.js';
-  let { camera, recording, available, offsetMs = 0, eager = false }: { camera: string; recording: string; available: boolean; offsetMs?: number; eager?: boolean } = $props();
+  import { onDestroy, onMount, untrack } from 'svelte';
+  import { t } from './api.js';
+  import type { RecordingPreviews } from './recording-previews.js';
+
+  let { previews, recording, available, offsetMs = 0, eager = false }: {
+    previews: RecordingPreviews; recording: string; available: boolean; offsetMs?: number; eager?: boolean
+  } = $props();
   let element: HTMLDivElement;
-  let visible = $state(false), failed = $state(false), image = $state(''), earlier = $state(0);
+  let visible = $state(false), failed = $state(false);
+  let image = $state<{ cache: RecordingPreviews; recording: string; src: string; offset: number; jpeg: Blob }>();
+  const shown = $derived(available && image?.cache === previews && image.recording === recording ? image : undefined);
+  const seconds = $derived(shown ? Math.round((offsetMs - shown.offset) / 1000) : 0);
   onMount(() => {
     if (eager || typeof IntersectionObserver === 'undefined') { visible = true; return; }
     const observer = new IntersectionObserver(([entry]) => {
@@ -13,28 +20,43 @@
     return () => observer.disconnect();
   });
   $effect(() => {
-    const offset = offsetMs;
-    const path = url('/api/v1/cameras/' + camera + '/recordings/' + recording + '/preview?offsetMs=' + offset);
-    image = ''; failed = false; earlier = 0;
+    const id = recording, offset = offsetMs, cache = previews, timeline = eager;
+    failed = false;
     if (!available || !visible) return;
     const controller = new AbortController();
-    let objectUrl: string | undefined;
-    void (async () => {
-      const response = await fetch(path, { signal: controller.signal });
-      if (!response.ok) throw new Error('Preview unavailable');
-      const blob = await response.blob();
-      if (controller.signal.aborted) return;
-      const selected = response.headers.get('x-preview-offset-ms');
-      earlier = selected === null ? 0 : Math.max(0,Math.round((offset - Number(selected)) / 1000));
-      objectUrl = URL.createObjectURL(blob);
-      image = objectUrl;
-    })().catch(() => { if (!controller.signal.aborted) failed = true; });
-    return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+    const show = async (frame: { jpeg: Blob; offsetMs: number }) => {
+      if (untrack(() => image?.jpeg === frame.jpeg)) return;
+      const src = URL.createObjectURL(frame.jpeg);
+      try {
+        const decoded = new Image(); decoded.src = src;
+        await decoded.decode();
+        if (controller.signal.aborted) { URL.revokeObjectURL(src); return; }
+      } catch (error) { URL.revokeObjectURL(src); throw error; }
+      if (image) URL.revokeObjectURL(image.src);
+      image = { cache, recording: id, src, offset: frame.offsetMs, jpeg: frame.jpeg };
+    };
+    const hit = cache.exact(id, offset);
+    const nearby = !hit && timeline ? cache.nearest(id, offset) : undefined;
+    // Show a warm image immediately while a cold, exact hover waits for the pointer to settle.
+    const first = hit ?? nearby;
+    const display = first ? show(first).catch(() => { if (!controller.signal.aborted && hit) failed = true; }) : Promise.resolve();
+    const fetchExact = async () => {
+      try {
+        const frame = await cache.read(id, offset, controller.signal);
+        await display;
+        if (!controller.signal.aborted) await show(frame);
+      } catch { if (!controller.signal.aborted) failed = true; }
+    };
+    const timer = !hit && timeline ? setTimeout(fetchExact, 150) : undefined;
+    if (!hit && !timeline) void fetchExact();
+    return () => { clearTimeout(timer); controller.abort(); };
   });
+  onDestroy(() => { if (image) URL.revokeObjectURL(image.src); });
 </script>
-<div class="recording-preview" bind:this={element}>
-  {#if image && !failed}
-    <img decoding="async" alt="" src={image} onerror={() => { failed = true; }} />
-    {#if eager && earlier > 0}<small class="preview-earlier">{t('recording-nearby-preview',{seconds:earlier})}</small>{/if}
-  {:else}<span class="muted">{t(failed ? 'recording-preview-failed' : 'recording-preview-placeholder')}</span>{/if}
+
+<div class="recording-preview" bind:this={element} aria-busy={available && !failed && !shown}>
+  {#if shown}
+    <img alt="" src={shown.src} />
+    {#if eager && seconds !== 0}<small class="preview-earlier">{t(seconds > 0 ? 'recording-nearby-preview' : 'recording-later-preview', { seconds: Math.abs(seconds) })}</small>{/if}
+  {:else}<span class="muted">{t(!available || failed ? 'recording-preview-failed' : 'loading')}</span>{/if}
 </div>

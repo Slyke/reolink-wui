@@ -6,7 +6,7 @@ import type { Runtime } from './runtime.js';
 import { input, uuid } from './runtime.js';
 import { camerasFor, audit, type Account, type CameraRef } from './db.js';
 import { minPreviewIntervalMs, maxPreviewIntervalMs, previewAlerts } from '../shared/playback.js';
-import { available, type CameraEvent } from './cameras.js';
+import type { CameraEvent } from './cameras.js';
 import { maxFeedGapReports, maxFeedGapSamples, type FeedGap } from '../shared/events.js';
 import { Failure } from './errors.js';
 import { bridgePreview, Playback, playbackStreams, rtspProxyUrl } from './playback.js';
@@ -210,7 +210,6 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
     const current = await signedCamera({ request, id: request.params.id, mutate: true });
     const { bridge, row, session } = current;
     if (!playbackStreams({ bridge, row }).includes(data.stream)) throw new Failure('MEDIA_UNAVAILABLE', 422);
-    if (!row.rtsp_proxy && !available({ bridge, remote: row.routeId }).online) throw new Failure('CAMERA_OFFLINE', 409);
     for (const [id, value] of sessions) {
       if (value.expires <= Date.now()) {
         value.cancel?.();

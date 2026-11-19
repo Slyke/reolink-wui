@@ -130,7 +130,7 @@
     <section class="panel stack">
       <h2 class="panel-title">{t('ptz')}</h2>
       {#if !ptz.supported}
-        <p class="muted">{t(ptz.discovery === 'pending' ? 'waiting' : 'not-supported')}</p>
+        <p class="muted">{t(ptz.discovery === 'pending' ? 'ptz-pending' : 'not-supported')}</p>
       {:else}
         {#if ptz.write}
           <div class="form-grid">

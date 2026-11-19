@@ -620,13 +620,23 @@ for (const mode of ['browser','proxy']) {
       await expect(page.getByText('Dates and times use the camera’s local clock.',{exact:true})).toHaveCount(0);
       await expect(page.getByRole('combobox',{name:'Stream quality'})).toHaveCount(0);
       await page.getByLabel('Items per page',{exact:true}).selectOption('all');
+      const dayPreviews = [];
+      const trackPreview = response => {
+        if (response.ok() && /\/recordings\/[a-f0-9]{64}\/preview\?/.test(response.url())) dayPreviews.push(response.url());
+      };
+      page.on('response',trackPreview);
       await page.reload();
       await expect(page.getByLabel('Items per page',{exact:true})).toHaveValue('all');
+      await expect.poll(() => new Set(dayPreviews.filter(url => url.endsWith('offsetMs=1000'))).size).toBe(3);
+      const warmCount = dayPreviews.length;
       const segment=page.locator('.timeline-segment').first();
       await segment.hover();
       await expect(page.locator('.recording-card').first()).toHaveAttribute('data-highlighted','true');
       await expect(page.locator('.timeline-hover img')).toBeVisible();
       await expect.poll(()=>page.locator('.timeline-hover img').evaluate(image=>image.naturalWidth)).toBeGreaterThan(0);
+      expect(dayPreviews).toHaveLength(warmCount);
+      page.off('response',trackPreview);
+      await expect(page.getByText('Recording preview',{exact:true})).toHaveCount(0);
       if(mode==='browser') await page.screenshot({path:test.info().outputPath('recordings-timeline.png'),fullPage:true});
       await segment.click();
       await expect(page.getByRole('dialog',{name:/Recorded playback/})).toBeVisible();
@@ -652,6 +662,17 @@ for (const mode of ['browser','proxy']) {
       await page.route(preparationPattern,async route=>{
         if(!held && route.request().headers().range==='bytes=0-31') {held=true;await preparationGate;}
         await route.continue();
+      });
+      // An HTTP proxy can stream a valid 206 without Content-Length, even for a small fixture.
+      await page.evaluate(() => {
+        const original = window.fetch.bind(window);
+        window.fetch = async (input,init) => {
+          const response = await original(input,init);
+          if (new Headers(init?.headers).get('range') !== 'bytes=0-131071' || response.status !== 206) return response;
+          const headers = new Headers(response.headers);
+          headers.delete('content-length');
+          return new Response(response.body,{status:206,headers});
+        };
       });
       await page.getByRole('button',{name:'Play',exact:true}).first().click();
       await expect(page.getByText('Preparing recording…',{exact:true})).toBeVisible();
@@ -682,6 +703,16 @@ for (const mode of ['browser','proxy']) {
       await expect(forward).toBeEnabled();
       await expect.poll(() => recordingDialog.locator('.recording-body').evaluate(e => e.scrollHeight - e.clientHeight)).toBeLessThanOrEqual(2);
       await recordingDialog.getByRole('button',{name:'Detection coordinates (JSON)'}).click();
+      const viewport = page.viewportSize();
+      await page.setViewportSize({width:1900,height:820});
+      const controls = recordingDialog.locator('.recording-toolbar');
+      const top = locator => locator.evaluate(e => Math.round(e.getBoundingClientRect().top));
+      expect(await top(controls.getByRole('combobox',{name:'Stream quality'}))).toBe(await top(controls.getByRole('button',{name:'Next recording'})));
+      expect(await top(controls.getByLabel('JSON scope'))).toBe(await top(controls.getByRole('button',{name:'Shrink video'})));
+      await page.setViewportSize({width:560,height:680});
+      expect(await top(controls.getByRole('button',{name:'Download JSON'}))).toBeGreaterThan(await top(controls.getByLabel('Seek increment')));
+      expect(await controls.evaluate(e => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
+      await page.setViewportSize(viewport);
       const shown = async () => JSON.parse(await recordingDialog.locator('.recording-json pre').textContent());
       await forward.click();
       await expect.poll(async () => (await shown()).frame).toBe(2);

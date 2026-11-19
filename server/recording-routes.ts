@@ -9,6 +9,7 @@ import { jsonResponse, responseBytes } from './net.js';
 import { audit } from './db.js';
 import { correlationPattern } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
+import { RecordingPreviewCache } from '../shared/recording-preview-cache.js';
 import { recordingStages, recordingMetadataResponse, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
 
 const object = z.strictObject;
@@ -47,6 +48,9 @@ const mediaFailure = async ({ response }: { response: Response }) => {
 
 export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
   const root = path + '/cameras/:id';
+  const previews = new RecordingPreviewCache<Buffer>();
+  const stopWatching = runtime.observeBridgeChanges(() => previews.clear());
+  api.addHook('onClose', async () => { stopWatching(); previews.clear(); });
   const camera = async (request: Parameters<Runtime['camera']>[0]['request'], id: string) => {
     const result = await runtime.camera({ request, id, permission: 'recordings.view' });
     if (!result.bridge.hasStorage(result.row.routeId)) throw new Failure('UNSUPPORTED', 422);
@@ -86,6 +90,9 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     const query = input({ schema: object({ offsetMs: z.coerce.number().int().min(0).max(86_400_000).default(0) }), value: request.query });
     const { bridge, row } = await camera(request, request.params.id);
     if (!bridge.hasRecordingPreview(row.routeId)) throw new Failure('UNSUPPORTED',422);
+    const clip = [row.id, row.remote_id, row.routeId, id].join('/');
+    const cached = previews.exact(clip, query.offsetMs);
+    if (cached) return reply.header('x-preview-offset-ms', String(cached.offsetMs)).type('image/jpeg').send(cached.jpeg);
     const controller = new AbortController();
     reply.raw.once('close', () => controller.abort());
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(40_000)]);
@@ -108,7 +115,9 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     if (response.headers.get('content-type') !== 'image/jpeg' || bytes[0] !== 0xff || bytes[1] !== 0xd8
       || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) throw new Failure('MEDIA_UNAVAILABLE',502);
     // Recheck the grant after the bridge read, before releasing the image.
-    if ((await camera(request, row.id)).row.routeId !== row.routeId) throw new Failure('CAMERA_UNKNOWN',404);
+    const active = await camera(request, row.id);
+    if (active.bridge !== bridge || active.row.remote_id !== row.remote_id || active.row.routeId !== row.routeId) throw new Failure('CAMERA_UNKNOWN',404);
+    previews.store(clip, query.offsetMs, { jpeg: bytes, offsetMs: offset }, bytes.length);
     return reply.header('x-preview-offset-ms',String(offset)).type('image/jpeg').send(bytes);
   });
   api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/video', async (request, reply) => {

@@ -12,7 +12,6 @@
   const base = $derived('/api/v1/cameras/' + camera.id);
   const enabled = $derived(camera.capabilities.preview);
   const canStream = $derived(camera.capabilities.media.length > 0);
-  const mediaOnline = $derived((camera.availability.online === true && !camera.availability.stale) || camera.capabilities.viaProxy);
   let panel: HTMLDivElement;
   let dialog: HTMLDialogElement;
   let expanded = $state(false);
@@ -49,7 +48,7 @@
     liveMessage = t('live-display');
   };
   const startLive = async () => {
-    if (!expanded || !canStream || !mediaOnline || liveBusy) return;
+    if (!expanded || !canStream || liveBusy) return;
     const closing = stopLive();
     const sequence = playbackSequence;
     liveBusy = true;
@@ -103,7 +102,7 @@
   $effect(() => {
     const supported = camera.capabilities.media;
     const valid = supported.includes(stream);
-    if (!mediaOnline || !valid) untrack(() => { if (playback || liveBusy) void stopLive(); });
+    if (!valid) untrack(() => { if (playback || liveBusy) void stopLive(); });
     if (!valid) stream = supported.includes('sub') ? 'sub' : 'main';
   });
 
@@ -285,7 +284,7 @@
   {#if camera.capabilities.mediaAllowed || actions}
     <div class="row">
       {#if camera.capabilities.mediaAllowed}
-        <button class="primary" type="button" aria-haspopup="dialog" disabled={!canStream || !mediaOnline}
+        <button class="primary" type="button" aria-haspopup="dialog" disabled={!canStream}
           onclick={() => show({ play: true })}>{t('live-start')}</button>
       {/if}
       {@render actions?.()}
@@ -327,7 +326,7 @@
         {#if playback || liveBusy}
           <button type="button" onclick={() => { void stopLive(); }}>{t('live-stop')}</button>
         {:else}
-          <button class="primary" type="button" disabled={!canStream || !mediaOnline} onclick={startLive}>{t('live-start')}</button>
+          <button class="primary" type="button" disabled={!canStream} onclick={startLive}>{t('live-start')}</button>
         {/if}
       </div>
       {#if liveBusy || (playback && !playing)}<p role="status" class="muted">{t('live-starting')}</p>{/if}

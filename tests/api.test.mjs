@@ -8,9 +8,25 @@ import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { launch, fixtureBridge, fixtureBroker, eventually, uuid, publicOrigin, serviceToken } from './support.mjs';
 import { configSchema } from '../dist/server/config.js';
+import { RecordingPreviewCache } from '../dist/shared/recording-preview-cache.js';
 
 const envPg = process.env.WUI_TEST_POSTGRES;
 const dbs = [undefined, ...(envPg ? [{ driver:'postgres', url:envPg, tls:false }] : [])];
+
+test('timeline frames expire after 600 seconds and fallback images belong to the selected clip', t => {
+  t.mock.timers.enable({apis:['Date','setTimeout']});
+  const cache = new RecordingPreviewCache();
+  const frame = {jpeg:Buffer.from('frame'),offsetMs:1000};
+  cache.store('first',2000,frame,frame.jpeg.length);
+  assert.equal(cache.nearest('second',1000),undefined);
+  t.mock.timers.tick(599_999);
+  assert.equal(cache.exact('first',2000),frame);
+  assert.equal(cache.nearest('first',2500),frame);
+  t.mock.timers.tick(1);
+  assert.equal(cache.nearest('first',2500),undefined);
+  assert.equal(cache.exact('first',2000),undefined);
+  cache.clear();
+});
 
 const expectMediaClosed = async reader => {
   try {
@@ -675,6 +691,43 @@ if (process.env.WUI_TEST_RTSP) test('RTSP override streams video and leaves prev
   }
 });
 
+test('retained state survives a serial change ahead of inventory and live video works independently of the event feed', async t => {
+  const fixture = await fixtureBridge({ websocket:true, apiEvents:true });
+  t.after(() => fixture.close());
+  const { app, runtime, incoming, seed, signIn } = await launch({bridges:[{...fixture.config,events:['ws','mqtt','api']}]});
+  t.after(() => app.close());
+  await seed({username:'state-admin',admin:true});
+  const headers = await signIn('state-admin');
+  const bridge = runtime.bridges.get('lab');
+  await bridge.refreshInventory();
+  await eventually(() => bridge.upstream().connections.filter(item=>['ws','mqtt','api'].includes(item.id)).every(item=>item.state==='online'));
+  await eventually(() => bridge.state('alpha').get('availability')?.online === true);
+  const camera = (await incoming({path:'/cameras',headers})).json().cameras.find(item=>item.name==='Loading dock');
+  const start = () => incoming({method:'POST',path:'/cameras/'+camera.id+'/media-sessions',headers,payload:{operationId:uuid(),stream:'sub'}});
+  for (const payload of [{}, {online:false}]) {
+    await fixture.snapshot('alpha','availability',payload);
+    await eventually(() => bridge.state('alpha').has('availability') && bridge.state('alpha').get('availability').online === payload.online);
+    assert.equal((await start()).statusCode,200);
+  }
+  const reads = fixture.counts().inventoryReads;
+  await fixture.snapshot('alpha','availability',{stable_id:'SERIAL-ALPHA',online:true});
+  await fixture.snapshot('alpha','state/person',{stable_id:'SERIAL-ALPHA',active:true});
+  await eventually(() => fixture.counts().inventoryReads > reads);
+  assert.equal(bridge.state('alpha').get('availability').online,false);
+  assert.equal(bridge.state('alpha').has('state/person'),false);
+  await fixture.reportInventory(['alpha','beta'],{alpha:'SERIAL-ALPHA'},{alpha:{identitySource:'serial',previousId:'alpha'}},false);
+  await bridge.refreshInventory();
+  await runtime.sync();
+  for (const primary of ['ws','api','mqtt']) {
+    bridge.setEventSources([primary,...['ws','api','mqtt'].filter(source=>source!==primary)]);
+    await eventually(() => bridge.state('alpha').get('availability')?.online === true && bridge.state('alpha').get('state/person')?.active === true);
+    assert.equal(bridge.state('alpha').get('availability').stable_id,'SERIAL-ALPHA');
+  }
+  const detail = (await incoming({path:'/cameras/'+camera.id,headers})).json();
+  assert.equal(detail.availability.online,true);
+  assert.ok(detail.detections.some(detection => detection.type === 'person' && detection.active === true));
+});
+
 test('inventory interval controls scheduled discovery independently of readiness checks', async t => {
   const bridge=await fixtureBridge();
   t.after(() => bridge.close());
@@ -762,6 +815,15 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   const recoveredPreview=await incoming({path:previewPath+'?offsetMs=42000',headers:privileged});
   assert.equal(recoveredPreview.statusCode,200);
   assert.equal(recoveredPreview.headers['x-preview-offset-ms'],'34000');
+  const upstreamReads = fixture.recordingRequests.filter(r=>r.kind==='preview').length;
+  const sameFrame = await incoming({path:previewPath+'?offsetMs=42000',headers:privileged});
+  assert.equal(sameFrame.headers['x-preview-offset-ms'],'34000');
+  assert.ok(sameFrame.rawPayload.equals(recoveredPreview.rawPayload));
+  assert.equal((await incoming({path:previewPath+'?offsetMs=42000',headers:restricted})).statusCode,403);
+  await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','recordings.view']),viewer,camera.id);
+  assert.ok((await incoming({path:previewPath+'?offsetMs=42000',headers:restricted})).rawPayload.equals(recoveredPreview.rawPayload));
+  await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','media.live']),viewer,camera.id);
+  assert.equal(fixture.recordingRequests.filter(r=>r.kind==='preview').length,upstreamReads);
   const metadataPath=root+'/recordings/'+recording.id+'/metadata';
   assert.equal((await incoming({path:metadataPath,headers:restricted})).statusCode,403);
   const metadata=await incoming({path:metadataPath,headers:privileged});

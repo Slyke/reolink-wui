@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
   import { api, t, url } from './api.js';
-  import { frameDetails, frameIndex, recordingFrameTimes, recordingJson } from './recording-frames.js';
+  import { frameDetails, frameIndex, RecordingIndexError, recordingFrameTimes, recordingJson } from './recording-frames.js';
   import { dismissOnBackdrop } from './dialog.js';
   import { recordingDuration, recordingKinds } from './recordings.js';
   import { recordingStages, type RecordingMetadata } from '../../shared/recordings.js';
@@ -22,7 +22,7 @@
   let jsonOpen = $state(false), compactVideo = $state(false), copyStatus = $state('');
   let jsonScope = $state<'frame'|'all'>('frame'), jsonPage = $state(0);
   const pageSize = 64;
-  let times = $state.raw<number[]>([]), indexFailed = $state(false), indexRetry = $state(0);
+  let times = $state.raw<number[]>([]), indexError = $state(''), indexRetry = $state(0);
   let metadataFailed = $state(false), currentTime = $state(0), videoWidth = $state(16), videoHeight = $state(9);
   const indexOfFrame = $derived(frameIndex(times,currentTime));
   const frame = $derived(frameDetails(indexOfFrame,times[indexOfFrame] ?? currentTime,metadata));
@@ -58,12 +58,15 @@
   $effect(() => {
     const path = source, loaded = ready;
     void indexRetry;
-    times = []; indexFailed = false;
+    times = []; indexError = '';
     if (!path || !loaded) return;
     const controller = new AbortController();
     void recordingFrameTimes(path,controller.signal).then(value => {
       if (!controller.signal.aborted) times = value;
-    }).catch(() => { if (!controller.signal.aborted) indexFailed = true; });
+    }).catch(error => {
+      if (!controller.signal.aborted) indexError = error instanceof RecordingIndexError
+        ? t('recording-index-' + error.reason, { status: error.status ?? '' }) : t('recording-index-failed');
+    });
     return () => controller.abort();
   });
   const fileBase = $derived((name.replace(/[^a-zA-Z0-9_-]+/g,'-') || 'camera') + '-' + variant.start.replaceAll(':','-') + '-' + variant.stream);
@@ -224,13 +227,11 @@
       <button onclick={() => dialog.close()}>{t('close')}</button>
     </div>
     <div class="recording-controls">
-      <div class="row recording-switch">
-        <button disabled={!previous} onclick={() => select(previous)}>{t('recording-previous')}</button>
-        <button disabled={!next} onclick={() => select(next)}>{t('recording-next')}</button>
-        <select class="recording-quality" aria-label={t('live-quality')} value={variant.stream} onchange={changeStream}>
-          {#each recording.variants as item (item.stream)}<option value={item.stream}>{t(item.stream === 'main' ? 'primary' : 'secondary')}</option>{/each}
-        </select>
-      </div>
+      <button disabled={!previous} onclick={() => select(previous)}>{t('recording-previous')}</button>
+      <button disabled={!next} onclick={() => select(next)}>{t('recording-next')}</button>
+      <select class="recording-quality" aria-label={t('live-quality')} value={variant.stream} onchange={changeStream}>
+        {#each recording.variants as item (item.stream)}<option value={item.stream}>{t(item.stream === 'main' ? 'primary' : 'secondary')}</option>{/each}
+      </select>
       <div class="recording-end-mode">
         <label for={id + '-end-mode'}>{t('recording-at-end')}</label>
         <select id={id + '-end-mode'} bind:value={mode} onchange={saveMode}>
@@ -253,9 +254,7 @@
         <button type="button" aria-pressed={compactVideo} onclick={() => { compactVideo = !compactVideo; }}>{t(compactVideo ? 'recording-enlarge-video' : 'recording-shrink-video')}</button>
         <button type="button" aria-controls={id+'-json'} aria-expanded={jsonOpen} onclick={() => { jsonOpen = !jsonOpen; copyStatus = ''; }}>{t(jsonOpen ? 'recording-hide-json' : 'recording-metadata-json')}</button>
       {/if}
-    </div>
-    {#if jsonOpen && source && !failure}
-      <div class="recording-tools">
+      {#if jsonOpen && source && !failure}
         <select class="recording-json-scope" aria-label={t('recording-json-scope')} bind:value={jsonScope} onchange={() => { copyStatus = ''; }}>
           <option value="frame">{t('recording-current-frame')}</option><option value="all">{t('recording-all-frames')}</option>
         </select>
@@ -269,8 +268,8 @@
           <button aria-label={t('recording-page-next')} disabled={jsonPage+1 >= jsonPageCount} onclick={() => jsonPage++}>›</button>
         {/if}
         {#if copyStatus}<span role="status">{t(copyStatus)}</span>{/if}
-      </div>
-    {/if}
+      {/if}
+    </div>
   </div>
   <div class="recording-body" class:compact={compactVideo} class:inspecting={jsonOpen}>
     {#if preparing}
@@ -292,7 +291,7 @@
           </svg>
         {/if}
       </div>
-      {#if indexFailed}<p class="notice">{t('recording-index-failed')} <button onclick={() => { indexRetry++; }}>{t('retry')}</button></p>{/if}
+      {#if indexError}<p class="notice">{indexError} <button onclick={() => { indexRetry++; }}>{t('retry')}</button></p>{/if}
       {#if jsonOpen}
         <section class="recording-json" id={id+'-json'} aria-label={t('recording-metadata-json')}>
           {#if metadataFailed}<p class="notice">{t('recording-metadata-failed')}</p>

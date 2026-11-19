@@ -334,4 +334,4 @@ select.timeline-range { width: auto; max-width: 100%; }
 @media (max-height: 500px) {
   .recording-toolbar { max-height: 55dvh; overflow-y: auto; }
 }
-select.recording-quality { width: auto; min-width: min(100%,12rem); max-width: 100%; }
+.recording-toolbar select { width: auto; max-width: 100%; }

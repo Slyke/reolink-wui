@@ -381,11 +381,15 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     },
     counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads, callbacks:callbacks.length }),
     lose: () => { lose = true; },
-    reportInventory: async (cameras, stableIds = {}, hardware = {}) => {
+    reportInventory: async (cameras, stableIds = {}, hardware = {}, publish = true) => {
       physical = hardware;
       inventory = cameras;
       identities = stableIds;
-      await publishSnapshots();
+      if (publish) await publishSnapshots();
+    },
+    snapshot: async (camera_id, topic, payload) => {
+      broadcast(camera_id, {op:'snapshot',snapshot:{camera_id,topic,payload}});
+      await broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic,JSON.stringify(payload),{qos:1,retain:true});
     },
     setReportedLevels: levels => { brightness = levels.brightness; sensitivity = levels.sensitivity; },
     disconnect: broker.stop,

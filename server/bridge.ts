@@ -16,6 +16,7 @@ type BridgeInterruption = Extract<FeedGap, { cause: 'bridge-connection' }>;
 type FeedState = {
   transport: BridgeInterruption['transport'];
   cache: Map<string, Map<string, Envelope>>;
+  pending: Map<string, Map<string, Envelope>>;
   ready?: boolean;
   failure?: FeedConnectionFailure;
 };
@@ -96,7 +97,7 @@ export class Bridge {
       api: config.http?.url.protocol === 'https:' ? 'HTTPS' : 'HTTP'
     };
     for (const source of this.availableEventSources) {
-      this.feeds.set(source, { transport: transports[source], cache: new Map() });
+      this.feeds.set(source, { transport: transports[source], cache: new Map(), pending: new Map() });
     }
     if (config.mqtt) this.broker = new BrokerChannel(
       config.mqtt, config.mqtt?.cameraIds ?? scope, config.commands === 'mqtt' || !!config.capture,
@@ -144,7 +145,7 @@ export class Bridge {
       }
     };
     return {
-      refresh: () => feed.cache.clear(),
+      refresh: () => { feed.cache.clear(); feed.pending.clear(); },
       connected: (ready, failure) => {
         if (!ready && failure && (feed.ready !== false || feed.failure !== failure)) {
           const keys = { ws:'BRIDGE_WS_FEED_FAILED',mqtt:'BRIDGE_MQTT_FEED_FAILED',api:'BRIDGE_API_FEED_FAILED' } as const;
@@ -185,18 +186,26 @@ export class Bridge {
         if (typeof camera !== 'string' || !this.inScope(camera) || typeof topic !== 'string'
           || !/^(availability|info|capabilities|rules|state\/[a-zA-Z0-9_:-]{1,96})$/.test(topic)) return;
         const payload = record(message.payload);
-        if (!this.matchesIdentity(camera, payload)) return;
-        let topics = feed.cache.get(camera);
+        const identity = payload.stable_id === undefined ? camera : payload.stable_id;
+        if (typeof identity !== 'string' || !segment.test(identity)) return;
+        // A restarted bridge may publish its retained snapshots before HTTP inventory confirms a new identity.
+        const pending = this.inventoryIds !== undefined && this.inventoryIds.get(camera) !== identity;
+        const cache = pending ? feed.pending : feed.cache;
+        let topics = cache.get(camera);
         if (topics?.size && topics.values().next().value?.stable_id !== payload.stable_id) topics.clear();
 
         if (!topics) {
-          if (feed.cache.size >= 128) return;
+          if (cache.size >= 128) return;
           topics = new Map();
-          feed.cache.set(camera, topics);
-          if (feed.ready) updateBrokerTargets();
+          cache.set(camera, topics);
+          if (!pending && feed.ready) updateBrokerTargets();
         }
         if (!topics.has(topic) && topics.size >= 256) return;
         topics.set(topic, payload);
+        if (pending) {
+          void this.scanInventory().catch(() => {});
+          return;
+        }
         if (topic === 'state/preview' && (source === 'ws' || source === 'mqtt')) {
           const { etag } = record(record(message.payload).preview);
           if (typeof etag === 'string' && /^"[a-f0-9]{64}"$/.test(etag) && this.previewTags.get(camera) !== etag) {
@@ -489,12 +498,23 @@ export class Bridge {
       if (new Set(ids.values()).size !== ids.size) throw new Failure('BRIDGE_UNAVAILABLE',502);
       const active = new Set(cameras.filter(camera => camera.active !== false).map(camera => camera.id));
       const mqttIds = this.config.mqtt?.cameraIds?.filter(id => active.has(id)) ?? [...active];
-      for (const { cache } of this.feeds.values()) {
+      let restored = false;
+      for (const { cache, pending } of this.feeds.values()) {
         for (const [id, topics] of cache) {
           const identity = topics.values().next().value?.stable_id ?? id;
           if (!active.has(id) || ids.get(id) !== identity) {
             cache.delete(id);
             this.previewTags.delete(id);
+          }
+        }
+        for (const [id, topics] of pending) {
+          const identity = topics.values().next().value?.stable_id ?? id;
+          if (active.has(id) && ids.get(id) === identity) {
+            cache.set(id, new Map([...topics, ...(cache.get(id) ?? [])]));
+            pending.delete(id);
+            restored = true;
+          } else if (!active.has(id) && this.inventoryIds?.has(id)) {
+            pending.delete(id);
           }
         }
       }
@@ -504,7 +524,7 @@ export class Bridge {
       this.inventoryIds = ids;
       this.inventoryIdentitySupport = cameras.some(camera => typeof camera.stableId === 'string');
       const topicsChanged = this.broker?.setCameraIds(mqttIds);
-      if (topicsChanged || !previous || ids.size !== previous.size || [...ids].some(([id, stable]) => previous.get(id) !== stable)) {
+      if (restored || topicsChanged || !previous || ids.size !== previous.size || [...ids].some(([id, stable]) => previous.get(id) !== stable)) {
         this.channel.emit('update', { kind: 'feed' });
       }
       return true;

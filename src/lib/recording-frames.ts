@@ -1,14 +1,20 @@
 import type { RecordingMetadata } from '../../shared/recordings.js';
 
+export class RecordingIndexError extends Error {
+  constructor(readonly reason: 'range' | 'http' | 'samples', readonly status?: number) {
+    super('recording-index-' + reason);
+  }
+}
+
 // Read the MP4 sample table once. Range reads also work when the index follows the video.
 export async function recordingFrameTimes(path: string, signal: AbortSignal): Promise<number[]> {
   const { createFile, MP4BoxBuffer } = await import('mp4box');
   const file = createFile(false);
   let times: number[] | undefined;
-  file.onError = () => { throw new Error('Invalid recording index'); };
+  file.onError = () => { throw new RecordingIndexError('samples'); };
   file.onReady = movie => {
     const track = movie.videoTracks[0];
-    if (!track || !track.nb_samples || !track.timescale) throw new Error('Missing video samples');
+    if (!track || !track.nb_samples || !track.timescale) throw new RecordingIndexError('samples');
     const samples = file.getTrackSamplesInfo(track.id).map(sample => sample.cts).sort((a,b) => a-b);
     const edits = track.edits ?? [];
     if (!edits.length) {
@@ -20,7 +26,7 @@ export async function recordingFrameTimes(path: string, signal: AbortSignal): Pr
     for (const edit of edits) {
       const duration = edit.segment_duration / movie.timescale;
       if (edit.media_time >= 0) {
-        if (edit.media_rate_integer !== 1 || edit.media_rate_fraction !== 0) throw new Error('Unsupported edit rate');
+        if (edit.media_rate_integer !== 1 || edit.media_rate_fraction !== 0) throw new RecordingIndexError('samples');
         for (const value of samples) {
           const relative = (value - edit.media_time) / track.timescale;
           if (relative >= 0 && (relative < duration || !duration)) times.push(elapsed + relative);
@@ -31,21 +37,39 @@ export async function recordingFrameTimes(path: string, signal: AbortSignal): Pr
   };
   // Bridge recordings use faststart. Normally one small request contains the entire index.
   let offset = 0;
+  const chunk = 128 * 1024;
   for (let count = 0; count < 128; count++) {
-    const chunk = 128 * 1024;
     const response = await fetch(path, { headers: { range: 'bytes=' + offset + '-' + (offset + chunk - 1) }, signal });
-    const length = Number(response.headers.get('content-length'));
-    if (![200,206].includes(response.status) || !length || length > chunk || (response.status === 200 && offset !== 0)) {
+    if (![200,206].includes(response.status)) {
       await response.body?.cancel();
-      break;
+      throw new RecordingIndexError('http', response.status);
     }
-    const buffer = await response.arrayBuffer();
-    const next = file.appendBuffer(MP4BoxBuffer.fromArrayBuffer(buffer, offset));
+    // Streaming proxies may omit Content-Length. Content-Range identifies the MP4 bytes.
+    const range = /^bytes (\d+)-(\d+)\/(?:\d+|\*)$/i.exec(response.headers.get('content-range') ?? '');
+    const partial = response.status === 206;
+    const expected = range ? Number(range[2]) - offset + 1 : 0;
+    if (!response.body || (partial ? !range || Number(range[1]) !== offset || expected < 1 || expected > chunk : offset !== 0)) {
+      await response.body?.cancel();
+      throw new RecordingIndexError('range');
+    }
+    const reader = response.body.getReader();
+    const limit = partial ? expected : 128 * chunk;
+    let bytes = 0, next = offset;
+    try {
+      while (!times?.length) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (bytes + value.length > limit) throw new RecordingIndexError('range');
+        next = file.appendBuffer(MP4BoxBuffer.fromArrayBuffer(value.slice().buffer, offset + bytes));
+        bytes += value.length;
+      }
+    } finally { await reader.cancel(); }
     if (times?.length) return times;
-    if (!Number.isSafeInteger(next) || next <= offset || !buffer.byteLength) break;
+    if (!partial) break;
+    if (bytes !== expected || !Number.isSafeInteger(next) || next <= offset) throw new RecordingIndexError('range');
     offset = next;
   }
-  throw new Error('Video frame index unavailable');
+  throw new RecordingIndexError('samples');
 }
 
 // Last item at or before the requested presentation time, also for variable frame rates.
