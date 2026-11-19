@@ -367,6 +367,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     },
     correlations, requests, previewRequests, recordingRequests,
     setPlaybackAvailable: value => { playbackAvailable = value; },
+    setRecordingCount: value => { recordingCount = value; },
     setStorageFailure: value => { storageFailure = value; },
     setRecordingFailure: value => { playbackFailure = value; },
     setPreviewNotifications: value => { previewNotifications = value; },

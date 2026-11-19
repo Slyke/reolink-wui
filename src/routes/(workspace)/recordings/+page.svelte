@@ -8,7 +8,7 @@
   import RecordingPreview from '$lib/RecordingPreview.svelte';
   import RecordingTimeline from '$lib/RecordingTimeline.svelte';
   import { RecordingPreviews } from '$lib/recording-previews.js';
-  import { groupRecordings, type RecordingGroup } from '../../../../shared/recording-groups.js';
+  import { groupRecordings, recordingTime, type RecordingGroup } from '../../../../shared/recording-groups.js';
   import { recordingSize, recordingDuration, recordingKinds } from '$lib/recordings.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
   import type { RecordingList, StorageInfo } from '../../../../shared/recordings.js';
@@ -19,6 +19,15 @@
   const camera = $derived(cameras.find(item => item.id === selected));
   let storage = $state<StorageInfo>();
   const playbackAvailable = $derived(Boolean(storage?.playbackAvailable ?? camera?.capabilities.recordingPlayback));
+  const clockComparison = $derived.by(() => {
+    if (!storage?.cameraTime) return;
+    const cameraTime = storage.cameraTime;
+    const localTime = formatLocalTimestamp(storage.refreshedAt).replace(' ', 'T');
+    if (Math.abs(recordingTime(cameraTime) - recordingTime(localTime)) < 300_000) return;
+    const sameDay = cameraTime.slice(0, 10) === localTime.slice(0, 10);
+    const display = (time: string) => sameDay ? time.slice(11, 16) : time.replace('T', ' ').slice(0, 16);
+    return { camera: display(cameraTime), local: display(localTime) };
+  });
   const defaultStreams = ['sub', 'main'] as const;
   let listing = $state<{ date: string; recordings: RecordingGroup[]; truncated: boolean; partial: boolean }>();
   const listedDate = $derived(listing?.date ?? '');
@@ -41,8 +50,13 @@
   let layout = $state<'grid' | 'table'>('grid');
   let pageNumber = $state(0);
   let pageSize = $state('12');
+  let timeOrder = $state<'asc' | 'desc'>('desc');
+  const ordered = $derived.by(() => {
+    const items = listing?.recordings ?? [];
+    return timeOrder === 'desc' ? [...items].reverse() : items;
+  });
   const perPage = $derived(pageSize === 'all' ? listing?.recordings.length || 1 : Number(pageSize));
-  const visible = $derived(listing?.recordings.slice(pageNumber * perPage, (pageNumber + 1) * perPage) ?? []);
+  const visible = $derived(ordered.slice(pageNumber * perPage, (pageNumber + 1) * perPage));
   const pageCount = $derived(Math.max(1,Math.ceil((listing?.recordings.length ?? 0) / perPage)));
   const chooseLayout = (value: 'grid' | 'table') => {
     layout = value;
@@ -52,11 +66,15 @@
     pageNumber = 0;
     try { localStorage.setItem('reolink-wui-recordings-page-size', pageSize); } catch { /* Storage can be unavailable. */ }
   };
+  const chooseTimeOrder = () => {
+    pageNumber = 0;
+    try { localStorage.setItem('reolink-wui-recordings-time-order', timeOrder); } catch { /* Storage can be unavailable. */ }
+  };
   const select = (item: RecordingGroup, offsetMs = 0) => { recording = item; startPosition = offsetMs; };
   const hover = (id?: string) => {
     highlighted = id;
     if (id && listing) {
-      const index = listing.recordings.findIndex(item => item.id === id);
+      const index = ordered.findIndex(item => item.id === id);
       if (index >= 0) pageNumber = Math.floor(index / perPage);
     }
   };
@@ -162,6 +180,8 @@
     try {
       const saved = localStorage.getItem('reolink-wui-recordings-layout');
       if (saved === 'grid' || saved === 'table') layout = saved;
+      const order = localStorage.getItem('reolink-wui-recordings-time-order');
+      if (order === 'asc' || order === 'desc') timeOrder = order;
       const size = localStorage.getItem('reolink-wui-recordings-page-size');
       if (size && ['12','24','48','96','all'].includes(size)) pageSize = size;
     } catch { /* Storage can be unavailable. */ }
@@ -258,6 +278,7 @@
     <form class="row recording-search" onsubmit={event => { event.preventDefault(); void search(); }}>
       <label>{t('recording-date')}<input type="date" required bind:value={date} oninput={() => { userSelectedDate = true; }} /></label>
       <button disabled={loading || !date}>{t('recordings-search')}</button>
+      {#if clockComparison}<span class="muted">{t('recording-clock-comparison', clockComparison)}</span>{/if}
     </form>
     {#if searchError}<p role="alert" class="error">{searchError}</p>{/if}
     {#if listing?.partial && !loading}<p class="notice">{t('recording-search-partial')}</p>{/if}
@@ -267,8 +288,15 @@
     {:else if listing?.recordings.length}
       <RecordingTimeline {previews} warming={!recording} recordings={listing.recordings} date={listing.date} available={Boolean(camera.capabilities.recordingPreview)}
         playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
-      <div class="row between">
-        <div class="recording-page-size field"><label for={fieldId + '-page-size'}>{t('recording-page-size')}</label>
+      <div class="row recording-list-controls">
+        <div class="field">
+          <label for={fieldId + '-time-order'}>{t('recording-time-order')}</label>
+          <select id={fieldId + '-time-order'} bind:value={timeOrder} onchange={chooseTimeOrder}>
+            <option value="desc">{t('recording-newest-first')}</option>
+            <option value="asc">{t('recording-oldest-first')}</option>
+          </select>
+        </div>
+        <div class="field"><label for={fieldId + '-page-size'}>{t('recording-page-size')}</label>
           <select id={fieldId + '-page-size'} bind:value={pageSize} onchange={choosePageSize}>
             {#each ['12','24','48','96'] as size}<option value={size}>{t('recording-items', { count: size })}</option>{/each}
             <option value="all">{t('recording-items-all')}</option>

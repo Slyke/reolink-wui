@@ -296,7 +296,8 @@ meter::-moz-meter-bar { background: var(--color-warning); border-radius: 1rem; }
 .info-tip { display: inline-flex; vertical-align: middle; }
 button.info-button { border-radius: 50%; width: 1.35rem; height: 1.35rem; min-height: 0; padding: 0; font: inherit; font-size: .8rem; font-weight: 700; box-shadow: none; }
 .info-popover { position: fixed; inset: auto; margin: 0; width: min(22rem,calc(100vw - 1.5rem)); max-height: calc(100dvh - 1.5rem); overflow: auto; padding: .85rem; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-panel-strong); color: var(--color-text); box-shadow: var(--shadow-panel); font-size: .9rem; line-height: 1.5; z-index: 20; }
-.recording-page-size { width: min(100%,18rem); }
+.recording-list-controls .field { flex: 0 1 16rem; max-width: 100%; }
+.recording-list-controls > .muted { margin-inline-start: auto; }
 .recording-card[data-highlighted="true"], .recordings-table tr[data-highlighted="true"] { background: var(--color-start-fill); outline: 2px solid var(--color-start); outline-offset: -2px; }
 .recording-timeline { padding-block: .5rem; }
 .timeline-legend { gap: .4rem; font-size: .85rem; color: var(--color-text-muted); }
