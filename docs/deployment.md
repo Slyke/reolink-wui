@@ -58,7 +58,13 @@ http: {
 },
 ```
 
-Restart the configured services and open **Settings → Enrollment**. Enter or scan the printed UID or serial, select a bridge and named target, and choose **Import** for an initialized camera or **Initialize** for a supported factory device. Use the Wi-Fi join QR for supported Wi-Fi models. After verification, restart reolink-bridge to activate the device and refresh inventory.
+For a new Wi-Fi Lumus, open **Settings → Enrollment**. Scan the printed label with the WUI or type the UID. Show the **Wi-Fi join QR** to the camera. Once it joins the network, use its DHCP address in a named target on the bridge. For example, this entry uses a placeholder address and a new camera ID.
+
+```json
+{"api":{"targets":{"setup-bench":{"host":"192.168.1.42","port":9000,"cameraId":"bench-camera"}}}}
+```
+
+Merge the target into the existing bridge configuration and restart the bridge. Select that target and **Set first admin password**. The bridge checks the UID, generates a password, sets it over the LAN and verifies the login. For an initialized camera choose **Use an existing password**. The **Show device ID QR** button lets another WUI scanner fill in the printed identifiers. After the credential is verified, restart the bridge to activate the camera.
 
 For callbacks, prepare a receiver that accepts event JSON via HTTP POST and returns a 2xx response. Add the exact URL to the WUI bridge record, for example `callbacks: { alerts: "https://alerts.example.invalid/events" }`. Allow the same URL in `api.callbackDestinations` on the bridge. Use the bridge HTTP token. Restart the configured services and open **Settings → Bridge callbacks**. Choose the bridge and approved receiver, then add a callback ID and optional event and camera filters. [Bridge callback payloads and filters](https://github.com/Slyke/reolink-bridge/blob/master/docs/interfaces.md#manage-downstream-callbacks)
 
@@ -146,6 +152,10 @@ The bridge checks `api.recordings.temporaryDirectory` before advertising playbac
 The bridge downloads and prepares a private temporary MP4 on first playback. Subsequent range reads use that cached clip. Camera credentials and native recording file names remain in the bridge. The player refreshes an expired recording reference once before retrying. Preparation failures show the bridge's safe failure stage and correlation references. Browser media loading begins only after the bridge has prepared a valid MP4 range. [Bridge recordings API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#sd-card-recordings)
 
 **Settings → Camera settings → Image orientation** shows supported camera-side horizontal/vertical flip and clockwise/counterclockwise rotation controls. They require `settings.image.write` and use fresh camera reads followed by verified readback. Camera-admin grants include the image-setting permissions. Quarter-turn rotation requires an advertised camera range.
+
+In **Settings → Camera settings**, **SD recording schedule** edits hourly blocks for each recording type the device reports. Select a weekday in camera local time. **Time lapse** saves an MP4 or JPEG series with the capture interval and camera stream you select. New captures run daily until stopped. Both settings use native camera storage.
+
+**Camera accounts** lists the usernames stored on the selected camera. The existing **Manage camera accounts and credentials** grant controls access. Choose **Change password** on a row, including the main admin. On an unbound camera, enter the printed UID so the bridge can verify its identity. When the account is also the bridge login, the bridge stores the verified new password in its private vault. Restart the bridge if prompted. Recovery for interrupted changes to its own login is in **Credential rotation**.
 
 The Image orientation card explains when the connected bridge needs an update or the camera has not reported orientation controls. Camera-side settings are read before each supported change and verified by readback.
 

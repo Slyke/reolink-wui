@@ -7,6 +7,7 @@
   import SearchSelect from '$lib/SearchSelect.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import PlaybackSettings from '$lib/PlaybackSettings.svelte';
+  import CameraUsers from '$lib/CameraUsers.svelte';
   import CredentialRotation from '$lib/CredentialRotation.svelte';
 
   const workspace = useWorkspace();
@@ -74,6 +75,7 @@
       <p class="panel muted">{t('settings-empty')}</p>
     {/if}
     <SettingsPanel bind:this={settings} {camera} csrf={workspace.current().csrf} {online} {base} />
+    {#if camera.capabilities.cameraUsers}<CameraUsers {base} csrf={workspace.current().csrf} {online} />{/if}
     {#if camera.capabilities.rotate}<CredentialRotation {base} csrf={workspace.current().csrf} {online} />{/if}
   {/key}
 {/if}

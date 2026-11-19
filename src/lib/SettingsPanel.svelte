@@ -1,12 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { aiClasses, settingsGroups, type AiClass, type SettingsGroup } from '../../shared/access.js';
+  import { aiClasses, settingsGroups, type AiClass, type SettingsGroup, type RecordingSchedule, type TimeLapse } from '../../shared/access.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
+  import ScheduleEditor from './ScheduleEditor.svelte';
+  import TimeLapseEditor from './TimeLapseEditor.svelte';
   import type { Camera } from './models.js';
 
   let { camera, base, csrf, online }: { camera: Camera; base: string; csrf: string; online: boolean } = $props();
 
   type Values = {
+    recording_schedule?: RecordingSchedule;
+    time_lapse?: TimeLapse;
     image?: { hflip?: boolean; vflip?: boolean; rotation?: number };
     spotlight?: { enabled?: boolean; brightness?: number };
     leds?: { status_led?: boolean; ir_mode?: 'auto' | 'off' };
@@ -223,6 +227,20 @@
                 {/each}
               </div>
             {/if}
+          {:else if group === 'recording_schedule'}
+            {#if values.recording_schedule?.recording_schedule}
+              {#key values.recording_schedule.recording_schedule}
+                <ScheduleEditor value={values.recording_schedule.recording_schedule} writable={!!caps?.write} {disabled}
+                  save={fields => change({ group, fields })} />
+              {/key}
+            {:else}<p class="muted">{t('settings-not-read')}</p>{/if}
+          {:else if group === 'time_lapse'}
+            {#if values.time_lapse?.time_lapse}
+              {#key values.time_lapse.time_lapse}
+                <TimeLapseEditor value={values.time_lapse.time_lapse} writable={!!caps?.write} {disabled}
+                  save={fields => change({ group, fields })} />
+              {/key}
+            {:else}<p class="muted">{t('settings-not-read')}</p>{/if}
           {:else if selectedClass}
             {@const type = selectedClass}
             {@const name = t(type)}

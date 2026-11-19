@@ -319,7 +319,8 @@ select.timeline-range { width: auto; max-width: 100%; }
 .recording-toolbar { display: grid; gap: .4rem; flex: none; }
 .recording-toolbar .panel-title { margin: 0; padding-bottom: .3rem; }
 .recording-toolbar button, .recording-toolbar select, .recording-toolbar .button { min-height: 2rem; padding: .2rem .55rem; }
-.recording-controls, .recording-tools, .recording-step { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.recording-controls, .recording-tools, .recording-step, .recording-json-actions { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.recording-json-actions { margin-inline-start: auto; justify-content: flex-end; max-width: 100%; }
 .recording-step { flex-wrap: nowrap; }
 .recording-step select, select.recording-json-scope { width: auto; }
 .recording-body { display: flex; flex-direction: column; gap: .4rem; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin-top: .45rem; }

@@ -12,8 +12,8 @@
       const path = base + '/rotation';
       if (action) {
         const value = await api<Outcome>({ path, method: 'POST', csrf, body: { operationId: operationId(), action, confirmation: true } });
-        message = outcomeText(value);
         status = value.data?.status ?? '';
+        message = status === 'not-started' ? '' : outcomeText(value);
       } else {
         status = (await api<{ status: string }>({ path })).status;
         message = '';
@@ -28,6 +28,7 @@
 
 <section class="panel stack" aria-labelledby="rotation-title">
   <h2 id="rotation-title" class="panel-title">{t('rotation')}</h2>
+  <p class="muted">{t('rotation-help')}</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
   {#if status}<p role="status">{t('enrollment-status-' + status)}</p>{/if}

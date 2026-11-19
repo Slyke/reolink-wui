@@ -9,8 +9,8 @@
 
   let { csrf, bridges }: { csrf: string; bridges: BridgeSummary[] } = $props();
   let uid = $state(''), serial = $state('');
-  let bridge = $state(''), target = $state(''), method = $state('import'), confirmed = $state(false);
-  let targets = $state<string[]>([]);
+  let bridge = $state(''), target = $state(''), method = $state('initialize'), confirmed = $state(false);
+  let targets = $state<string[]>([]), targetsLoaded = $state(false);
   let ssid = $state(''), password = $state(''), code = $state('');
   let wifiDialog: QrDialogHandle, identityDialog: QrDialogHandle;
   let video: HTMLVideoElement;
@@ -79,12 +79,16 @@
     } catch { stopScan(); failure = t('error-BAD_INPUT'); }
   };
   const loadTargets = async () => {
-    targets = []; target = '';
+    targets = []; target = ''; targetsLoaded = false; confirmed = false; failure = '';
     const generation = ++targetGeneration;
     if (!bridge) return;
     try {
       const data = await api<{ targets: string[] }>({ path: '/api/v1/admin/bridges/' + bridge + '/enrollment-targets' });
-      if (generation === targetGeneration) targets = data.targets;
+      if (generation === targetGeneration) {
+        targets = data.targets;
+        target = targets.length === 1 ? targets[0] : '';
+        targetsLoaded = true;
+      }
     } catch (error) { if (generation === targetGeneration) failure = errorText(error); }
   };
   const load = async () => {
@@ -118,7 +122,11 @@
     } catch (error) { failure = errorText(error); }
     finally { busy = false; }
   };
-  onMount(() => { void load(); });
+  onMount(() => {
+    void load();
+    const available = bridges.filter(item => item.enrollment);
+    if (available.length === 1) { bridge = available[0].id; void loadTargets(); }
+  });
   onDestroy(() => { wipeWifi(); if (typeof MediaStream !== 'undefined') stopScan(); });
 </script>
 
@@ -161,13 +169,17 @@
     <div class="form-grid">
       <SearchSelect label={t('bridge')} bind:value={bridge} onchange={loadTargets}
         options={bridges.filter(item => item.enrollment).map(item => ({ value: item.id, label: item.label }))} />
-      <SearchSelect label={t('enrollment-target')} bind:value={target}
+      <SearchSelect label={t('enrollment-target')} bind:value={target} disabled={!targets.length}
         options={targets.map(item => ({ value: item, label: item }))} />
-      <label>{t('enrollment')}<select bind:value={method}>
-        <option value="import">{t('enrollment-import')}</option>
+      <label>{t('enrollment-method')}<select bind:value={method}>
         <option value="initialize">{t('enrollment-init')}</option>
+        <option value="import">{t('enrollment-import')}</option>
       </select></label>
     </div>
+    {#if targetsLoaded && !targets.length}
+      <p class="notice" role="status">{t('enrollment-no-targets')}</p>
+    {/if}
+    <p class="muted">{t(method === 'initialize' ? 'enrollment-init-help' : 'enrollment-import-help')}</p>
     <label class="check"><input type="checkbox" bind:checked={confirmed} />{t('enrollment-confirm')}</label>
     <div class="row"><button class="primary" disabled={busy || !verified || !bridge || !target || !confirmed || (method === 'initialize' && !uid)} onclick={() => enroll('start')}>{t('enrollment-start')}</button></div>
   {:else}

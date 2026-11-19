@@ -255,19 +255,21 @@
         <button type="button" aria-controls={id+'-json'} aria-expanded={jsonOpen} onclick={() => { jsonOpen = !jsonOpen; copyStatus = ''; }}>{t(jsonOpen ? 'recording-hide-json' : 'recording-metadata-json')}</button>
       {/if}
       {#if jsonOpen && source && !failure}
-        <select class="recording-json-scope" aria-label={t('recording-json-scope')} bind:value={jsonScope} onchange={() => { copyStatus = ''; }}>
-          <option value="frame">{t('recording-current-frame')}</option><option value="all">{t('recording-all-frames')}</option>
-        </select>
-        {#if canExport}<button onclick={copyJson} disabled={jsonScope === 'all' && !allReady}>{t('event-copy-json')}</button>
-        <button disabled={jsonScope === 'all' && !allReady} onclick={() => downloadJson(jsonScope === 'all')}>{t('recording-download-json')}</button>{/if}
-        {#if jsonScope === 'frame' && canExport}
-          <button disabled={!allReady} onclick={() => downloadJson(true)}>{t('recording-export-frames')}</button>
-        {:else if jsonScope === 'all' && jsonPageCount > 1}
-          <button aria-label={t('recording-page-previous')} disabled={jsonPage === 0} onclick={() => jsonPage--}>‹</button>
-          <span>{jsonPage + 1} / {jsonPageCount}</span>
-          <button aria-label={t('recording-page-next')} disabled={jsonPage+1 >= jsonPageCount} onclick={() => jsonPage++}>›</button>
-        {/if}
-        {#if copyStatus}<span role="status">{t(copyStatus)}</span>{/if}
+        <div class="recording-json-actions" role="group" aria-label={t('recording-metadata-json')}>
+          <select class="recording-json-scope" aria-label={t('recording-json-scope')} bind:value={jsonScope} onchange={() => { copyStatus = ''; }}>
+            <option value="frame">{t('recording-current-frame')}</option><option value="all">{t('recording-all-frames')}</option>
+          </select>
+          {#if canExport}<button onclick={copyJson} disabled={jsonScope === 'all' && !allReady}>{t('event-copy-json')}</button>
+          <button disabled={jsonScope === 'all' && !allReady} onclick={() => downloadJson(jsonScope === 'all')}>{t('recording-download-json')}</button>{/if}
+          {#if jsonScope === 'frame' && canExport}
+            <button disabled={!allReady} onclick={() => downloadJson(true)}>{t('recording-export-frames')}</button>
+          {:else if jsonScope === 'all' && jsonPageCount > 1}
+            <button aria-label={t('recording-page-previous')} disabled={jsonPage === 0} onclick={() => jsonPage--}>‹</button>
+            <span>{jsonPage + 1} / {jsonPageCount}</span>
+            <button aria-label={t('recording-page-next')} disabled={jsonPage+1 >= jsonPageCount} onclick={() => jsonPage++}>›</button>
+          {/if}
+          {#if copyStatus}<span role="status">{t(copyStatus)}</span>{/if}
+        </div>
       {/if}
     </div>
   </div>

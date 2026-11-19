@@ -71,6 +71,7 @@ const caps = {
   baichuan: { controls: {
     leds: { status_led: true, ir_led: true }, motion_detection: { enabled:true, sensitivity:true },
     image: {hflip:true,vflip:true,rotation:true},
+    recording_schedule:{enabled:true,kinds:['continuous','motion']}, time_lapse:{configure:true,overwrite:true},
     spotlight: { manual:true, brightness:true, brightness_min:0, brightness_max:100 },
     ai_person: { sensitivity:true, delay_seconds:true }, ai_pet: { sensitivity:true, delay_seconds:true }
   } },
@@ -120,13 +121,15 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, enrollmentTargets } = {}) => {
   const previewRequests = [], recordingRequests = [];
   let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
   let motion = true;
   let sensitivity = 40;
   let brightness = 5;
+  const schedule = {enabled:true,schedules:{continuous:'0'.repeat(168),motion:'1'.repeat(168)}};
+  const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const orientation = {hflip:false,vflip:false,rotation:0};
   let inventory = ['alpha','beta'];
   let identities = {}, physical = {};
@@ -151,7 +154,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     { camera_id, topic: 'availability', payload: { online: true, updated_at: new Date().toISOString() } },
     { camera_id, topic: 'state/settings', payload: {
       leds: { status_led: led, ir_mode: 'auto' }, motion_detection: { enabled: motion, sensitivity },
-      spotlight: { brightness }, image:orientation, ...ai
+      spotlight: { brightness }, image:orientation, recording_schedule:schedule, time_lapse:lapse, ...ai
     } },
     { camera_id, topic: 'rules', payload: { baichuan: [{ id: 'rule-1', enabled:true, type:'motion', parameters:{password:token} }] } }
   ].map(item => identities[camera_id] ? { ...item, payload: { ...item.payload, stable_id: identities[camera_id] } } : item));
@@ -177,7 +180,25 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       fields.delay_seconds = command.delay_seconds ?? fields.delay_seconds;
       writes++;
     }
+    if (command.setting === 'recording_schedule') {
+      if (command.enabled !== undefined) schedule.enabled = command.enabled;
+      if (command.schedule) {
+        const {kind,enable_hours,disable_hours} = command.schedule;
+        const hours = [...schedule.schedules[kind]];
+        for (const h of enable_hours) hours[h] = '1';
+        for (const h of disable_hours) hours[h] = '0';
+        schedule.schedules[kind] = hours.join('');
+      }
+      writes++;
+    }
+    if (command.setting === 'time_lapse') {
+      const {setting, ...fields} = command;
+      Object.assign(lapse, fields);
+      if (fields.enabled) lapse.configured = true;
+      writes++;
+    }
     const state = {
+      time_lapse:lapse, recording_schedule:schedule,
       image_orientation: orientation,
       motion_detection: { enabled:motion, sensitivity },
       ai_detection: ai['ai_' + command.class]
@@ -237,9 +258,10 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       }
       return res.end(JSON.stringify(result));
     }
+    if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets}));
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
-      previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:false, inventory:true, callbacks:true
+      version:1, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
@@ -252,6 +274,16 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
       if (req.method === 'DELETE') callbacks.splice(callbacks.findIndex(entry => entry.id === id), 1);
       return res.end(JSON.stringify({ ok:true, correlation_id:req.headers['x-correlation-id'], callbacks }));
     }
+    if (req.url.endsWith('/users') && req.method === 'GET') return res.end(JSON.stringify({writable:true,requiresUid:true,
+      users:[{username:'admin',administrator:true,bridge_login:true,hidden:'redacted-fixture'},{username:'frontdesk',administrator:false,bridge_login:false}]}));
+    if (req.url.endsWith('/users/password') && req.method === 'POST') {
+      const data = await read(req);
+      if (data.uid !== 'FIXTUREUID' || !data.confirmation) { res.statusCode=422; return res.end('{}'); }
+      writes++;
+      return res.end(JSON.stringify({status:data.username === 'admin' ? 'restart-required' : 'verified', correlation_id:req.headers['x-correlation-id']}));
+    }
+    if (req.url.endsWith('/settings/recording_schedule')) return res.end(JSON.stringify({values:{recording_schedule:schedule}}));
+    if (req.url.endsWith('/settings/time_lapse')) return res.end(JSON.stringify({values:{time_lapse:lapse}}));
     if (req.url.endsWith('/settings/image')) return res.end(JSON.stringify({values:{image:orientation}}));
     if (storageFailure && recordings && req.url.endsWith('/storage')) {
       res.writeHead(storageFailure.status, {'content-type':'application/json'});

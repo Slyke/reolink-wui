@@ -848,6 +848,17 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.equal(update.statusCode,200,update.body);
     assert.equal(update.json().outcome,'confirmed');
   }
+  assert.equal((await incoming({path:root+'/users',headers:restricted})).statusCode,403);
+  const listed = (await incoming({path:root+'/users',headers:privileged})).json();
+  assert.equal(listed.users[0].username,'admin');
+  assert.equal(listed.users[0].bridgeLogin,true);
+  assert.ok(!JSON.stringify(listed).includes('redacted-fixture'));
+  const payload = {operationId:uuid(),username:'admin',password:'fixture-password-99',uid:'FIXTUREUID',confirmation:true};
+  assert.equal((await incoming({path:root+'/users/password',headers:restricted,method:'POST',payload})).statusCode,403);
+  const changed = await incoming({path:root+'/users/password',headers:privileged,method:'POST',payload});
+  assert.equal(changed.json().data.status,'restart-required',changed.body);
+  assert.ok(!changed.body.includes(payload.password));
+  assert.equal((await incoming({path:root+'/users/password',headers:privileged,method:'POST',payload:{...payload,password:'different-fixture-99'}})).statusCode,409);
   const orientation=await incoming({path:root+'/settings/image?fresh=true',headers:privileged});
   assert.deepEqual(orientation.json().values.image,{hflip:true,vflip:true,rotation:0});
   const correlation=uuid();

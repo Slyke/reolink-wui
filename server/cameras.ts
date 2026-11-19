@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { aiClasses, settingsGroups, type Permission, type SettingsGroup } from '../shared/access.js';
+import { aiClasses, recordingKinds, settingsGroups, type Permission, type SettingsGroup } from '../shared/access.js';
 import { record, type Envelope } from './bridge-channels.js';
 import { Failure } from './errors.js';
 import type { Bridge } from './bridge.js';
@@ -16,6 +16,12 @@ export const ptzSchema = z.discriminatedUnion('op', [
   object({ op: z.literal('set_zoom'), position: int(0, 2147483647) })
 ]);
 
+const hourList = z.array(int(0, 167)).max(168);
+const schedulePatch = object({ kind: z.enum(recordingKinds), enable_hours: hourList, disable_hours: hourList })
+  .refine(value => {
+    const hours = [...value.enable_hours, ...value.disable_hours];
+    return hours.length > 0 && new Set(hours).size === hours.length;
+  });
 export const settingSchema = z.discriminatedUnion('setting', [
   object({ setting: z.literal('spotlight'), enabled: z.boolean(), duration_seconds: int(1, 180).optional() }),
   object({ setting: z.literal('spotlight_brightness'), brightness: int(0, 100) }),
@@ -23,6 +29,11 @@ export const settingSchema = z.discriminatedUnion('setting', [
   object({ setting: z.literal('ir_led'), mode: z.enum(['auto', 'off']) }),
   object({ setting: z.literal('motion_detection'), enabled: z.boolean().optional(), sensitivity: int(1, 50).optional() })
     .refine(value => value.enabled !== undefined || value.sensitivity !== undefined),
+  object({ setting: z.literal('recording_schedule'), enabled: z.boolean().optional(), schedule: schedulePatch.optional() })
+    .refine(value => value.enabled !== undefined || !!value.schedule),
+  object({ setting: z.literal('time_lapse'), enabled: z.boolean().optional(), interval_seconds: int(2, 21600).optional(),
+    format: z.enum(['jpeg', 'mp4']).optional(), stream: z.enum(['main', 'sub']).optional(), overwrite: z.boolean().optional() })
+    .refine(value => Object.keys(value).some(key => key !== 'setting')),
   object({ setting: z.literal('image_orientation'), action: z.enum(['hflip', 'vflip', 'clockwise', 'counterclockwise']) }),
   object({ setting: z.literal('ai_detection'), class: z.enum(aiClasses), sensitivity: int(0, 100).optional(), delay_seconds: int(0, 8).optional() })
     .refine(value => value.sensitivity !== undefined || value.delay_seconds !== undefined)
@@ -32,6 +43,7 @@ export const groupFor = (setting: z.infer<typeof settingSchema>['setting']): Set
   if (setting === 'spotlight' || setting === 'spotlight_brightness') return 'spotlight';
   if (setting === 'status_led' || setting === 'ir_led') return 'leds';
   if (setting === 'motion_detection') return 'motion';
+  if (setting === 'time_lapse' || setting === 'recording_schedule') return setting;
   if (setting === 'image_orientation') return 'image';
   return 'ai';
 };
@@ -103,6 +115,15 @@ const sanitizeGroup = ({ raw, group }: { raw: Envelope; group: SettingsGroup }) 
     brightness_min: num(raw.brightness_min), brightness_max: num(raw.brightness_max)
   };
   if (group === 'leds') return { status_led: bool(raw.status_led), ir_mode: ['auto', 'off'].includes(String(raw.ir_mode)) ? raw.ir_mode : undefined };
+  if (group === 'recording_schedule') {
+    const schedules = record(raw.schedules);
+    return { enabled: bool(raw.enabled), schedules: Object.fromEntries(recordingKinds.flatMap(kind => {
+      const table = schedules[kind];
+      return typeof table === 'string' && /^[01]{168}$/.test(table) ? [[kind, table]] : [];
+    })) };
+  }
+  if (group === 'time_lapse') return { enabled: bool(raw.enabled), configured: bool(raw.configured),
+    interval_seconds: num(raw.interval_seconds), format: displayText(raw.format), stream: displayText(raw.stream), overwrite: bool(raw.overwrite) };
   if (group === 'image') return { hflip: bool(raw.hflip), vflip: bool(raw.vflip), rotation: num(raw.rotation) };
   if (group === 'motion') return { enabled: bool(raw.enabled), sensitivity: num(raw.sensitivity) };
   return { sensitivity: num(raw.sensitivity), delay_seconds: num(raw.delay_seconds) };
@@ -156,6 +177,13 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     manual: bool(light.manual), brightness: bool(light.brightness),
     range: range({ min: light.brightness_min, max: light.brightness_max })
   });
+  const schedule = record(ctrls.recording_schedule);
+  if (schedule.enabled === true && Array.isArray(schedule.kinds)) {
+    const kinds = schedule.kinds;
+    group('recording_schedule', { enabled: true, kinds: recordingKinds.filter(kind => kinds.includes(kind)) });
+  }
+  const lapse = record(ctrls.time_lapse);
+  if (lapse.configure === true) group('time_lapse', { configure: true, overwrite: lapse.overwrite === true });
   const orientation = record(ctrls.image);
   if (Object.keys(orientation).length) group('image', { hflip: bool(orientation.hflip), vflip: bool(orientation.vflip), rotation: bool(orientation.rotation) });
   group('leds', { statusLed: bool(led.status_led), irLed: bool(led.ir_led) });
@@ -185,6 +213,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     viaProxy: proxy && grant.has('media.live'),
     media,
     alerts: { read: grant.has('alerts.read'), write: bridge.canCommand() && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
+    cameraUsers: grant.has('device.rotate') && bridge.hasUsers(remote),
     rotate: grant.has('device.rotate') && bridge.has('enrollment'),
     freshSettings: bridge.has('v1'),
     ptz: grant.has('ptz.read') || grant.has('ptz.write') ? {
@@ -233,6 +262,12 @@ export const validateSetting = ({ value, settings }: {
     switch (value.setting) {
       case 'spotlight': if (group.manual === true) return; break;
       case 'spotlight_brightness': if (group.brightness && allowedRange({ value: value.brightness, bounds: group.range as ReturnType<typeof range> })) return; break;
+      case 'recording_schedule':
+        if (group.enabled && (!value.schedule || (Array.isArray(group.kinds) && group.kinds.includes(value.schedule.kind)))) return;
+        break;
+      case 'time_lapse':
+        if (group.configure && (value.overwrite === undefined || group.overwrite)) return;
+        break;
       case 'image_orientation':
         if ((value.action === 'hflip' && group.hflip) || (value.action === 'vflip' && group.vflip)
           || (['clockwise', 'counterclockwise'].includes(value.action) && group.rotation)) return;

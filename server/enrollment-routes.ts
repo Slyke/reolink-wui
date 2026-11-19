@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { correlationPattern, segment } from '../shared/urls.js';
@@ -131,6 +132,36 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     return sendOutcome({ reply, value });
   });
 
+  const users = path + '/cameras/:id/users';
+  api.get<{ Params: { id: string } }>(users, async request => {
+    const { bridge, row } = await runtime.camera({ request, id: request.params.id, permission: 'device.rotate' });
+    if (!bridge.hasUsers(row.routeId)) throw new Failure('UNSUPPORTED', 422);
+    const response = await bridge.api({ stableId: row.remote_id, path: '/cameras/' + row.routeId + '/users', correlation: request.id, signal: AbortSignal.timeout(22_000) });
+    const data = record(await jsonResponse({ response }));
+    if (!response.ok || !Array.isArray(data.users)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
+    return { writable: data.writable === true, requiresUid: data.requiresUid === true, users: data.users.slice(0,32).flatMap(raw => {
+      const user = record(raw);
+      return typeof user.username === 'string' && user.username.length > 0 && user.username.length <= 64
+        ? [{ username: user.username, administrator: user.administrator === true, bridgeLogin: user.bridge_login === true }] : [];
+    }) };
+  });
+  api.post<{ Params: { id: string } }>(users + '/password', async (request, reply) => {
+    const { bridge, row, session } = await runtime.camera({ request, id: request.params.id, permission: 'device.rotate', mutate: true });
+    if (!bridge.hasUsers(row.routeId) || !bridge.config.http) throw new Failure('UNSUPPORTED', 422);
+    const data = input({ schema: object({ operationId: uuid, username: z.string().min(1).max(64),
+      password: z.string().regex(/^[ -~]{8,31}$/), uid: z.string().regex(/^[a-zA-Z0-9]{8,40}$/).optional(), confirmation: z.literal(true) }), value: request.body });
+    const fingerprint = createHmac('sha256', bridge.config.http.token).update(JSON.stringify([data.operationId, data.username, data.uid, data.password])).digest('hex');
+    const value = await runtime.ops.run({
+      id: data.operationId, actor: session.account.id, resource: row.id, action: 'camera.user.password', correlation: request.id, input: fingerprint,
+      execute: async () => {
+        const result = await progress({ bridge, stableId: row.remote_id, endpoint: '/cameras/' + row.routeId + '/users/password',
+          data: { id: data.operationId, username: data.username, password: data.password, uid: data.uid, confirmation: true }, correlation: request.id });
+        return { outcome: result.status === 'previous-credential-valid' ? 'rejected' : outcome(result.status), data: result, bridgeCorrelationId: result.bridgeCorrelationId };
+      }
+    });
+    return sendOutcome({ reply, value });
+  });
+
   const cameras = path + '/cameras/:id/rotation';
   api.get<{ Params: { id: string } }>(cameras, async request => {
     const { bridge, row } = await runtime.camera({ request, id: request.params.id, permission: 'device.rotate' });
@@ -152,7 +183,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
           bridge, stableId: row.remote_id, endpoint: '/cameras/' + row.routeId + '/rotation' + (action === 'reconcile' ? '/reconcile' : ''),
           data: { id: operationId, confirmation: true }, correlation: request.id
         });
-        return { outcome: outcome(value.status), data: value, bridgeCorrelationId: value.bridgeCorrelationId };
+        return { outcome: action === 'reconcile' && value.status === 'not-started' ? 'confirmed' : outcome(value.status), data: value, bridgeCorrelationId: value.bridgeCorrelationId };
       }
     });
     return sendOutcome({ reply, value });

@@ -33,7 +33,7 @@ for (const mode of ['browser','proxy']) {
     test.setTimeout(65000);
     page.setDefaultTimeout(6000);
     const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true,recordingCount:3,metadataPages:true,apiEvents:true });
-    const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false});
+    const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false,enrollmentTargets:[]});
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
     const apiPort = await reserve();
@@ -492,6 +492,25 @@ for (const mode of ['browser','proxy']) {
       await expect(brightness).toHaveValue('17');
       await expect(sensitivity).toHaveValue('22');
 
+      const schedule = page.locator('article').filter({has:page.getByRole('heading',{name:'SD recording schedule'})});
+      const hour = schedule.getByRole('button',{name:'08:00',exact:true});
+      await expect(hour).toHaveAttribute('aria-pressed','false');
+      await hour.click();
+      await schedule.getByRole('button',{name:'Save changes'}).click();
+      await expect.poll(() => bridge.requests.at(-1)).toEqual({setting:'recording_schedule',schedule:{kind:'continuous',enable_hours:[32],disable_hours:[]}});
+      const lapse = page.locator('article').filter({has:page.getByRole('heading',{name:'Time lapse'})});
+      await lapse.getByLabel('Enable time lapse').check();
+      await lapse.getByLabel('Capture interval (seconds)').fill('15');
+      await lapse.getByRole('button',{name:'Save changes'}).click();
+      await expect.poll(() => bridge.requests.at(-1)).toEqual({setting:'time_lapse',enabled:true,interval_seconds:15});
+      const users = page.getByRole('region',{name:'Camera accounts'});
+      await users.getByRole('button',{name:'Change password · frontdesk'}).click();
+      await users.getByLabel('Printed camera UID').fill('FIXTUREUID');
+      await users.getByLabel('New camera password').fill('fixture-Password22!');
+      await users.getByLabel('Confirm camera password').fill('fixture-Password22!');
+      page.once('dialog', dialog => dialog.accept());
+      await users.getByRole('button',{name:'Change password',exact:true}).click();
+      await expect(users.getByRole('status')).toContainText('verified the credential');
       const detectionType = page.getByRole('combobox',{name:'Detection type'});
       await detectionType.selectOption('pet');
       const petSettings = page.getByRole('group',{name:'Pet detection settings'});
@@ -733,6 +752,8 @@ for (const mode of ['browser','proxy']) {
       const top = locator => locator.evaluate(e => Math.round(e.getBoundingClientRect().top));
       expect(await top(controls.getByRole('combobox',{name:'Stream quality'}))).toBe(await top(controls.getByRole('button',{name:'Next recording'})));
       expect(await top(controls.getByLabel('JSON scope'))).toBe(await top(controls.getByRole('button',{name:'Shrink video'})));
+      const right = locator => locator.evaluate(e => Math.round(e.getBoundingClientRect().right));
+      expect(await right(controls.getByRole('button',{name:'Export all frames (JSON)'}))).toBe(await right(controls));
       await page.setViewportSize({width:560,height:680});
       expect(await top(controls.getByRole('button',{name:'Download JSON'}))).toBeGreaterThan(await top(controls.getByLabel('Seek increment')));
       expect(await controls.evaluate(e => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
@@ -833,8 +854,13 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('button',{name:'Refresh',exact:true}).click();
       await expect(page.getByRole('button',{name:'Play',exact:true}).first()).toBeEnabled();
       await page.goto(publicOrigin+'/settings/enrollment');
+      await expect(page.getByText(/This bridge has no enrollment targets/)).toBeVisible();
+      await expect(page.getByRole('button',{name:/^Enrollment target /})).toBeDisabled();
+      await expect(page.getByRole('combobox',{name:'Camera setup',exact:true})).toHaveValue('initialize');
+      await page.getByRole('combobox',{name:'Camera setup',exact:true}).selectOption('import');
+      await expect(page.getByText(/target’s importPassword/)).toBeVisible();
       await page.getByLabel('Device UID').fill('TESTWUI001');
-      const enrollmentButton = page.getByRole('button',{name:'Show enrollment QR'});
+      const enrollmentButton = page.getByRole('button',{name:'Show device ID QR'});
       const enrollmentQr = page.getByRole('dialog',{name:'WUI device enrollment code'});
       await enrollmentButton.click();
       await expect(enrollmentQr).toBeVisible();

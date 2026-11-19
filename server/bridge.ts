@@ -71,6 +71,7 @@ export class Bridge {
   private recordingCameras = new Set<string>();
   private recordingMetadataCameras = new Set<string>();
   private recordingPreviewCameras = new Set<string>();
+  private userCameras = new Set<string>();
   private imageSettings = false;
   private storageCameras = new Set<string>();
   private httpState?: boolean;
@@ -389,6 +390,8 @@ export class Bridge {
     return this.has('media') ? this.mediaStreams.get(camera) ?? [] : [];
   }
 
+  hasUsers(camera: string) { return this.has('v1') && this.userCameras.has(camera); }
+
   hasImageSettings() { return this.imageSettings; }
 
   hasStorage(camera: string) { return this.has("v1") && this.storageCameras.has(camera); }
@@ -546,7 +549,7 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.userCameras]]);
     const ok = contract.version === 1;
     this.imageSettings = ok && Array.isArray(contract.settings) && contract.settings.includes('image');
     this.bridgeVersion.v1 = ok;
@@ -569,12 +572,14 @@ export class Bridge {
       ? contract.recordingPreviewCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingCameras = new Set(ok && Array.isArray(contract.recordingsCameras)
       ? contract.recordingsCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
+    this.userCameras = new Set(ok && Array.isArray(contract.userCameras)
+      ? contract.userCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     const storage = Array.isArray(contract.storageCameras) ? contract.storageCameras : contract.recordingsCameras;
     this.storageCameras = new Set(ok && Array.isArray(storage)
       ? storage.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.userCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 
