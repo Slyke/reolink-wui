@@ -715,6 +715,50 @@ test('retained state survives a serial change ahead of inventory and live video 
   assert.ok(detail.detections.some(detection => detection.type === 'person' && detection.active === true));
 });
 
+test('an MQTT subscription filter does not hide newly discovered cameras from administrators', async t => {
+  const fixture = await fixtureBridge({websocket:true, apiEvents:true, capture:true});
+  t.after(() => fixture.close());
+  await fixture.reportInventory(['alpha']);
+  const mqtt = {...fixture.config.mqtt, cameraIds:['alpha']};
+  const {app, runtime, incoming, seed, signIn} = await launch({bridges:[
+    {...fixture.config, cameraIds:[], mqtt, events:['mqtt','ws','api']}
+  ]});
+  t.after(() => app.close());
+  await seed({username:'scope-admin',admin:true});
+  await seed({username:'scope-viewer'});
+  const admin = await signIn('scope-admin');
+  const viewer = await signIn('scope-viewer');
+  const bridge = runtime.bridges.get('lab');
+  await eventually(() => bridge.canCapture('alpha') && bridge.upstream().connections.find(item => item.id === 'ws')?.state === 'online');
+  assert.equal((await incoming({path:'/cameras',headers:admin})).json().cameras.length,1);
+
+  await fixture.reportInventory(['alpha','beta'], {beta:'SERIAL-BETA'}, {beta:{identitySource:'serial',previousId:'beta'}});
+  const refreshed = await incoming({method:'POST',path:'/admin/bridges/lab/sync',headers:admin,payload:{operationId:uuid()}});
+  assert.equal(refreshed.statusCode,200,refreshed.body);
+  await fixture.snapshot('beta','info',{stable_id:'SERIAL-BETA',baichuan:{name:'E1 Pro'}});
+  await fixture.snapshot('beta','availability',{stable_id:'SERIAL-BETA',online:true});
+  await eventually(() => bridge.state('beta').get('availability')?.online);
+  const visible = (await incoming({path:'/cameras',headers:admin})).json().cameras;
+  assert.equal(visible.length,2);
+  const enrolled = visible.find(item => item.name === 'E1 Pro');
+  assert.ok(enrolled);
+  assert.equal((await incoming({path:'/cameras/'+enrolled.id,headers:admin})).statusCode,200);
+  assert.deepEqual((await incoming({path:'/cameras',headers:viewer})).json().cameras,[]);
+  assert.equal((await incoming({path:'/cameras/'+enrolled.id,headers:viewer})).statusCode,403);
+  assert.deepEqual(await runtime.sql.query('SELECT * FROM grants'),[]);
+  assert.equal(bridge.stableId('beta'),'SERIAL-BETA');
+  assert.equal(bridge.canCapture('beta'),false);
+  const events = [];
+  t.after(bridge.observe(update => { if (update.kind === 'event') events.push([update.camera,update.topic]); }));
+  fixture.event('alpha','person',{},'mqtt');
+  fixture.event('beta','pet',{},'ws');
+  await eventually(() => events.length === 2);
+  assert.deepEqual(events.sort(),[['alpha','person'],['beta','pet']]);
+  bridge.setEventSources(['mqtt']);
+  assert.equal(bridge.cameraFeedReady('beta'),false);
+  assert.deepEqual(bridge.ids(),['alpha','beta']);
+});
+
 test('inventory interval controls scheduled discovery independently of readiness checks', async t => {
   const bridge=await fixtureBridge();
   t.after(() => bridge.close());

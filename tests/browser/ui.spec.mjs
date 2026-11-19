@@ -1182,6 +1182,16 @@ for (const mode of ['browser','proxy']) {
       const sent = JSON.parse(observed.findLast(item => item.body && item.url.endsWith('/enrollments')).body);
       expect(sent).toMatchObject({target:'alpha',address:'192.168.10.12',port:9000,uid:'TESTWUI001',serial:'FIXTURE-E1',method:'initialize',confirmation:true});
       expect(sent).not.toHaveProperty('password');
+      const openCamera = page.getByRole('link',{name:'Open in Monitor'});
+      const monitorUrl = await openCamera.getAttribute('href');
+      expect(monitorUrl).toMatch(/^\/monitor\?camera=[\da-f-]{36}$/);
+      const enrollUrl = page.url();
+      await openCamera.click();
+      await expect(page).toHaveURL(url => url.pathname + url.search === monitorUrl);
+      await page.goto(enrollUrl);
+      await expect(page.getByText('Camera registration is active.',{exact:true})).toBeVisible();
+      await expect(openCamera).toHaveAttribute('href',monitorUrl);
+      await expect(page.getByRole('button',{name:'Resume enrollment'})).toHaveCount(0);
       await page.getByLabel('Device UID',{exact:true}).fill('TESTWUI001');
 
       await page.setViewportSize({width:375,height:812});

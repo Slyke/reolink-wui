@@ -147,6 +147,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const networks = new Map();
   const accountLists = new Map(), rotationStates = new Map();
+  const enrolled = new Set();
   const accountsFor = (id) => {
     if (!accountLists.has(id)) accountLists.set(id, [
       {username:'admin',administrator:true,bridge_login:true,hidden:'redacted-fixture'},
@@ -317,6 +318,10 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
         res.statusCode = 422;
         return res.end(JSON.stringify({errorKey:'API_ENROLLMENT_INVALID'}));
       }
+      enrolled.add(intent.id);
+      return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/enrollments/') && enrolled.has(req.url.split('/').at(-1))) {
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({

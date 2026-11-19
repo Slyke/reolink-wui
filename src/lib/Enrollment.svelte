@@ -7,7 +7,7 @@
   import SearchSelect from './SearchSelect.svelte';
   import { enrollmentText, parseDeviceLabel, validIdentifiers, wifiBytes } from './qr.js';
 
-  let { csrf, bridges }: { csrf: string; bridges: BridgeSummary[] } = $props();
+  let { csrf, bridges, refreshInventory }: { csrf: string; bridges: BridgeSummary[]; refreshInventory: () => Promise<void> } = $props();
   let uid = $state(''), serial = $state('');
   let bridge = $state(''), target = $state(''), method = $state('initialize'), confirmed = $state(false);
   let targets = $state<string[]>([]), targetsLoaded = $state(false);
@@ -30,7 +30,8 @@
   let message = $state(''), failure = $state(''), busy = $state(false);
   let selected = $state('');
   let enrollments = $state<{ id: string; bridge_id: string }[]>([]);
-  let status = $state('');
+  type EnrollmentProgress = { status: string; cameraId?: string };
+  let progress = $state<EnrollmentProgress>();
   const verified = $derived(validIdentifiers({ uid, serial }));
   const uidSuffix = (value: string) => value && validIdentifiers({uid:value,serial:''}) ? value.slice(-4) : '';
   const setUid = (value: string) => { uid = value; code = uidSuffix(value); confirmed = false; };
@@ -122,12 +123,17 @@
       }
     } catch (error) { if (generation === targetGeneration) failure = errorText(error); }
   };
-  const load = async () => {
-    try { enrollments = (await api<{ enrollments: typeof enrollments }>({ path: '/api/v1/enrollments' })).enrollments; }
-    catch (error) { failure = errorText(error); }
+  const load = async (restore = false) => {
+    try {
+      enrollments = (await api<{ enrollments: typeof enrollments }>({ path: '/api/v1/enrollments' })).enrollments;
+      if (restore && !selected && !busy && enrollments.length) {
+        selected = enrollments[0].id;
+        await enroll('status');
+      }
+    } catch (error) { failure = errorText(error); }
   };
   const enroll = async (action: 'start' | 'resume' | 'import' | 'status') => {
-    busy = true; failure = ''; message = ''; status = '';
+    busy = true; failure = ''; message = ''; progress = undefined;
     const id = operationId();
     try {
       if (action === 'start') {
@@ -139,25 +145,26 @@
           body: { operationId: id, bridge, target: camera?.target ?? target, address: camera?.address, port: camera?.port,
             uid: camera?.uid ?? (uid || undefined), serial: camera?.serial ?? (serial || undefined), method, confirmation: confirmed }
         });
-        status = value.data?.status ?? '';
+        progress = value.data;
         message = outcomeText(value);
         wipeWifi(); confirmed = false; identityDialog?.close();
         await load();
       } else if (selected) {
         const path = '/api/v1/enrollments/' + selected;
         if (action === 'status') {
-          status = (await api<{status: string}>({ path })).status;
+          progress = await api<EnrollmentProgress>({ path });
         } else {
           const value = await api<Outcome>({ path: path + '/resume', method: 'POST', csrf, body: { operationId: id, method: action === 'import' ? 'import' : undefined } });
-          status = value.data?.status ?? '';
+          progress = value.data;
           message = outcomeText(value);
         }
       }
+      if (progress?.status === 'active' && progress.cameraId) await refreshInventory();
     } catch (error) { failure = errorText(error); }
     finally { busy = false; }
   };
   onMount(() => {
-    void load();
+    void load(true);
     const available = bridges.filter(item => item.enrollment);
     if (available.length === 1) { bridge = available[0].id; void loadTargets(); }
   });
@@ -244,15 +251,23 @@
     <p class="muted">{t('enrollment-unavailable')}</p>
   {/if}
   {#if enrollments.length || selected}
-    <SearchSelect label={t('enrollment-open')} bind:value={selected}
+    <SearchSelect label={t('enrollment-open')} bind:value={selected} disabled={busy} onchange={() => enroll('status')}
       options={enrollments.map(item => ({ value: item.id, label: item.bridge_id + ' · ' + item.id.slice(0, 8) }))} />
     <div class="row">
       <button disabled={!selected || busy} onclick={() => enroll('status')}>{t('refresh')}</button>
-      <button disabled={!selected || busy} onclick={() => enroll('resume')}>{t('enrollment-resume')}</button>
-      {#if status === 'local-setup-required'}<button disabled={busy} onclick={() => enroll('import')}>{t('enrollment-switch')}</button>{/if}
+      {#if progress?.status !== 'active'}<button disabled={!selected || busy} onclick={() => enroll('resume')}>{t('enrollment-resume')}</button>{/if}
+      {#if progress?.status === 'local-setup-required'}<button disabled={busy} onclick={() => enroll('import')}>{t('enrollment-switch')}</button>{/if}
     </div>
   {/if}
-  {#if status}<p class="notice" role="status">{t('enrollment-status-' + status)}</p>{/if}
+  {#if progress?.status}
+    <div class="row" role="status">
+      <p class="notice">{t('enrollment-status-' + progress.status)}</p>
+      {#if progress.status === 'active'}
+        {#if progress.cameraId}<a href={'/monitor?camera=' + progress.cameraId}>{t('enrollment-open-monitor')}</a>
+        {:else}<span class="muted">{t('enrollment-inventory-pending')}</span>{/if}
+      {/if}
+    </div>
+  {/if}
 </section>
 
 <QrDialog bind:this={identityDialog} title={t('enrollment-qr-alt')} description={t('enrollment-qr-copy')} imageLabel={t('enrollment-qr-alt')} />

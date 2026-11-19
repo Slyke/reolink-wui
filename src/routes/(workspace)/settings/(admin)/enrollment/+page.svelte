@@ -9,4 +9,4 @@
 
 <svelte:head><title>{t('enrollment-nav')} · {t('title')}</title></svelte:head>
 
-<Enrollment csrf={workspace.current().csrf} bridges={admin.current().bridges} />
+<Enrollment csrf={workspace.current().csrf} bridges={admin.current().bridges} refreshInventory={admin.refresh} />

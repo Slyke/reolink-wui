@@ -169,7 +169,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
       || (key === 'motion' && (grant.has('alerts.read') || grant.has('alerts.write')))) {
       settings[key] = unavailable ? { read: false, write: false, unavailable } : {
         ...fields, read: grant.has('settings.' + key + '.read' as Permission),
-        write: bridge.canCommand() && grant.has('settings.' + key + '.write' as Permission)
+        write: bridge.canCommand(remote) && grant.has('settings.' + key + '.write' as Permission)
       };
     }
   };
@@ -219,13 +219,13 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     bridgePreview,
     viaProxy: proxy && grant.has('media.live'),
     media,
-    alerts: { read: grant.has('alerts.read'), write: bridge.canCommand() && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
+    alerts: { read: grant.has('alerts.read'), write: bridge.canCommand(remote) && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
     network: { read:grant.has('settings.network.read'), write:grant.has('settings.network.write'), available:bridge.hasNetwork(remote) },
     cameraUsers: grant.has('device.rotate') && bridge.hasUsers(remote),
     rotate: grant.has('device.rotate') && bridge.has('enrollment'),
     freshSettings: bridge.has('v1'),
     ptz: grant.has('ptz.read') || grant.has('ptz.write') ? {
-      discovery, supported: bool(raw.supported), read: grant.has('ptz.read'), write: bridge.canCommand() && grant.has('ptz.write'),
+      discovery, supported: bool(raw.supported), read: grant.has('ptz.read'), write: bridge.canCommand(remote) && grant.has('ptz.write'),
       pan: bool(raw.pan), tilt: bool(raw.tilt), diagonal: bool(raw.diagonal), directionalZoom: bool(raw.directional_zoom),
       presets: bool(raw.presets), speed: range(raw.speed_range), zoom: range(raw.zoom_range), duration: range(raw.duration_ms)
     } : undefined,
@@ -235,7 +235,8 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
 
 export const available = ({ bridge, remote }: { bridge: Bridge; remote: string }) => {
   const source = bridge.state(remote).get('availability');
-  return { stale: !bridge.feedReady, online: bridge.feedReady ? bool(source?.online) : undefined, updatedAt: date(source?.updated_at) };
+  const ready = bridge.cameraFeedReady(remote);
+  return { stale: !ready, online: ready ? bool(source?.online) : undefined, updatedAt: date(source?.updated_at) };
 };
 
 const allowedRange = ({ value, bounds }: { value: number; bounds?: { min: number; max: number } }) => (
