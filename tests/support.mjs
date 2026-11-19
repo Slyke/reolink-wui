@@ -145,6 +145,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let brightness = 5;
   const schedule = {enabled:true,schedules:{continuous:'0'.repeat(168),motion:'1'.repeat(168)}};
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
+  const networks = new Map();
   const accountLists = new Map(), rotationStates = new Map();
   const accountsFor = (id) => {
     if (!accountLists.has(id)) accountLists.set(id, [
@@ -302,7 +303,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets}));
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      version:1, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
       previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -318,6 +319,18 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     const cameraId = req.url.split('/')[3];
     if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
+    if (req.url.endsWith('/network')) {
+      if (req.method === 'GET') return res.end(JSON.stringify({
+        wifi:{ssid:networks.get(cameraId) ?? 'Fixture LAN',nearby:['Fixture LAN','Office wireless'],configurable:true,key:'should-never-leave-the-bridge'},
+        link:{address:'192.0.2.3',gateway:'192.0.2.1',netmask:'255.255.255.0',dhcp:true}
+      }));
+      if (req.method === 'PUT') {
+        const change = await read(req);
+        if (change.ssid === 'Disconnect') {res.statusCode=502; return res.end(JSON.stringify({errorKey:'API_NETWORK_OUTCOME_UNKNOWN'}));}
+        networks.set(cameraId, change.ssid);
+        return res.end(JSON.stringify({outcome:change.ssid==='Masked firmware'?'unverified':'confirmed',ssidVerified:true}));
+      }
+    }
     if (req.url.endsWith('/users') && req.method === 'GET') return res.end(JSON.stringify({writable:true,manageAccounts,requiresUid:true,users:accountsFor(cameraId)}));
     if (req.url.endsWith('/users') && req.method === 'POST') {
       const data = await read(req), users = accountsFor(cameraId);

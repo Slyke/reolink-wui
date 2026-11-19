@@ -111,9 +111,9 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
 }
 .event-row:focus-visible { outline-offset: -2px; }
 .event-empty { padding: .45rem .5rem; }
-.event-metadata { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .85rem; margin: 0; }
-.event-metadata dt { color: var(--color-text-muted); }
-.event-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.event-metadata, .network-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .85rem; margin: 0; }
+.event-metadata dt, .network-facts dt { color: var(--color-text-muted); }
+.event-metadata dd, .network-facts dd { margin: 0; overflow-wrap: anywhere; }
 .event-metadata time { white-space: normal; }
 .event-dialog h4 { font-size: .84rem; margin-bottom: .3rem; }
 .event-dialog textarea { width: 100%; resize: vertical; }

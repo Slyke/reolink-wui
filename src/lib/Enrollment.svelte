@@ -155,7 +155,7 @@
     <details class="panel" ontoggle={event => { if (!event.currentTarget.open) closeWifi(); else if (!code) code = uidSuffix(uid); }}>
       <summary>{t('wifi')}</summary>
       <form class="stack" autocomplete="off" onsubmit={event => { event.preventDefault(); void generateWifi(); }}>
-        <small>{t('wifi-verified')}</small>
+        <small>{t('wifi-verified')} {t('wifi-ethernet')}</small>
         <p class="notice">{t('wifi-copy')}</p>
         <label>{t('wifi-ssid')}<input bind:value={ssid} autocomplete="off" maxlength="32" required /></label>
         <label>{t('wifi-password')}<input type="password" bind:value={password} autocomplete="off" maxlength="64" /></label>

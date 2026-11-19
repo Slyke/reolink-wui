@@ -220,6 +220,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     viaProxy: proxy && grant.has('media.live'),
     media,
     alerts: { read: grant.has('alerts.read'), write: bridge.canCommand() && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
+    network: { read:grant.has('settings.network.read'), write:grant.has('settings.network.write'), available:bridge.hasNetwork(remote) },
     cameraUsers: grant.has('device.rotate') && bridge.hasUsers(remote),
     rotate: grant.has('device.rotate') && bridge.has('enrollment'),
     freshSettings: bridge.has('v1'),

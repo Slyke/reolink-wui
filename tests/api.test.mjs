@@ -862,6 +862,26 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.equal(update.json().outcome,'confirmed');
   }
   assert.equal((await incoming({path:root+'/users',headers:restricted})).statusCode,403);
+  const networkPath=root+'/network';
+  assert.equal((await incoming({path:networkPath,headers:restricted})).statusCode,403);
+  const networkRead=await incoming({path:networkPath,headers:privileged});
+  assert.equal(networkRead.json().wifi.ssid,'Fixture LAN',networkRead.body);
+  assert.ok(!networkRead.body.includes('should-never-leave-the-bridge'));
+  const wifi={operationId:uuid(),ssid:'New Wi-Fi & Lab',password:'fixture-only-wpa',open:false,confirmation:true};
+  const setWifi=(payload,headers=privileged)=>incoming({path:networkPath,headers,method:'PUT',payload});
+  assert.equal((await setWifi(wifi,restricted)).statusCode,403);
+  assert.equal((await setWifi({...wifi,ssid:'é'.repeat(17)})).statusCode,400);
+  assert.equal((await setWifi({...wifi,password:''})).statusCode,400);
+  const stored=await setWifi(wifi);
+  assert.equal(stored.json().outcome,'confirmed',stored.body);
+  assert.ok(!stored.body.includes(wifi.password));
+  assert.equal((await incoming({path:networkPath,headers:privileged})).json().wifi.ssid,wifi.ssid);
+  assert.equal((await setWifi(wifi)).json().outcome,'confirmed');
+  assert.equal((await setWifi({...wifi,password:'new-test-password'})).statusCode,409);
+  assert.equal((await setWifi({...wifi,operationId:uuid(),ssid:'Disconnect'})).json().outcome,'unknown');
+  const masked=(await setWifi({...wifi,operationId:uuid(),ssid:'Masked firmware'})).json();
+  assert.equal(masked.outcome,'unverified');
+  assert.deepEqual(masked.data,{ssidVerified:true});
   const listed = (await incoming({path:root+'/users',headers:privileged})).json();
   assert.equal(listed.users[0].username,'admin');
   assert.equal(listed.users[0].bridgeLogin,true);
