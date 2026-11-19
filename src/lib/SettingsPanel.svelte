@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { onMount } from 'svelte';
   import { aiClasses, settingsGroups, type AiClass, type SettingsGroup, type RecordingSchedule, type TimeLapse } from '../../shared/access.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
@@ -21,7 +22,7 @@
   type ReadSettings = { group: SettingsGroup; fresh: boolean; alert?: boolean };
 
   const capabilities = $derived(camera.capabilities.settings);
-  const shown = $derived(settingsGroups.filter(group => capabilities[group]?.read || capabilities[group]?.write));
+  const shown = $derived(settingsGroups.filter(group => capabilities[group]?.read || capabilities[group]?.write || capabilities[group]?.unavailable));
   const bounds = $derived(capabilities.spotlight?.range as { min: number; max: number } | undefined);
   const classes = $derived((capabilities.ai?.classes ?? {}) as Partial<Record<AiClass, { sensitivity?: boolean; delaySeconds?: boolean }>>);
   let preferredClass = $state<AiClass>('person');
@@ -135,15 +136,16 @@
 </script>
 
 {#if shown.length || camera.capabilities.imageOrientation || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
-  <section class="panel stack">
-    <h2 class="panel-title">{t('settings')}</h2>
+  <SettingsDisclosure title={t('settings')} open>
     {#if message}<p class:error={failed} role="status">{message}</p>{/if}
     <div class="grid">
       {#each shown as group (group)}
         {@const caps = capabilities[group]}
         <article class="panel stack">
           <h3>{t(group)}</h3>
-          {#if group === 'spotlight'}
+          {#if caps?.unavailable}
+            <p class="muted">{t('camera-setting-' + caps.unavailable)}</p>
+          {:else if group === 'spotlight'}
             {#if lights?.enabled !== undefined}<p class="muted">{t(lights.enabled ? 'on' : 'off')}</p>{/if}
             {#if caps?.write && caps.manual}
               <label>{t('seconds')}<input type="number" min="1" max="180" bind:value={lightDuration} /></label>
@@ -315,5 +317,5 @@
         </article>
       {/if}
     </div>
-  </section>
+  </SettingsDisclosure>
 {/if}

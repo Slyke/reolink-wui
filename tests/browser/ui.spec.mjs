@@ -32,8 +32,8 @@ for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
     test.setTimeout(65000);
     page.setDefaultTimeout(6000);
-    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],recordings:true,recordingCount:3,metadataPages:true,apiEvents:true });
-    const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false,enrollmentTargets:[]});
+    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],fixedCameras:['beta'],recordings:true,recordingCount:3,metadataPages:true,apiEvents:true });
+    const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false,recordingSettings:false,enrollmentTargets:[]});
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
     const apiPort = await reserve();
@@ -233,11 +233,34 @@ for (const mode of ['browser','proxy']) {
       await expect(largeView).toBeHidden();
       await expect(expandView).toBeFocused();
 
+      const ptzName = 'Pan, tilt and zoom';
+      const fixedCard = page.getByRole('article',{name:'Second camera'});
+      await fixedCard.getByRole('button',{name:'Enlarge live view'}).click();
+      const fixedView = page.getByRole('dialog',{name:'Live view · Second camera'});
+      await expect(fixedView).toBeVisible();
+      await expect(fixedView.getByRole('region',{name:ptzName})).toHaveCount(0);
+      await fixedView.getByRole('button',{name:'Close'}).click();
+
       const dashboardPlayback = liveResponse();
       await card.getByRole('button',{name:'Start live stream'}).click();
       await dashboardPlayback;
       const video = largeView.getByRole('img',{name:'Live camera video'});
       await expect.poll(() => video.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
+      const modalPtz = largeView.getByRole('region',{name:ptzName});
+      await modalPtz.getByRole('button',{name:'Read current position'}).click();
+      await expect(modalPtz).toContainText('12 / 5 / 8');
+      const pan = modalPtz.getByRole('button',{name:'Pan left'});
+      const ptzRequest = op => page.waitForRequest(req => req.url().endsWith('/ptz') && req.postDataJSON()?.action.op === op);
+      await pan.hover();
+      const moving = ptzRequest('move');
+      await page.mouse.down();
+      const movement = (await moving).postDataJSON();
+      expect(movement.action.direction).toBe('left');
+      await expect.poll(() => bridge.requests.at(-1)?.action?.op).toBe('move');
+      const stopping = ptzRequest('stop');
+      await page.mouse.up();
+      expect((await stopping).postDataJSON().interrupts).toBe(movement.operationId);
+      await expect.poll(() => bridge.requests.at(-1)?.action?.op).toBe('stop');
       const quality = largeView.getByRole('combobox',{name:'Stream quality'});
       await expect(quality).toHaveValue('main');
       const switchPlayback = liveResponse();
@@ -296,10 +319,23 @@ for (const mode of ['browser','proxy']) {
       await expect.poll(() => live.evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
       await expect(largeView.getByText('Bridge camera relay',{exact:true})).toHaveCount(0);
       await expect(largeView.getByRole('button',{name:'Refresh live view'})).toHaveCount(0);
+      await modalPtz.getByRole('button',{name:'Load presets'}).click();
+      await expect(modalPtz.getByRole('option',{name:'Default'})).toBeAttached();
+      await modalPtz.getByRole('spinbutton',{name:'Absolute zoom',exact:true}).fill('7');
+      await modalPtz.getByRole('button',{name:'Set zoom'}).click();
+      await expect.poll(() => bridge.requests.at(-1)?.action).toEqual({op:'set_zoom',position:7});
       await largeView.getByRole('button',{name:'Stop live stream'}).click();
       await expect(largeView.getByRole('img',{name:/camera preview$/})).toBeVisible();
       await expect(largeView.getByRole('link',{name:'Configure playback'})).toHaveCount(0);
-      await largeView.getByRole('button',{name:'Close'}).click();
+      await modalPtz.getByRole('button',{name:'Pan right'}).hover();
+      const heldMove = ptzRequest('move');
+      await page.mouse.down();
+      const heldId = (await heldMove).postDataJSON().operationId;
+      const interrupted = ptzRequest('stop');
+      await page.keyboard.press('Escape');
+      expect((await interrupted).postDataJSON().interrupts).toBe(heldId);
+      await page.mouse.up();
+      await expect(largeView).toBeHidden();
       await expect(liveView.getByText('Bridge camera relay',{exact:true})).toHaveCount(0);
       const expandIcon=liveView.getByRole('button',{name:'Enlarge live view'});
       const inlineTitle=liveView.getByRole('heading',{name:'Live view',exact:true});
@@ -478,6 +514,19 @@ for (const mode of ['browser','proxy']) {
       await page.goto(publicOrigin+'/settings/cameras?camera='+remoteCamera);
       await expect(page.getByRole('heading',{name:'Image orientation',exact:true})).toBeVisible();
       await expect(page.getByText('The connected bridge does not expose image orientation. Update reolink-bridge and refresh camera settings.')).toBeVisible();
+      for (const name of ['SD recording schedule','Time lapse']) {
+        const panel = page.locator('article').filter({has:page.getByRole('heading',{name,exact:true})});
+        await expect(panel).toContainText('Update reolink-bridge, then select Refresh settings');
+        await expect(panel.getByRole('button')).toHaveCount(0);
+      }
+      const rotation = page.locator('summary').filter({hasText:'Credential rotation'});
+      await expect(rotation).toBeVisible();
+      const rotate = page.getByRole('button',{name:'Rotate credential',exact:true});
+      await expect(rotate).toBeHidden();
+      await rotation.press('Enter');
+      await expect(rotate).toBeVisible();
+      await rotation.press('Space');
+      await expect(rotate).toBeHidden();
 
       await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
       const settingsRefresh = page.getByRole('button',{name:/^Refresh/});
@@ -486,6 +535,13 @@ for (const mode of ['browser','proxy']) {
       const sensitivity = page.getByRole('spinbutton',{name:'Sensitivity',exact:true});
       await expect(brightness).toHaveValue('5');
       await expect(sensitivity).toHaveValue('40');
+      const settingsSummary = page.locator('summary').filter({has: page.getByRole('heading',{name:'Settings',exact:true})});
+      await brightness.fill('21');
+      await settingsSummary.click();
+      await expect(brightness).toBeHidden();
+      await settingsSummary.press('Enter');
+      await expect(brightness).toHaveValue('21');
+      await brightness.fill('5');
       bridge.setReportedLevels({brightness:17,sensitivity:22});
       await settingsRefresh.click();
       await expect(page.getByText('Camera settings refreshed.')).toBeVisible();

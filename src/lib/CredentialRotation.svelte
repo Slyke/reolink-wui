@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
 
   let { base, csrf, online }: { base: string; csrf: string; online: boolean } = $props();
@@ -26,8 +27,7 @@
   };
 </script>
 
-<section class="panel stack" aria-labelledby="rotation-title">
-  <h2 id="rotation-title" class="panel-title">{t('rotation')}</h2>
+<SettingsDisclosure title={t('rotation')}>
   <p class="muted">{t('rotation-help')}</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
@@ -38,4 +38,4 @@
       onclick={() => rotate({ action: 'rotate' })}>{t('rotate')}</button>
     <button disabled={busy} onclick={() => rotate({ action: 'reconcile' })}>{t('reconcile')}</button>
   </div>
-</section>
+</SettingsDisclosure>

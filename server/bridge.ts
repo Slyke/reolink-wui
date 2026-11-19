@@ -7,6 +7,7 @@ import type { ConnectionState, Transport, Upstream, UpstreamConnection } from '.
 import { at, dispatcher, jsonResponse } from './net.js';
 import { ApiChannel, BrokerChannel, SocketChannel, record, type ChannelChanges, type Envelope } from './bridge-channels.js';
 import { Failure, recordError } from './errors.js';
+import { settingsGroups, type SettingsGroup } from '../shared/access.js';
 import { correlationPattern, segment } from '../shared/urls.js';
 
 import { eventData, type CameraEvent } from './cameras.js';
@@ -62,7 +63,7 @@ export class Bridge {
   private apiChannel?: ApiChannel;
   private priority: EventSource[] = [];
   private readonly http?: Link;
-  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, previewNotifications: false };
+  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, previewNotifications: false, settings: undefined as SettingsGroup[] | undefined };
   private scanning?: Promise<boolean>;
   private inventoryFailed = false;
   private readonly mediaStreams = new Map<string, string[]>();
@@ -72,7 +73,6 @@ export class Bridge {
   private recordingMetadataCameras = new Set<string>();
   private recordingPreviewCameras = new Set<string>();
   private userCameras = new Set<string>();
-  private imageSettings = false;
   private storageCameras = new Set<string>();
   private httpState?: boolean;
   private interruption?: BridgeInterruption;
@@ -392,7 +392,7 @@ export class Bridge {
 
   hasUsers(camera: string) { return this.has('v1') && this.userCameras.has(camera); }
 
-  hasImageSettings() { return this.imageSettings; }
+  supportsSetting(group: SettingsGroup) { return this.bridgeVersion.settings?.includes(group); }
 
   hasStorage(camera: string) { return this.has("v1") && this.storageCameras.has(camera); }
 
@@ -551,7 +551,8 @@ export class Bridge {
   private updateContract(contract: Envelope) {
     const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.userCameras]]);
     const ok = contract.version === 1;
-    this.imageSettings = ok && Array.isArray(contract.settings) && contract.settings.includes('image');
+    const reportedSettings = contract.settings;
+    this.bridgeVersion.settings = ok ? settingsGroups.filter(group => Array.isArray(reportedSettings) && reportedSettings.includes(group)) : undefined;
     this.bridgeVersion.v1 = ok;
     this.bridgeVersion.previewNotifications = ok && contract.previewNotifications === true;
     this.bridgeVersion.inventory = ok && contract.inventory === true;

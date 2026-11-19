@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
   import { api, errorText, fetchPreview, operationId, outcomeText, t, UiError, url, type Outcome } from './api.js';
+  import CameraPtz from './CameraPtz.svelte';
   import { dismissOnBackdrop } from './dialog.js';
   import type { Camera } from './models.js';
 
@@ -12,6 +13,7 @@
   const base = $derived('/api/v1/cameras/' + camera.id);
   const enabled = $derived(camera.capabilities.preview);
   const canStream = $derived(camera.capabilities.media.length > 0);
+  const showPtz = $derived(camera.capabilities.ptz?.supported && (camera.capabilities.ptz.read || camera.capabilities.ptz.write));
   let panel: HTMLDivElement;
   let dialog: HTMLDialogElement;
   let expanded = $state(false);
@@ -303,35 +305,40 @@
           <form method="dialog"><button>{t('close')}</button></form>
         </div>
       </div>
-      {#if playback}
-        {@const path = playback}
-        <div class="viewport">
-          <img src={url(path)} alt={t('live-alt')}
-            onload={() => { if (playback === path) playing = true; }}
-            onerror={() => failLive({ path })} />
+      <div class="live-dialog-body" class:with-ptz={showPtz}>
+        <div class="stack">
+          {#if playback}
+            {@const path = playback}
+            <div class="viewport">
+              <img src={url(path)} alt={t('live-alt')}
+                onload={() => { if (playback === path) playing = true; }}
+                onerror={() => failLive({ path })} />
+            </div>
+          {:else}
+            {@render preview()}
+          {/if}
+          <div class="row">
+            {#if canStream}
+              <select class="stream-quality" aria-label={t('live-quality')} bind:value={stream} disabled={liveBusy}
+                  onchange={() => { if (playback) void startLive(); }}>
+                  {#if camera.capabilities.media.includes('main')}
+                    <option value="main">{t(camera.capabilities.viaProxy ? 'live-proxy-quality' : 'primary')}</option>
+                  {/if}
+                  {#if camera.capabilities.media.includes('sub')}<option value="sub">{t('secondary')}</option>{/if}
+              </select>
+            {/if}
+            {#if playback || liveBusy}
+              <button type="button" onclick={() => { void stopLive(); }}>{t('live-stop')}</button>
+            {:else}
+              <button class="primary" type="button" disabled={!canStream} onclick={startLive}>{t('live-start')}</button>
+            {/if}
+          </div>
+          {#if liveBusy || (playback && !playing)}<p role="status" class="muted">{t('live-starting')}</p>{/if}
+          {#if liveMessage}<p role="status" class="notice">{liveMessage}</p>{/if}
+          {@render guidance()}
         </div>
-      {:else}
-        {@render preview()}
-      {/if}
-      <div class="row">
-        {#if canStream}
-          <select class="stream-quality" aria-label={t('live-quality')} bind:value={stream} disabled={liveBusy}
-              onchange={() => { if (playback) void startLive(); }}>
-              {#if camera.capabilities.media.includes('main')}
-                <option value="main">{t(camera.capabilities.viaProxy ? 'live-proxy-quality' : 'primary')}</option>
-              {/if}
-              {#if camera.capabilities.media.includes('sub')}<option value="sub">{t('secondary')}</option>{/if}
-          </select>
-        {/if}
-        {#if playback || liveBusy}
-          <button type="button" onclick={() => { void stopLive(); }}>{t('live-stop')}</button>
-        {:else}
-          <button class="primary" type="button" disabled={!canStream} onclick={startLive}>{t('live-start')}</button>
-        {/if}
+        {#if showPtz}<CameraPtz {camera} {csrf} />{/if}
       </div>
-      {#if liveBusy || (playback && !playing)}<p role="status" class="muted">{t('live-starting')}</p>{/if}
-      {#if liveMessage}<p role="status" class="notice">{liveMessage}</p>{/if}
-      {@render guidance()}
     </div>
   {/if}
 </dialog>

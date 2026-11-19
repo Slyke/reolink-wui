@@ -164,10 +164,10 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
   const motion = record(ctrls.motion_detection);
   const discovery = displayText(raw.discovery);
   const settings: Partial<Record<SettingsGroup, Envelope>> = {};
-  const group = (key: SettingsGroup, fields: Envelope) => {
+  const group = (key: SettingsGroup, fields: Envelope, unavailable?: string) => {
     if (grant.has('settings.' + key + '.read' as Permission) || grant.has('settings.' + key + '.write' as Permission)
       || (key === 'motion' && (grant.has('alerts.read') || grant.has('alerts.write')))) {
-      settings[key] = {
+      settings[key] = unavailable ? { read: false, write: false, unavailable } : {
         ...fields, read: grant.has('settings.' + key + '.read' as Permission),
         write: bridge.canCommand() && grant.has('settings.' + key + '.write' as Permission)
       };
@@ -184,6 +184,12 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
   }
   const lapse = record(ctrls.time_lapse);
   if (lapse.configure === true) group('time_lapse', { configure: true, overwrite: lapse.overwrite === true });
+  for (const name of ['recording_schedule', 'time_lapse'] as const) {
+    if (!settings[name]) {
+      const reason = bridge.supportsSetting(name) === false ? 'bridge-update-required' : caps ? 'not-reported' : 'pending';
+      group(name, {}, reason);
+    }
+  }
   const orientation = record(ctrls.image);
   if (Object.keys(orientation).length) group('image', { hflip: bool(orientation.hflip), vflip: bool(orientation.vflip), rotation: bool(orientation.rotation) });
   group('leds', { statusLed: bool(led.status_led), irLed: bool(led.ir_led) });
@@ -194,7 +200,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
   })) });
   const imageGrant = grant.has('settings.image.read') || grant.has('settings.image.write');
   const imageOrientation = imageGrant ? (Object.keys(orientation).length ? 'available'
-    : bridge.hasImageSettings() ? 'unsupported' : 'bridge-update-required') : undefined;
+    : bridge.supportsSetting('image') ? 'unsupported' : 'bridge-update-required') : undefined;
   const media = grant.has('media.live') ? (proxy ? ['main'] : bridge.streams(remote)) : [];
   const bridgePreview = grant.has('media.live') && bridge.hasPreview(remote);
   return {

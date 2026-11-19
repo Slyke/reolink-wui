@@ -121,7 +121,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, enrollmentTargets } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, fixedCameras = [], enrollmentTargets } = {}) => {
   const previewRequests = [], recordingRequests = [];
   let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
@@ -145,12 +145,19 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   const correlations = [];
   const requests = [];
   const callbacks = [];
-  const cameraCapabilities = imageSettings ? caps : {
-    ...caps, baichuan:{...caps.baichuan,controls:{...caps.baichuan.controls,image:undefined}}
-  };
+  const controls = { ...caps.baichuan.controls };
+  if (!imageSettings) delete controls.image;
+  if (!recordingSettings) {
+    delete controls.recording_schedule;
+    delete controls.time_lapse;
+  }
+  const cameraCapabilities = camera => ({
+    baichuan: { controls },
+    ptz: fixedCameras.includes(camera) ? { discovery: 'unsupported', supported: false } : caps.ptz
+  });
   const snapshots = () => inventory.flatMap(camera_id => [
     { camera_id, topic: 'info', payload: { baichuan: { name: namePrefix + (({ alpha:'Loading dock', beta:'Second camera' })[camera_id] ?? camera_id), model: 'Fixture model', vendor: { secret: token } } } },
-    { camera_id, topic: 'capabilities', payload: cameraCapabilities },
+    { camera_id, topic: 'capabilities', payload: cameraCapabilities(camera_id) },
     { camera_id, topic: 'availability', payload: { online: true, updated_at: new Date().toISOString() } },
     { camera_id, topic: 'state/settings', payload: {
       leds: { status_led: led, ir_mode: 'auto' }, motion_detection: { enabled: motion, sensitivity },
@@ -260,7 +267,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     }
     if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets}));
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      version:1, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
       previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
