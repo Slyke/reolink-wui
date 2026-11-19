@@ -541,10 +541,14 @@ for (const eventHistory of historyBackends) test('camera rename preserves histor
   await eventually(() => bridge.feedReady && bridge.state('alpha').has('info'));
   fixture.event('alpha','before');
   await eventually(async () => (await history()).includes('before'));
+  await fixture.reportInventory(['alpha','beta'],{alpha:'SERIAL-ONE'},{alpha:{identitySource:'serial',previousId:'alpha'}});
+  await sync();
+  assert.equal((await runtime.sql.query("SELECT id FROM cameras WHERE remote_id='SERIAL-ONE'"))[0].id,camera.id);
+  assert.deepEqual(await history(),['before']);
   await fixture.reportInventory(['beta']);
   await sync();
   assert.equal((await incoming({path:'/cameras/'+camera.id+'/events',headers})).statusCode,404);
-  await fixture.reportInventory(['garage','alpha'],{garage:'alpha',alpha:'replacement'});
+  await fixture.reportInventory(['garage','alpha'],{garage:'SERIAL-ONE',alpha:'REPLACEMENT'},{garage:{identitySource:'serial',previousId:'garage'},alpha:{identitySource:'serial',previousId:'alpha'}});
   await sync();
   await eventually(() => bridge.state('garage').has('info') && bridge.feedReady);
   await assert.rejects(bridge.command({camera:'alpha',stableId:'alpha',id:uuid(),command:{setting:'status_led',enabled:false},correlation:uuid()}),
@@ -558,7 +562,7 @@ for (const eventHistory of historyBackends) test('camera rename preserves histor
   fixture.event('garage','after');
   await eventually(async () => (await history()).includes('after'));
   assert.deepEqual(await history(),['before','after']);
-  const [replacement] = await runtime.sql.query("SELECT * FROM cameras WHERE bridge_id='lab' AND remote_id='replacement'");
+  const [replacement] = await runtime.sql.query("SELECT * FROM cameras WHERE bridge_id='lab' AND remote_id='REPLACEMENT'");
   assert.notEqual(replacement.id,camera.id);
   assert.equal((await incoming({path:'/cameras/'+replacement.id+'/events',headers})).statusCode,403);
 });
@@ -742,6 +746,11 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   const recording=search.json().recordings[0];
   const path=root+'/recordings/'+recording.id+'/video';
   const previewPath=root+'/recordings/'+recording.id+'/preview';
+  await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','recordings.view']),viewer,camera.id);
+  assert.equal((await incoming({path:path+'?download=1',headers:restricted})).statusCode,403);
+  const download = await incoming({path:path+'?download=1&name=clip-sub',headers:privileged});
+  assert.equal(download.headers['content-disposition'],'attachment; filename="clip-sub.mp4"');
+  await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','media.live']),viewer,camera.id);
   assert.equal((await incoming({path:previewPath,headers:restricted})).statusCode,403);
   const preview=await incoming({path:previewPath,headers:privileged});
   assert.equal(preview.statusCode,200,preview.body);
@@ -750,6 +759,9 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal((await incoming({path:previewPath+'?offsetMs=-1',headers:privileged})).statusCode,400);
   assert.equal((await incoming({path:previewPath+'?offsetMs=86400001',headers:privileged})).statusCode,400);
   assert.equal((await incoming({path:previewPath+'?offsetMs=1000',headers:privileged})).statusCode,200);
+  const recoveredPreview=await incoming({path:previewPath+'?offsetMs=42000',headers:privileged});
+  assert.equal(recoveredPreview.statusCode,200);
+  assert.equal(recoveredPreview.headers['x-preview-offset-ms'],'34000');
   const metadataPath=root+'/recordings/'+recording.id+'/metadata';
   assert.equal((await incoming({path:metadataPath,headers:restricted})).statusCode,403);
   const metadata=await incoming({path:metadataPath,headers:privileged});

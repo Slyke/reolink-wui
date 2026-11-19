@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { FastifyRequest } from 'fastify';
 import type { z } from 'zod';
@@ -6,10 +7,10 @@ import { Bridge } from './bridge.js';
 import { mergeBridgeCredentials } from './bridge-configuration.js';
 import { availableEventSources, bridgeSchema, eventSourcesSchema, type BridgeConfig, type Config } from './config.js';
 import type { EventSource } from '../shared/events.js';
-import { camerasFor, storeCamera, type Account, type CameraRef, type Sql } from './db.js';
+import { camerasFor, type Account, type CameraRef, type Sql } from './db.js';
 import { Auth } from './auth.js';
 import { Operations } from './operations.js';
-import { Failure } from './errors.js';
+import { Failure, recordError } from './errors.js';
 import { available, capabilities, information } from './cameras.js';
 import type { Permission } from '../shared/access.js';
 import { defaultInventoryIntervalSeconds, type InventoryState } from '../shared/upstreams.js';
@@ -31,6 +32,7 @@ export class Runtime {
   readonly auth: Auth;
   readonly ops: Operations;
   readonly history: EventHistory;
+  private readonly historyKeys = new Map<string,string>();
   private readonly eventObservers = new Map<string, () => void>();
   private readonly bridgeChanges = new EventEmitter().setMaxListeners(0);
   private checking?: Promise<boolean>;
@@ -97,7 +99,14 @@ export class Runtime {
       if (update.kind === 'preview') return;
       if (update.kind !== 'event') return;
       const stable = bridge.stableId(update.camera);
-      if (stable && bridge.remoteId(stable) === update.camera) this.history.add({ camera: id + '/' + stable, entry: update.entry });
+      if (!stable || bridge.remoteId(stable) !== update.camera) return;
+      const key = id + '/' + stable;
+      const add = () => {
+        const storage = this.historyKeys.get(key);
+        if (storage) this.history.add({ camera: id + '/' + storage, entry: update.entry });
+      };
+      if (this.historyKeys.has(key)) add();
+      else void this.sync().then(add).catch(() => recordError({key:'INTERNAL', caller:'runtime::inventory'}));
     }));
   }
 
@@ -168,11 +177,36 @@ export class Runtime {
 
   async sync() {
     const existing = await this.sql.query<CameraRef>('SELECT * FROM cameras');
-    const known = new Set(existing.map(camera => camera.bridge_id + '/' + camera.remote_id));
+    const known = new Map(existing.map(camera => [camera.bridge_id + '/' + camera.remote_id,camera]));
     for (const bridge of this.bridges.values()) {
+      const owner = bridge.config.id;
       for (const publicId of bridge.ids()) {
-        const id = bridge.stableId(publicId);
-        if (id && !known.has(bridge.config.id + '/' + id)) await storeCamera({ sql: this.sql, bridge: bridge.config.id, remote: id });
+        const remote = bridge.stableId(publicId);
+        if (!remote || bridge.remoteId(remote) !== publicId) continue;
+        const key = owner + '/' + remote;
+        const hardware = bridge.hardware(publicId);
+        let row = known.get(key);
+        if (!row || (hardware && !row.hardware_source)) {
+          row = await this.sql.transaction(async query => {
+            const [current] = await query<CameraRef>('SELECT * FROM cameras WHERE bridge_id=$1 AND remote_id=$2',owner,remote);
+            if (current && (!hardware || current.hardware_source)) return current;
+            if (hardware) {
+              // Adopt the pre-upgrade row once, retaining its UUID and original history bucket.
+              const [bound] = await query<CameraRef>(
+                'UPDATE cameras SET history_key=COALESCE(history_key,remote_id),remote_id=$1,hardware_source=$2'
+                + ' WHERE bridge_id=$3 AND remote_id=$4 AND hardware_source IS NULL RETURNING *',
+                remote,hardware.source,owner,current ? remote : hardware.previous);
+              if (bound) return bound;
+            }
+            const id = randomUUID();
+            const [reserved] = hardware ? [] : await query('SELECT id FROM cameras WHERE bridge_id=$1 AND history_key=$2',owner,remote);
+            const [created] = await query<CameraRef>(
+              'INSERT INTO cameras(id,bridge_id,remote_id,preview_interval_ms,hardware_source,history_key) VALUES($1,$2,$3,2000,$4,$5) RETURNING *',
+              id,owner,remote,hardware?.source ?? null, hardware || reserved ? id : remote);
+            return created;
+          });
+        }
+        this.historyKeys.set(key,row.history_key ?? row.remote_id);
       }
     }
   }

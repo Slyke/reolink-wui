@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from 'svelte';
   import { api, t, url } from './api.js';
+  import { frameDetails, frameIndex, recordingFrameTimes, recordingJson } from './recording-frames.js';
   import { dismissOnBackdrop } from './dialog.js';
   import { recordingDuration, recordingKinds } from './recordings.js';
   import { recordingStages, type RecordingMetadata } from '../../shared/recordings.js';
   import { recordingTime, recordingVariant, type RecordingGroup } from '../../shared/recording-groups.js';
 
-  let { metadataAvailable, camera, name, recording, recordings, startPosition = 0, onselect, onclose, onrenew }: {
-    metadataAvailable: boolean; camera: string; name: string; recording: RecordingGroup; recordings: RecordingGroup[]; startPosition?: number;
+  let { canExport, metadataAvailable, camera, name, recording, recordings, startPosition = 0, onselect, onclose, onrenew }: {
+    canExport: boolean; metadataAvailable: boolean; camera: string; name: string; recording: RecordingGroup; recordings: RecordingGroup[]; startPosition?: number;
     onselect: (recording: RecordingGroup) => void; onclose: () => void; onrenew: () => Promise<void>;
   } = $props();
   const id = $props.id();
@@ -18,18 +19,102 @@
   let stream = $state<'main' | 'sub'>('sub');
   const variant = $derived(recordingVariant({ group: recording, stream }));
   let metadata = $state<RecordingMetadata>();
-  let showAllMetadata = $state(false);
+  let jsonOpen = $state(false), compactVideo = $state(false), copyStatus = $state('');
+  let jsonScope = $state<'frame'|'all'>('frame'), jsonPage = $state(0);
+  const pageSize = 64;
+  let times = $state.raw<number[]>([]), indexFailed = $state(false), indexRetry = $state(0);
   let metadataFailed = $state(false), currentTime = $state(0), videoWidth = $state(16), videoHeight = $state(9);
-  const frame = $derived(metadata?.frames.findLast(frame => frame.offsetMs <= currentTime * 1000));
-  const boxes = $derived(frame && currentTime * 1000 - frame.offsetMs <= 1000 ? frame.objects.filter(object => object.bounding_box?.coordinate_space === 'normalized_top_left') : []);
+  const indexOfFrame = $derived(frameIndex(times,currentTime));
+  const frame = $derived(frameDetails(indexOfFrame,times[indexOfFrame] ?? currentTime,metadata));
+  const boxes = $derived(frame.objects?.filter(object => object.bounding_box?.coordinate_space === 'normalized_top_left') ?? []);
+  const steps = [{ value: 10, unit: 'seconds' }, { value: 5, unit: 'seconds' }, { value: 1, unit: 'seconds' },
+    { value: 10, unit: 'frames' }, { value: 1, unit: 'frames' }] as const;
+  let step = $state(0);
+  const stepBy = (direction: -1 | 1) => {
+    if (!video || !ready || !Number.isFinite(video.duration)) return;
+    const { unit, value } = steps[step];
+    let position = video.currentTime + direction * value;
+    if (unit === 'frames') {
+      if (!times.length) return;
+      video.pause();
+      const index = Math.max(0, Math.min(times.length - 1, frameIndex(times,video.currentTime) + direction * value));
+      const end = Math.min(times[index+1] ?? video.duration, video.duration);
+      position = times[index] + Math.max(0, end - times[index]) / 2;
+    }
+    video.currentTime = Math.max(0,Math.min(video.duration,position));
+    currentTime = video.currentTime;
+    copyStatus = '';
+  };
+  const followPicture = (element: HTMLVideoElement) => {
+    if (!element.requestVideoFrameCallback) return;
+    let handle = 0;
+    const presented: VideoFrameRequestCallback = (_, info) => {
+      if (!element.seeking) currentTime = info.mediaTime;
+      handle = element.requestVideoFrameCallback(presented);
+    };
+    handle = element.requestVideoFrameCallback(presented);
+    return { destroy() { element.cancelVideoFrameCallback(handle); } };
+  };
+  $effect(() => {
+    const path = source, loaded = ready;
+    void indexRetry;
+    times = []; indexFailed = false;
+    if (!path || !loaded) return;
+    const controller = new AbortController();
+    void recordingFrameTimes(path,controller.signal).then(value => {
+      if (!controller.signal.aborted) times = value;
+    }).catch(() => { if (!controller.signal.aborted) indexFailed = true; });
+    return () => controller.abort();
+  });
+  const fileBase = $derived((name.replace(/[^a-zA-Z0-9_-]+/g,'-') || 'camera') + '-' + variant.start.replaceAll(':','-') + '-' + variant.stream);
+  const currentJson = $derived(JSON.stringify(frame,null,2));
+  const exportAll = () => recordingJson(times,metadata,{ camera,recordingId:variant.id,stream:variant.stream,start:variant.start,end:variant.end });
+  const allReady = $derived(times.length > 0 && (!metadataAvailable || !!metadata || metadataFailed));
+  const jsonPageCount = $derived(Math.max(1,Math.ceil(times.length / pageSize)));
+  const pageJson = $derived.by(() => {
+    if (!jsonOpen || jsonScope !== 'all') return '';
+    const start = jsonPage * pageSize;
+    return JSON.stringify(times.slice(start,start + pageSize).map((time,i) => frameDetails(start+i,time,metadata)),null,2);
+  });
+  const copyJson = async () => {
+    try {
+      if (jsonScope === 'all' && typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+        const plain = new Blob([exportAll()],{type:'text/plain'});
+        await navigator.clipboard.write([new ClipboardItem({'text/plain':plain})]);
+      } else {
+        await navigator.clipboard.writeText(jsonScope === 'all' ? await exportAll().text() : currentJson);
+      }
+      copyStatus = 'recording-json-copied';
+    } catch { copyStatus = 'event-json-copy-blocked'; }
+  };
+  const downloadJson = (all: boolean) => {
+    const blob = all ? exportAll() : new Blob([currentJson],{ type:'application/json' });
+    const href = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = fileBase + (all ? '-all-frames' : '-frame-' + (frame.frame ?? 'current')) + '.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(href),1000);
+  };
   $effect(() => {
     const clip = variant.id, currentCamera = camera, loaded = ready, available = metadataAvailable;
     untrack(() => { metadata = undefined; metadataFailed = false; });
     if (!loaded || !available) return;
     const controller = new AbortController();
-    void api<RecordingMetadata>({ path: '/api/v1/cameras/' + currentCamera + '/recordings/' + clip + '/metadata', signal: controller.signal })
-      .then(value => { if (!controller.signal.aborted) metadata = value; })
-      .catch(() => { if (!controller.signal.aborted) metadataFailed = true; });
+    const path = '/api/v1/cameras/' + currentCamera + '/recordings/' + clip + '/metadata';
+    const load = async () => {
+      let page = 0;
+      const frames: RecordingMetadata['frames'] = [];
+      while (!controller.signal.aborted) {
+        const result = await api<RecordingMetadata>({path: path + (page ? '?page=' + page : ''),signal:controller.signal});
+        if (controller.signal.aborted) return;
+        frames.push(...result.frames);
+        if (result.nextPage == null) { metadata = { ...result,frames }; return; }
+        if (result.nextPage !== page+1 || !result.frames.length) throw new Error('Invalid recording metadata page');
+        page = result.nextPage;
+      }
+    };
+    void load().catch(() => { if (!controller.signal.aborted) metadataFailed = true; });
     return () => controller.abort();
   });
   let seekTime = 0;
@@ -66,7 +151,7 @@
     untrack(() => {
       if (previousGroup !== group) seekTime = recordingTime(recording.start) + position;
       previousGroup = group;
-      source = ''; preparing = true; ready = false; failure = undefined; video?.pause();
+      source = ''; currentTime = 0; jsonPage = 0; copyStatus = ''; preparing = true; ready = false; failure = undefined; video?.pause();
     });
     const prepare = async () => {
       const path = target(currentCamera,clip.id);
@@ -133,13 +218,13 @@
 </script>
 
 <dialog class="media-dialog recording-dialog" bind:this={dialog} use:dismissOnBackdrop onclose={onclose} aria-labelledby="recording-playback-title">
-  <div class="stack">
+  <div class="recording-toolbar">
     <div class="row between panel-title">
       <h2 id="recording-playback-title" bind:this={title} tabindex="-1">{t('recording-playback')} · {name}</h2>
       <button onclick={() => dialog.close()}>{t('close')}</button>
     </div>
-    <div class="row between recording-controls">
-      <div class="row">
+    <div class="recording-controls">
+      <div class="row recording-switch">
         <button disabled={!previous} onclick={() => select(previous)}>{t('recording-previous')}</button>
         <button disabled={!next} onclick={() => select(next)}>{t('recording-next')}</button>
         <select class="recording-quality" aria-label={t('live-quality')} value={variant.stream} onchange={changeStream}>
@@ -155,14 +240,47 @@
         </select>
       </div>
     </div>
+    <div class="recording-tools">
+      <div class="recording-step" role="group" aria-label={t('recording-navigate')}>
+        <button aria-label={t('recording-step-back')} title={t('recording-step-back')} disabled={!ready || (steps[step].unit === 'frames' && !times.length)} onclick={() => stepBy(-1)}>◀</button>
+        <select aria-label={t('recording-step-size')} bind:value={step}>
+          {#each steps as option,i}<option value={i}>{t('recording-step-' + option.unit + '-' + option.value)}</option>{/each}
+        </select>
+        <button aria-label={t('recording-step-forward')} title={t('recording-step-forward')} disabled={!ready || (steps[step].unit === 'frames' && !times.length)} onclick={() => stepBy(1)}>▶</button>
+      </div>
+      {#if source && !failure}
+        {#if canExport}<a class="button" href={source + '?download=1&name=' + encodeURIComponent(fileBase.slice(0,160))} download={fileBase + '.mp4'}>{t('recording-download-mp4')}</a>{/if}
+        <button type="button" aria-pressed={compactVideo} onclick={() => { compactVideo = !compactVideo; }}>{t(compactVideo ? 'recording-enlarge-video' : 'recording-shrink-video')}</button>
+        <button type="button" aria-controls={id+'-json'} aria-expanded={jsonOpen} onclick={() => { jsonOpen = !jsonOpen; copyStatus = ''; }}>{t(jsonOpen ? 'recording-hide-json' : 'recording-metadata-json')}</button>
+      {/if}
+    </div>
+    {#if jsonOpen && source && !failure}
+      <div class="recording-tools">
+        <select class="recording-json-scope" aria-label={t('recording-json-scope')} bind:value={jsonScope} onchange={() => { copyStatus = ''; }}>
+          <option value="frame">{t('recording-current-frame')}</option><option value="all">{t('recording-all-frames')}</option>
+        </select>
+        {#if canExport}<button onclick={copyJson} disabled={jsonScope === 'all' && !allReady}>{t('event-copy-json')}</button>
+        <button disabled={jsonScope === 'all' && !allReady} onclick={() => downloadJson(jsonScope === 'all')}>{t('recording-download-json')}</button>{/if}
+        {#if jsonScope === 'frame' && canExport}
+          <button disabled={!allReady} onclick={() => downloadJson(true)}>{t('recording-export-frames')}</button>
+        {:else if jsonScope === 'all' && jsonPageCount > 1}
+          <button aria-label={t('recording-page-previous')} disabled={jsonPage === 0} onclick={() => jsonPage--}>‹</button>
+          <span>{jsonPage + 1} / {jsonPageCount}</span>
+          <button aria-label={t('recording-page-next')} disabled={jsonPage+1 >= jsonPageCount} onclick={() => jsonPage++}>›</button>
+        {/if}
+        {#if copyStatus}<span role="status">{t(copyStatus)}</span>{/if}
+      </div>
+    {/if}
+  </div>
+  <div class="recording-body" class:compact={compactVideo} class:inspecting={jsonOpen}>
     {#if preparing}
       <div class="recording-stage" role="status">{t('recording-preparing')}</div>
     {:else if source && !failure}
       <!-- svelte-ignore a11y_media_has_caption (Camera recordings do not contain caption tracks.) -->
       <div class="recording-picture">
-      <video class="recording-video" controls autoplay playsinline preload="auto" bind:this={video} src={source}
+      <video class="recording-video" controls autoplay playsinline preload="auto" bind:this={video} use:followPicture src={source}
         onloadedmetadata={loadedMetadata} onloadeddata={() => { ready = true; }}
-        ontimeupdate={() => { currentTime = video?.currentTime ?? 0; }} onended={ended} onerror={() => { failure = {}; }}></video>
+        onseeked={() => { currentTime = video?.currentTime ?? 0; }} ontimeupdate={() => { if (video && !video.requestVideoFrameCallback) currentTime = video.currentTime; }} onended={ended} onerror={() => { failure = {}; }}></video>
         {#if boxes.length}
           <svg class="recording-boxes" viewBox={'0 0 ' + videoWidth + ' ' + videoHeight} aria-label={t('event-bounds')}>
             {#each boxes as object}
@@ -174,16 +292,15 @@
           </svg>
         {/if}
       </div>
-      {#if metadataFailed}<p class="notice">{t('recording-metadata-failed')}</p>
-      {:else if metadata && !metadata.frames.some(frame => frame.objects.length)}<p class="muted">{t('recording-metadata-empty')}</p>
-      {:else if !metadataAvailable}<p class="muted">{t('recording-metadata-unsupported')}</p>{/if}
-      {#if metadata}
-        <details><summary>{t('recording-metadata-json')}</summary>
-          <p class="muted">{t('recording-metadata-samples', { count: metadata.frames.length })}</p>
-          {#if metadata.truncated}<p class="notice">{t('recording-metadata-truncated')}</p>{/if}
-          <pre>{JSON.stringify(frame ?? { objects: [] },null,2)}</pre>
-          <details ontoggle={event => { showAllMetadata = event.currentTarget.open; }}><summary>{t('recording-metadata-all')}</summary>{#if showAllMetadata}<pre>{JSON.stringify(metadata,null,2)}</pre>{/if}</details>
-        </details>
+      {#if indexFailed}<p class="notice">{t('recording-index-failed')} <button onclick={() => { indexRetry++; }}>{t('retry')}</button></p>{/if}
+      {#if jsonOpen}
+        <section class="recording-json" id={id+'-json'} aria-label={t('recording-metadata-json')}>
+          {#if metadataFailed}<p class="notice">{t('recording-metadata-failed')}</p>
+          {:else if !metadataAvailable}<p class="muted">{t('recording-metadata-unsupported')}</p>
+          {:else if metadata?.truncated}<p class="notice">{t('recording-metadata-truncated')}</p>
+          {:else if metadata && !metadata.frames.some(sample => sample.objects.length)}<p class="muted">{t('recording-metadata-empty')}</p>{/if}
+          <pre>{jsonScope === 'all' ? pageJson : currentJson}</pre>
+        </section>
       {/if}
     {/if}
     {#if failure}

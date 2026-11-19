@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer as tcp } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -120,7 +120,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true } = {}) => {
   const previewRequests = [], recordingRequests = [];
   let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
@@ -129,7 +129,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   let brightness = 5;
   const orientation = {hflip:false,vflip:false,rotation:0};
   let inventory = ['alpha','beta'];
-  let identities = {};
+  let identities = {}, physical = {};
   let inventoryReads = 0;
   let playbackAvailable = true;
   let playbackFailure;
@@ -202,11 +202,15 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   };
   let recordedMp4;
   if (recordings) {
-    const encoder = spawn('ffmpeg',['-v','error','-f','lavfi','-i','color=blue:size=160x120:rate=8','-t','2','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-movflags','frag_keyframe+empty_moov','-f','mp4','pipe:1'],{stdio:['ignore','pipe','ignore']});
-    const parts = [];
-    for await (const part of encoder.stdout) parts.push(part);
-    await once(encoder,'exit');
-    recordedMp4 = Buffer.concat(parts);
+    const folder = await mkdtemp(join(tmpdir(),'wui-test-mp4-'));
+    const file = join(folder,'recording.mp4');
+    try {
+      const encoder = spawn('ffmpeg',['-v','error','-f','lavfi','-i','color=blue:size=160x120:rate=16',
+        '-t','2','-vf',"select='lt(t,1)+gte(t,1)*not(mod(n,2))'",'-vsync','vfr',
+        '-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-movflags','+faststart',file],{stdio:'ignore'});
+      assert.equal((await once(encoder,'exit'))[0],0);
+      recordedMp4 = await readFile(file);
+    } finally { await rm(folder,{recursive:true,force:true}); }
   }
   const apiSubscribers = new Map();
   let apiOpen = true;
@@ -239,7 +243,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
-      return res.end(JSON.stringify({ cameras:inventory.map(id => ({ id, stableId:identities[id], active:true })) }));
+      return res.end(JSON.stringify({ cameras:inventory.map(id => ({ id, stableId:identities[id], ...physical[id], active:true })) }));
     }
     if (/^\/api\/callbacks(?:\/[^/]+)?$/.test(req.url)) {
       const id = req.url.split('/')[3];
@@ -266,14 +270,21 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     }
     if (recordings && /\/recordings\/[a-f0-9]{64}\/preview(?:\?.*)?$/.test(req.url)) {
       recordingRequests.push({url:req.url,kind:'preview',at:performance.now()});
+      if (req.url.endsWith('offsetMs=42000')) {
+        res.writeHead(502,{'content-type':'application/json'});
+        return res.end(JSON.stringify({errorKey:'API_MEDIA_START_FAILED'}));
+      }
       res.writeHead(200,{'content-type':'image/jpeg'});
       return res.end(jpeg);
     }
-    if (recordings && /\/recordings\/[a-f0-9]{64}\/metadata$/.test(req.url)) {
-      return res.end(JSON.stringify({source:'recording',truncated:false,frames:[
+    if (recordings && /\/recordings\/[a-f0-9]{64}\/metadata(?:\?.*)?$/.test(req.url)) {
+      const frames = [
         {offsetMs:0,objects:[{class:'person',confidence:.92,bounding_box:{left:.1,top:.2,right:.4,bottom:.8,coordinate_space:'normalized_top_left',reference_frame:'fixture'}}]},
         {offsetMs:1000,objects:[]}
-      ]}));
+      ];
+      const page = Number(new URL(req.url,'http://localhost').searchParams.get('page') ?? 0);
+      return res.end(JSON.stringify({source:'recording',truncated:metadataPages && page===0,
+        nextPage:metadataPages && page===0 ? 1 : null,frames:metadataPages ? [frames[page]] : frames}));
     }
     if (recordings && /\/recordings\/[a-f0-9]{64}\/video$/.test(req.url)) {
       recordingRequests.push({url:req.url,kind:'video',range:req.headers.range,at:performance.now()});
@@ -370,7 +381,8 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
     },
     counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads, callbacks:callbacks.length }),
     lose: () => { lose = true; },
-    reportInventory: async (cameras, stableIds = {}) => {
+    reportInventory: async (cameras, stableIds = {}, hardware = {}) => {
+      physical = hardware;
       inventory = cameras;
       identities = stableIds;
       await publishSnapshots();

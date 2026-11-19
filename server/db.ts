@@ -82,7 +82,9 @@ const migrations = [
   `ALTER TABLE bridges ADD COLUMN event_sources TEXT;`,
   `ALTER TABLE bridges ADD COLUMN connection_config TEXT;
   ALTER TABLE event_history_settings ADD COLUMN storage TEXT NOT NULL DEFAULT '{"mode":"defaults"}';`,
-  `UPDATE cameras SET preview_interval_ms=2000;`
+  `UPDATE cameras SET preview_interval_ms=2000;`,
+  `ALTER TABLE cameras ADD COLUMN hardware_source TEXT;
+  ALTER TABLE cameras ADD COLUMN history_key TEXT;`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {
@@ -185,7 +187,7 @@ export const openDb = async ({ config }: { config: Config['database'] }) => {
 };
 
 export type CameraRef = {
-  id: string; bridge_id: string; remote_id: string; rtsp_proxy: string | null;
+  id: string; bridge_id: string; remote_id: string; hardware_source: string | null; history_key: string | null; rtsp_proxy: string | null;
   preview_interval_ms: number; preview_refresh_on_alert: PreviewAlert;
 };
 export type CameraAccess = CameraRef & { permissions: Permission[] };
@@ -207,14 +209,6 @@ export const camerasFor = async ({ sql, account, id }: { sql: Sql; account: Acco
     account.id, ...(id ? [id] : [])
   );
   return rows.map(row => ({ ...row, permissions: JSON.parse(row.permissions) }));
-};
-
-export const storeCamera = async ({ sql, bridge, remote }: { sql: Sql; bridge: string; remote: string }) => {
-  const [camera] = await sql.query<CameraRef>(
-    'INSERT INTO cameras(id,bridge_id,remote_id,preview_interval_ms) VALUES ($1,$2,$3,2000) ON CONFLICT (bridge_id,remote_id) DO UPDATE SET remote_id=excluded.remote_id RETURNING *',
-    randomUUID(), bridge, remote
-  );
-  return camera;
 };
 
 export const audit = ({ query, actor, resource, action, outcome, operation, correlation, bridgeCorrelation }: {

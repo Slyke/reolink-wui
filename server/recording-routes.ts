@@ -69,9 +69,10 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
   api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/metadata', async request => {
     const id = input({ schema: recordingId, value: request.params.recording });
     const { bridge, row } = await camera(request, request.params.id);
+    const page = input({schema:object({page:z.coerce.number().int().nonnegative().max(2_000_000).default(0)}),value:request.query}).page;
     if (!bridge.hasRecordingMetadata(row.routeId)) throw new Failure('UNSUPPORTED',422);
     const response = await bridge.api({
-      stableId: row.remote_id, path: '/cameras/' + row.routeId + '/recordings/' + id + '/metadata',
+      stableId: row.remote_id, path: '/cameras/' + row.routeId + '/recordings/' + id + '/metadata', search: page ? '?page=' + page : undefined,
       correlation: request.id, signal: AbortSignal.timeout(48_000)
     });
     if (!response.ok) throw await mediaFailure({ response });
@@ -85,22 +86,36 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     const query = input({ schema: object({ offsetMs: z.coerce.number().int().min(0).max(86_400_000).default(0) }), value: request.query });
     const { bridge, row } = await camera(request, request.params.id);
     if (!bridge.hasRecordingPreview(row.routeId)) throw new Failure('UNSUPPORTED',422);
-    const response = await bridge.api({
+    const controller = new AbortController();
+    reply.raw.once('close', () => controller.abort());
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(40_000)]);
+    const read = (offset: number) => bridge.api({
       stableId: row.remote_id, path: '/cameras/' + row.routeId + '/recordings/' + id + '/preview',
-      search: '?' + new URLSearchParams({ offsetMs: String(query.offsetMs) }),
-      correlation: request.id, signal: AbortSignal.timeout(40_000)
+      search: '?' + new URLSearchParams({ offsetMs: String(offset) }), correlation: request.id, signal
     });
+    let offset = query.offsetMs;
+    let response = await read(offset);
+    // Older bridges return a generic 502 when the recording ends before another keyframe.
+    if (offset > 0 && response.status === 502 && !response.headers.has('x-preview-offset-ms')) {
+      await response.body?.cancel();
+      offset = Math.max(0, offset - 8000);
+      response = await read(offset);
+    }
     if (!response.ok) throw await mediaFailure({ response });
+    const selected = response.headers.get('x-preview-offset-ms');
+    if (selected && /^\d+$/.test(selected) && Number(selected) <= offset) offset = Number(selected);
     const bytes = await responseBytes({ response, limit: 512 * 1024 });
     if (response.headers.get('content-type') !== 'image/jpeg' || bytes[0] !== 0xff || bytes[1] !== 0xd8
       || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) throw new Failure('MEDIA_UNAVAILABLE',502);
     // Recheck the grant after the bridge read, before releasing the image.
     if ((await camera(request, row.id)).row.routeId !== row.routeId) throw new Failure('CAMERA_UNKNOWN',404);
-    return reply.type('image/jpeg').send(bytes);
+    return reply.header('x-preview-offset-ms',String(offset)).type('image/jpeg').send(bytes);
   });
   api.get<{ Params: { id: string; recording: string } }>(root + '/recordings/:recording/video', async (request, reply) => {
     const id = input({ schema: recordingId, value: request.params.recording });
-    const { bridge, row, session } = await camera(request, request.params.id);
+    const { download,name } = input({ schema: object({ download: z.literal('1').optional(), name:z.string().regex(/^[A-Za-z0-9_-]{1,160}$/).optional() }), value: request.query });
+    const { bridge, row, session, grant } = await camera(request, request.params.id);
+    if (download && !grant.has('recordings.export')) throw new Failure('ACCESS_DENIED',403);
     if (!bridge.hasRecordings(row.routeId)) throw new Failure('UNSUPPORTED', 422);
     const range = request.headers.range;
     if (range && !/^bytes=(\d+-\d*|-\d+)$/.test(range)) throw new Failure('BAD_INPUT', 400);
@@ -114,7 +129,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     };
     const validate = async () => {
       const active = await camera(request, row.id);
-      if (active.session.token !== session.token || active.row.routeId !== row.routeId || !active.bridge.hasRecordings(active.row.routeId)) return stop();
+      if (active.session.token !== session.token || active.row.routeId !== row.routeId || (download && !active.grant.has('recordings.export')) || !active.bridge.hasRecordings(active.row.routeId)) return stop();
       if (!controller.signal.aborted) checking = setTimeout(() => void validate().catch(stop), 700);
     };
     checking = setTimeout(() => void validate().catch(stop), 700);
@@ -141,14 +156,15 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
         throw new Failure('MEDIA_UNAVAILABLE', 502);
       }
       const active = await camera(request, row.id);
-      if (active.session.token !== session.token || active.row.routeId !== row.routeId) stop();
+      if (active.session.token !== session.token || active.row.routeId !== row.routeId || (download && !active.grant.has('recordings.export'))) stop();
       if (controller.signal.aborted) throw new Failure('ACCESS_DENIED', 403);
       await audit({
         query: runtime.sql.query, actor: session.account.id, resource: row.id,
-        action: 'recording-playback', outcome: 'confirmed', correlation: request.id
+        action: download ? 'recording-export' : 'recording-playback', outcome: 'confirmed', correlation: request.id
       });
       stream = Readable.fromWeb(response.body as never, { signal: controller.signal, highWaterMark: 64 * 1024 });
       stream.once('close', stop);
+      if (download) reply.header('content-disposition', 'attachment; filename="' + (name ?? ('recording-' + id)) + '.mp4"');
       return reply.code(response.status).type('video/mp4').header('accept-ranges', 'bytes')
         .header('content-length', length).header('x-accel-buffering', 'no').send(stream);
     } catch (error) {

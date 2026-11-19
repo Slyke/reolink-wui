@@ -54,7 +54,7 @@
     {/each}
     {#if hover}
       <div class="timeline-hover stack" style:left={hover.percent + '%'} role="tooltip">
-        {#if frame && frame.item.id === hover.item.id}
+        {#if frame && frame.item.id === hover.item.id && frame.offsetMs === hover.offsetMs}
           <RecordingPreview {camera} recording={frame.item.id} {available} offsetMs={Math.max(0,frame.offsetMs - (recordingTime(frame.item.variants[0].start) - recordingTime(frame.item.start)))} eager />
         {:else}<div class="recording-preview">{t('loading')}</div>{/if}
         <time>{new Date(recordingTime(hover.item.start) + hover.offsetMs).toISOString().slice(11,19)}</time>

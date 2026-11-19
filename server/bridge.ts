@@ -53,6 +53,7 @@ export class Bridge {
   private lastFeed?: EventSource;
   private readonly recent = new Map<string, { source: EventSource; expires: number }>();
   private inventoryIds?: Map<string, string>;
+  private hardwareInventory = new Map<string, { source: string; previous: string }>();
   private inventoryIdentitySupport = false;
   private readonly allowed = new Set<string>();
   private readonly broker?: BrokerChannel;
@@ -209,7 +210,7 @@ export class Bridge {
       event: (payload) => {
         const { camera_id: camera, type: topic } = payload;
         if (this.activeFeed !== source || typeof camera !== 'string' || !this.includes(camera) || typeof topic !== 'string' || !this.matchesIdentity(camera, payload)) return;
-        if ((payload.stable_id ?? camera) !== this.stableId(camera)) return;
+        if ((payload.stable_id ?? camera) !== this.wireId(camera)) return;
         const now = Date.now();
         if (typeof payload.received_at === 'string') {
           const fingerprint = createHash('sha256').update(JSON.stringify(payload)).digest('base64url');
@@ -245,6 +246,7 @@ export class Bridge {
   }
 
   private matchesIdentity(camera: string, payload: Envelope) {
+    if (payload.stable_id === null) return false;
     const identity = payload.stable_id ?? camera;
     if (typeof identity !== 'string' || !segment.test(identity)) return false;
     if (this.inventoryIds?.has(camera) && this.inventoryIds.get(camera) !== identity) {
@@ -254,13 +256,36 @@ export class Bridge {
     return true;
   }
 
-  stableId(camera: string): string | undefined {
+  private wireId(camera: string): string | undefined {
     if (!this.includes(camera)) return;
     if (this.inventoryIds) return this.inventoryIds.get(camera);
     const first = this.state(camera).values().next().value;
+    if (first?.stable_id === null) return;
     if (typeof first?.stable_id === 'string') return first.stable_id;
     if (this.http && (this.httpState === undefined || this.bridgeVersion.inventory)) return;
     return camera;
+  }
+
+  hardware(camera: string): { value: string; source: string; previous: string } | undefined {
+    const wire = this.wireId(camera);
+    if (!wire) return;
+    const entry = this.hardwareInventory.get(camera);
+    const snapshot = this.state(camera).get('info');
+    const source = entry?.source ?? snapshot?.identity_source;
+    if (source === 'serial' || source === 'mac') return { value: wire, source, previous: entry?.previous ?? camera };
+    // Pin existing installations before their bridge is upgraded. Its old wire guard still expects the alias.
+    for (const section of ['onvif','baichuan']) {
+      const raw = record(snapshot?.[section]).serial_number;
+      if (typeof raw !== 'string') continue;
+      const value = raw.trim().toUpperCase();
+      if (segment.test(value) && !/^(UNKNOWN|NONE|NULL|DEFAULT|NA|12345678|01234567|00000001|0+|F+)$/.test(value)) {
+        return { value, source: 'serial', previous: wire };
+      }
+    }
+  }
+
+  stableId(camera: string) {
+    return this.hardware(camera)?.value ?? this.wireId(camera);
   }
 
   // SQLite/PostgreSQL and event history keep the stable ID. Only bridge traffic uses the current route.
@@ -282,15 +307,16 @@ export class Bridge {
     camera: string; stableId: string; id: string; command: Envelope; correlation: string; capture?: boolean
   }) {
     if (this.stableId(camera) !== stableId) throw new Failure('CAMERA_UNKNOWN', 404);
+    const wire = this.wireId(camera);
     const route = capture ? this.config.capture : this.config.commands;
     if (route === 'mqtt' && this.broker) {
       const supportsIdentity = this.inventoryIdentitySupport || typeof this.state(camera).values().next().value?.stable_id === 'string';
-      return this.broker.request({ camera, id, command, snapshot: capture, stableId: supportsIdentity ? stableId : undefined });
+      return this.broker.request({ camera, id, command, snapshot: capture, stableId: supportsIdentity ? wire : undefined });
     }
     if (route !== 'http' || !this.http) throw new Failure('UNSUPPORTED', 422);
     try {
       const response = await request({
-        link: this.http, path: '/api/cameras/' + camera + '/command/exec', stableId, method: 'POST', data: { id, command },
+        link: this.http, path: '/api/cameras/' + camera + '/command/exec', stableId: wire, method: 'POST', data: { id, command },
         correlation, signal: AbortSignal.timeout(23_000)
       });
       const reply = record(await jsonResponse({ response }));
@@ -385,7 +411,7 @@ export class Bridge {
     if (camera && (!stableId || this.stableId(camera) !== stableId)) throw new Failure('CAMERA_UNKNOWN',404);
     try {
       return await request({
-        link, path: '/api' + path, search, stableId, method,
+        link, path: '/api' + path, search, stableId: camera ? this.wireId(camera) : stableId, method,
         data, correlation, ifNoneMatch, range, signal: signal ?? AbortSignal.timeout(18_000)
       });
     } catch {
@@ -448,7 +474,14 @@ export class Bridge {
         typeof item.id === 'string' && this.inScope(item.id)
       )).slice(0, 128);
       const ids = new Map<string,string>();
+      const hardware = new Map<string,{ source: string; previous: string }>();
       for (const camera of cameras) {
+        if ('identitySource' in camera) {
+          if (camera.stableId === null) continue;
+          if (camera.identitySource !== 'serial' && camera.identitySource !== 'mac') throw new Failure('BRIDGE_UNAVAILABLE',502);
+          hardware.set(camera.id, { source: camera.identitySource,
+            previous: typeof camera.previousId === 'string' && segment.test(camera.previousId) ? camera.previousId : camera.id });
+        }
         const stable = camera.stableId ?? camera.id;
         if (typeof stable !== 'string' || !segment.test(stable) || ids.has(camera.id)) throw new Failure('BRIDGE_UNAVAILABLE',502);
         ids.set(camera.id,stable);
@@ -467,6 +500,7 @@ export class Bridge {
       }
       const previous = this.inventoryIds;
       this.inventoryFailed = false;
+      this.hardwareInventory = hardware;
       this.inventoryIds = ids;
       this.inventoryIdentitySupport = cameras.some(camera => typeof camera.stableId === 'string');
       const topicsChanged = this.broker?.setCameraIds(mqttIds);

@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { correlationPattern, segment } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
-import { storeCamera } from './db.js';
 import { Failure } from './errors.js';
 import { sendOutcome } from './camera-routes.js';
 import { jsonResponse } from './net.js';
@@ -45,8 +44,9 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     let cameraId: string | undefined;
     const stable = value.remote && bridge.stableId(value.remote);
     if (stable) {
-      const row = await storeCamera({ sql: runtime.sql, bridge: bridge.config.id, remote: stable });
-      cameraId = row.id;
+      await runtime.sync();
+      const [row] = await runtime.sql.query<{ id: string }>('SELECT id FROM cameras WHERE bridge_id=$1 AND remote_id=$2', bridge.config.id,stable);
+      cameraId = row?.id;
     }
     return { status: value.status, cameraId, bridgeCorrelationId: value.bridgeCorrelationId };
   };

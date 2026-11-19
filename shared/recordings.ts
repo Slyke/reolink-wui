@@ -33,6 +33,7 @@ export const recordingStages = ['camera-download', 'conversion', 'cache-limit', 
 
 export const recordingMetadataResponse = z.object({
   source: z.literal('recording'),
+  nextPage: z.number().int().positive().nullable().optional(),
   truncated: z.boolean(),
   frames: z.array(z.object({
     offsetMs: z.number().int().min(0).max(86_400_000),

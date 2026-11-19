@@ -300,7 +300,7 @@
     {#if listing?.truncated}<p class="notice">{t('recordings-truncated')}</p>{/if}
   </section>
   {#if recording && playbackAvailable}
-    <RecordingPlayer metadataAvailable={camera.capabilities.recordingMetadata} {startPosition} camera={selected} name={camera.name ?? t('camera-noun')} {recording} recordings={listing?.recordings ?? []}
+    <RecordingPlayer canExport={camera.capabilities.recordingExport} metadataAvailable={camera.capabilities.recordingMetadata} {startPosition} camera={selected} name={camera.name ?? t('camera-noun')} {recording} recordings={listing?.recordings ?? []}
       onselect={item => select(item)} onclose={() => { recording = undefined; }} onrenew={renew} />
   {/if}
 {/if}

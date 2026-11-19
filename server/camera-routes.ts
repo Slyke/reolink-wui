@@ -39,7 +39,7 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
 
   api.get<{ Params: { id: string } }>(cameras + '/:id/events', async request => {
     const { row } = await runtime.camera({ request, id: request.params.id, permission: 'events' });
-    return runtime.history.read({ camera: row.bridge_id + '/' + row.remote_id });
+    return runtime.history.read({ camera: row.bridge_id + '/' + (row.history_key ?? row.remote_id) });
   });
 
   api.post<{ Params: { id: string } }>(cameras + '/:id/ptz', async (request, reply) => {
