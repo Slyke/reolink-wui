@@ -5,8 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { crc32, deflateSync } from 'node:zlib';
-import { launch, fixtureBridge, fixtureBroker, eventually, uuid, publicOrigin, serviceToken } from './support.mjs';
+import { png, launch, fixtureBridge, fixtureBroker, eventually, uuid, publicOrigin, serviceToken } from './support.mjs';
 import { configSchema } from '../dist/server/config.js';
 import { RecordingPreviewCache } from '../dist/shared/recording-preview-cache.js';
 
@@ -423,20 +422,6 @@ test('invalid combined authentication and database declarations are rejected', (
   assert.equal(configSchema.safeParse({...base,httpApi:{mode:'browser',browserBasePath:'/../'}}).success,false);
   assert.equal(configSchema.safeParse({...base,httpApi:{mode:'proxy'}}).success,false);
 });
-
-const pngChunk = (name, data) => {
-  const chunk = Buffer.alloc(12+data.length);
-  chunk.writeUInt32BE(data.length);
-  chunk.write(name,4);
-  data.copy(chunk,8);
-  chunk.writeUInt32BE(crc32(chunk.subarray(4,-4)),chunk.length-4);
-  return chunk;
-};
-const png = () => {
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(1,0); header.writeUInt32BE(1,4); header[8]=8; header[9]=2;
-  return Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),pngChunk('IHDR',header),pngChunk('IDAT',deflateSync(Buffer.from([0,3,8,30]))),pngChunk('IEND',Buffer.alloc(0))]);
-};
 
 test('MQTT 5 capture uses exact topics and validates PNG; broker runs only on loopback', async t => {
   const { client, url: server, close } = await fixtureBroker();

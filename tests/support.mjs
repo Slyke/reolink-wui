@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
+import { crc32, deflateSync } from 'node:zlib';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer as tcp } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -78,6 +79,20 @@ const caps = {
   ptz: { discovery: 'detected', supported:true, pan:true, tilt:true, presets:true, duration_ms:{min:50,max:3000}, speed_range:{min:1,max:64}, zoom_range:{min:0,max:27} }
 };
 
+const pngChunk = (name, data) => {
+  const chunk = Buffer.alloc(12+data.length);
+  chunk.writeUInt32BE(data.length);
+  chunk.write(name,4);
+  data.copy(chunk,8);
+  chunk.writeUInt32BE(crc32(chunk.subarray(4,-4)),chunk.length-4);
+  return chunk;
+};
+export const png = () => {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(1,0); header.writeUInt32BE(1,4); header[8]=8; header[9]=2;
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),pngChunk('IHDR',header),pngChunk('IDAT',deflateSync(Buffer.from([0,3,8,30]))),pngChunk('IEND',Buffer.alloc(0))]);
+};
+
 const jpeg = Buffer.from('/9j/4AAQSkZJRgABAgAAAQABAAD//gARTGF2YzU4LjEzNC4xMDAA/9sAQwAIBAQEBAQFBQUFBQUGBgYGBgYGBgYGBgYGBwcHCAgIBwcHBgYHBwgICAgJCQkICAgICQkKCgoMDAsLDg4OEREU/8QATAABAQAAAAAAAAAAAAAAAAAAAAcBAQEAAAAAAAAAAAAAAAAAAAUHEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAEAAQAwEiAAIRAAMRAP/aAAwDAQACEQMRAD8AjgC/i3//2Q==', 'base64');
 const mediaFrame = Buffer.concat([
   Buffer.from('--reolink-frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + jpeg.length + '\r\n\r\n'),
@@ -121,7 +136,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, fixedCameras = [], enrollmentTargets } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], capture = false, websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, fixedCameras = [], enrollmentTargets } = {}) => {
   const previewRequests = [], recordingRequests = [];
   let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
@@ -219,6 +234,18 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   };
   const broker = await fixtureBroker();
   const baseTopic = 'fixture';
+  if (capture) {
+    const topic = baseTopic + '/alpha/command/exec';
+    await broker.client.subscribeAsync(topic);
+    broker.client.on('message', (received, payload) => {
+      if (received !== topic) return;
+      const { id, command } = JSON.parse(payload);
+      if (command.setting !== 'snapshot') return;
+      void broker.client.publishAsync(baseTopic + '/alpha/command/result', JSON.stringify({ id, ok:true, result:{
+        content_type:'image/png', encoding:'base64', width:1, height:1, data_base64:png().toString('base64')
+      } }));
+    });
+  }
   const publishSnapshots = () => Promise.all(snapshots().map(({ camera_id, topic, payload }) =>
     broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic, JSON.stringify(payload), { qos:1, retain:true })
   ));
@@ -401,7 +428,7 @@ export const fixtureBridge = async ({ previewCameras = [], websocket = false, re
   const root = 'http://127.0.0.1:' + server.address().port;
   return {
     config: {
-      id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http', events:'mqtt',
+      id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http', events:'mqtt', ...(capture && {capture:'mqtt'}),
       http:{url:root,token:token}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
     },
     correlations, requests, previewRequests, recordingRequests,

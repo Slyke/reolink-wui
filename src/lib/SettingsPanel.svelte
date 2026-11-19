@@ -138,10 +138,10 @@
 {#if shown.length || camera.capabilities.imageOrientation || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
   <SettingsDisclosure title={t('settings')} open>
     {#if message}<p class:error={failed} role="status">{message}</p>{/if}
-    <div class="grid">
+    <div class="grid camera-settings-grid">
       {#each shown as group (group)}
         {@const caps = capabilities[group]}
-        <article class="panel stack">
+        <article class="panel stack" class:schedule-panel={group === 'recording_schedule'}>
           <h3>{t(group)}</h3>
           {#if caps?.unavailable}
             <p class="muted">{t('camera-setting-' + caps.unavailable)}</p>
@@ -231,10 +231,8 @@
             {/if}
           {:else if group === 'recording_schedule'}
             {#if values.recording_schedule?.recording_schedule}
-              {#key values.recording_schedule.recording_schedule}
-                <ScheduleEditor value={values.recording_schedule.recording_schedule} writable={!!caps?.write} {disabled}
-                  save={fields => change({ group, fields })} />
-              {/key}
+              <ScheduleEditor value={values.recording_schedule.recording_schedule} writable={!!caps?.write} {disabled}
+                save={fields => change({ group, fields })} />
             {:else}<p class="muted">{t('settings-not-read')}</p>{/if}
           {:else if group === 'time_lapse'}
             {#if values.time_lapse?.time_lapse}

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { api, errorText, t, operationId, outcomeText, type Outcome } from './api.js';
   type User = { username: string; administrator: boolean; bridgeLogin: boolean };
   type Accounts = { users: User[]; writable: boolean; requiresUid: boolean };
@@ -7,7 +7,6 @@
   let accounts = $state<Accounts>(), selected = $state('');
   let password = $state(''), repeat = $state(''), uid = $state('');
   let busy = $state(false), failure = $state(''), message = $state('');
-  const id = $props.id();
   const target = $derived(accounts?.users.find(user => user.username === selected));
   const valid = $derived(!!target && /^[ -~]{8,31}$/.test(password) && password === repeat && (!accounts?.requiresUid || /^[a-zA-Z0-9]{8,40}$/.test(uid)));
   const clear = () => { password = ''; repeat = ''; uid = ''; selected = ''; };
@@ -30,23 +29,45 @@
     } catch (error) { failure = errorText(error); password = ''; repeat = ''; }
     finally { busy = false; }
   }
-  onMount(() => { void load(); });
+  function toggle(expanded: boolean) {
+    if (expanded && !accounts && !busy && !failure) void load();
+  }
 </script>
-<section class="panel stack" aria-labelledby={id}>
-  <div class="row between panel-title"><h2 id={id}>{t('camera-users')}</h2><button disabled={busy} onclick={load}>{t('camera-users-reload')}</button></div>
-  <p class="muted">{t('camera-users-help')}</p>
+<SettingsDisclosure title={t('camera-users')} ontoggle={toggle}>
+  <div class="row between">
+    <p class="muted">{t('camera-users-help')}</p>
+    <button disabled={busy} onclick={load}>{t('camera-users-reload')}</button>
+  </div>
   {#if failure}<p class="error" role="alert">{failure}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
+  {#if busy && !accounts}<p role="status">{t('loading')}</p>{/if}
   {#if accounts}
-    <ul class="events">{#each accounts.users as user (user.username)}
-      <li class="row"><strong>{user.username}</strong><span>{t(user.administrator ? 'camera-user-admin' : 'camera-user-member')}</span>
-        {#if user.bridgeLogin}<small>{t('camera-user-bridge')}</small>{/if}
-        {#if accounts.writable}
-          <button disabled={busy || !online} aria-label={t('camera-user-change') + ' · ' + user.username}
-            onclick={() => { clear(); selected = user.username; message = ''; }}>{t('camera-user-change')}</button>
-        {/if}
-      </li>
-    {/each}</ul>
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard users can scroll the table horizontally.) -->
+    <div class="table-scroll table-surface" role="region" aria-label={t('camera-users')} tabindex="0">
+      <table class="status-table camera-accounts-table" aria-label={t('camera-users')}>
+        <thead><tr>
+          <th scope="col">{t('username')}</th>
+          <th scope="col">{t('camera-user-role')}</th>
+          <th scope="col">{t('camera-user-bridge')}</th>
+          {#if accounts.writable}<th scope="col">{t('camera-user-actions')}</th>{/if}
+        </tr></thead>
+        <tbody>
+          {#each accounts.users as user (user.username)}
+            <tr>
+              <th scope="row">{user.username}</th>
+              <td>{t(user.administrator ? 'camera-user-admin' : 'camera-user-member')}</td>
+              <td>{t(user.bridgeLogin ? 'yes' : 'no')}</td>
+              {#if accounts.writable}
+                <td><button disabled={busy || !online} aria-label={t('camera-user-change') + ' · ' + user.username}
+                  onclick={() => { clear(); selected = user.username; message = ''; }}>{t('camera-user-change')}</button></td>
+              {/if}
+            </tr>
+          {:else}
+            <tr><td colspan={accounts.writable ? 4 : 3}>{t('camera-users-empty')}</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
     {#if !accounts.writable}<p class="muted">{t('camera-user-no-write')}</p>{/if}
     {#if target && accounts.writable}
       <form class="stack" onsubmit={event => { event.preventDefault(); void change(); }}>
@@ -66,4 +87,4 @@
       </form>
     {/if}
   {/if}
-</section>
+</SettingsDisclosure>

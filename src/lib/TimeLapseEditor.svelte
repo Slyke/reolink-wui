@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import type { TimeLapse } from '../../shared/access.js';
+  import InfoTip from './InfoTip.svelte';
   import { t } from './api.js';
   let { value, writable, disabled, save }: { value: TimeLapse; writable: boolean; disabled: boolean; save: (fields: Record<string, unknown>) => Promise<void> } = $props();
   let enabled = $state(untrack(() => value.enabled));
@@ -34,7 +35,12 @@
       <option value="main">{t('primary')}</option><option value="sub">{t('secondary')}</option>
     </select>
   </label>
-  {#if value.overwrite !== undefined}<label class="check"><input type="checkbox" bind:checked={overwrite} disabled={locked} />{t('lapse-overwrite')}</label>{/if}
+  {#if value.overwrite !== undefined}
+    <div class="field-heading">
+      <label class="check"><input type="checkbox" bind:checked={overwrite} disabled={locked} />{t('lapse-overwrite')}</label>
+      <InfoTip label={t('lapse-overwrite')} text={t('lapse-overwrite-help')} />
+    </div>
+  {/if}
   {#if !value.configured}<small class="muted">{t('lapse-new')}</small>{/if}
   {#if writable}<button disabled={disabled || !changed}>{t('save')}</button>{/if}
 </form>

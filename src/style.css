@@ -130,6 +130,10 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
   .event-row { grid-template-columns: minmax(0, 1fr); }
 }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: .85rem; }
+.camera-settings-grid { container: camera-settings / inline-size; }
+@container camera-settings (min-width: 35rem) {
+  .schedule-panel { grid-column: span 2; }
+}
 .camera-list button { display: grid; gap: .32rem; width: 100%; text-align: left; padding: .7rem; }
 .pill { display: inline-flex; width: max-content; align-items: center; gap: .45rem; border: 1px solid var(--color-border-strong); border-radius: 2rem; font-size: .73rem; padding: .16rem .55rem; }
 .pill::before { content: ''; width: .45rem; height: .45rem; border-radius: 100%; background: currentColor; }
@@ -195,6 +199,9 @@ fieldset { min-width: 0; border: 1px solid var(--color-border); border-radius: v
 .status-table thead { background: var(--color-panel-strong); }
 .status-table tbody tr:last-child :is(th, td) { border-bottom: 0; }
 .status-table tbody tr:hover { background: var(--color-start-fill); }
+.camera-accounts-table { min-width: 32rem; }
+.camera-accounts-table :is(th, td) { padding: .65rem .75rem; }
+.camera-accounts-table tr:focus-within { background: var(--color-start-fill); }
 .status-table td code { white-space: nowrap; }
 .status-via { font-size: .7em; font-weight: 400; }
 .bridge-label { display: grid; }

@@ -5,11 +5,16 @@
 
   let { value, writable, disabled, save }: { value: RecordingSchedule; writable: boolean; disabled: boolean; save: (fields: Record<string, unknown>) => Promise<void> } = $props();
   const kinds = $derived(recordingKinds.filter(kind => value.schedules[kind]));
-  let kind = $state<RecordingKind | undefined>(untrack(() => kinds[0]));
+  let preferredKind = $state<RecordingKind>();
+  const kind = $derived(kinds.find(item => item === preferredKind) ?? kinds[0]);
   let day = $state(1);
   let enabled = $state(untrack(() => value.enabled));
   let edits = $state<Record<number, boolean>>({});
   const table = $derived(kind ? value.schedules[kind] : undefined);
+  $effect(() => {
+    enabled = value.enabled;
+    edits = {};
+  });
   const entries = $derived(Object.entries(edits));
   const changed = $derived(entries.length > 0 || enabled !== value.enabled);
   const days = Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(undefined, { weekday: 'long', timeZone: 'UTC' }).format(Date.UTC(2023, 0, index + 1)));
@@ -30,21 +35,25 @@
 <form class="stack" onsubmit={event => { event.preventDefault(); submit(); }}>
   <label class="check"><input type="checkbox" bind:checked={enabled} disabled={!writable || disabled} />{t('schedule-enabled')}</label>
   {#if table}
-    <label>{t('schedule-kind')}
-      <select bind:value={kind} disabled={disabled || entries.length > 0}>
-        {#each kinds as name}<option value={name}>{t(name)}</option>{/each}
-      </select>
-    </label>
-    <label>{t('schedule-day')}
-      <select bind:value={day}>{#each days as name, index}<option value={index}>{name}</option>{/each}</select>
-    </label>
+    <div class="form-grid">
+      <label>{t('schedule-kind')}
+        <select value={kind} onchange={event => { preferredKind = event.currentTarget.value as RecordingKind; }} disabled={disabled || entries.length > 0}>
+          {#each kinds as name}<option value={name}>{t(name)}</option>{/each}
+        </select>
+      </label>
+      <label>{t('schedule-day')}
+        <select bind:value={day}>{#each days as name, index}<option value={index}>{name}</option>{/each}</select>
+      </label>
+    </div>
     <fieldset class="stack ai-settings">
-      <legend>{t('schedule-hours')}</legend>
-      <div class="schedule-hours">
+      <legend>{t('schedule-hours', { day: days[day] })}</legend>
+      <div class="swatch-toggle-grid">
         {#each hours as hour}
           {@const index = day * 24 + hour}
-          <button type="button" aria-pressed={selected(index)} disabled={!writable || disabled}
-            onclick={() => setHour(index, !selected(index))}>{String(hour).padStart(2, '0')}:00</button>
+          <button type="button" class="swatch-toggle" aria-pressed={selected(index)} disabled={!writable || disabled}
+            onclick={() => setHour(index, !selected(index))}>
+            <span class="swatch-label">{String(hour).padStart(2, '0')}:00</span>
+          </button>
         {/each}
       </div>
       {#if writable}
@@ -59,6 +68,52 @@
 </form>
 
 <style>
-  .schedule-hours { display: grid; grid-template-columns: repeat(auto-fit, minmax(3.8em, 1fr)); gap: .3rem; }
-  .schedule-hours button { min-width: 0; padding-inline: .2em; }
+  .swatch-toggle-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 6.5rem), 1fr)); gap: var(--space-3); }
+  .swatch-toggle {
+    position: relative;
+    display: grid;
+    place-items: end start;
+    min-height: 5rem;
+    padding: var(--space-3);
+    border-width: 1px 1px .24rem;
+    border-radius: var(--radius-md);
+    color: var(--color-text-muted);
+    background: var(--color-panel-strong);
+    box-shadow: var(--shadow-control-rest);
+  }
+  .swatch-label { font-size: .8rem; font-variant-numeric: tabular-nums; }
+  .swatch-toggle::before {
+    content: '';
+    position: absolute;
+    inset: .22rem .55rem auto;
+    height: 1px;
+    background: var(--color-control-top-glint);
+  }
+  .swatch-toggle::after {
+    content: '';
+    position: absolute;
+    inset: .7rem .7rem auto auto;
+    width: .62rem;
+    height: .62rem;
+    border: 1px solid var(--color-mid-border);
+    border-radius: 50%;
+    background: var(--color-mid);
+    box-shadow: 0 0 .75rem var(--color-mid-soft);
+    opacity: 0;
+  }
+  .swatch-toggle:not(:disabled):hover {
+    border-color: var(--color-start);
+    box-shadow: var(--shadow-control-hover), var(--shadow-hover);
+    transform: translateY(-.06rem);
+  }
+  .swatch-toggle[aria-pressed='true'], .swatch-toggle[aria-pressed='true']:not(:disabled):hover {
+    border-width: .24rem 1px 1px;
+    border-color: var(--color-mid-border);
+    color: var(--color-text);
+    background: color-mix(in srgb, var(--color-mid) 42%, var(--color-panel));
+    box-shadow: inset 0 .2rem 0 var(--color-control-bottom-shade), inset 0 0 0 1px var(--color-mid-border);
+    transform: translateY(.12rem);
+  }
+  .swatch-toggle[aria-pressed='true']::after { opacity: 1; }
+  .swatch-toggle:focus-visible { outline: 2px solid var(--color-warning); outline-offset: 2px; }
 </style>
