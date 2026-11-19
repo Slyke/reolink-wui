@@ -11,6 +11,14 @@
   let uid = $state(''), serial = $state('');
   let bridge = $state(''), target = $state(''), method = $state('initialize'), confirmed = $state(false);
   let targets = $state<string[]>([]), targetsLoaded = $state(false);
+  type CameraIdentity = { target: string; address: string; port: number; uid: string; serial?: string | null; model?: string | null };
+  let addressLookup = $state(false), namedTarget = $state(false);
+  let address = $state(''), port = $state<number | undefined>(undefined);
+  let identified = $state<CameraIdentity | null>(null), identifying = $state(false);
+  let lookupGeneration = 0;
+  const useAddress = $derived(addressLookup && !namedTarget);
+  const labelMatches = $derived(!!identified && (!uid || uid.toUpperCase() === identified.uid.toUpperCase())
+    && (!serial || serial.toUpperCase() === identified.serial?.toUpperCase()));
   let ssid = $state(''), password = $state(''), code = $state('');
   let wifiDialog: QrDialogHandle, identityDialog: QrDialogHandle;
   let video: HTMLVideoElement;
@@ -23,7 +31,7 @@
   let status = $state('');
   const verified = $derived(validIdentifiers({ uid, serial }));
   const uidSuffix = (value: string) => value && validIdentifiers({uid:value,serial:''}) ? value.slice(-4) : '';
-  const setUid = (value: string) => { uid = value; code = uidSuffix(value); };
+  const setUid = (value: string) => { uid = value; code = uidSuffix(value); confirmed = false; };
 
   const closeWifi = () => {
     clearTimeout(renew);
@@ -80,13 +88,32 @@
       else scanner = controls;
     } catch { stopScan(); failure = t('error-BAD_INPUT'); }
   };
+  const resetLookup = () => {
+    ++lookupGeneration;
+    identified = null; identifying = false; confirmed = false; failure = ''; message = '';
+  };
+  const identifyCamera = async () => {
+    resetLookup();
+    const generation = lookupGeneration;
+    const query = new URLSearchParams({ address: address.trim(), method });
+    if (port !== undefined) query.set('port', String(port));
+    identifying = true;
+    try {
+      const result = await api<CameraIdentity>({ path: '/api/v1/admin/bridges/' + bridge + '/enrollment-targets/identify?' + query });
+      if (generation === lookupGeneration) identified = result;
+    } catch (error) { if (generation === lookupGeneration) failure = errorText(error); }
+    finally { if (generation === lookupGeneration) identifying = false; }
+  };
   const loadTargets = async () => {
+    resetLookup();
+    addressLookup = false; namedTarget = false; address = ''; port = undefined;
     targets = []; target = ''; targetsLoaded = false; confirmed = false; failure = '';
     const generation = ++targetGeneration;
     if (!bridge) return;
     try {
-      const data = await api<{ targets: string[] }>({ path: '/api/v1/admin/bridges/' + bridge + '/enrollment-targets' });
+      const data = await api<{ targets: string[]; addressLookup?: boolean }>({ path: '/api/v1/admin/bridges/' + bridge + '/enrollment-targets' });
       if (generation === targetGeneration) {
+        addressLookup = data.addressLookup === true;
         targets = data.targets;
         target = targets.length === 1 ? targets[0] : '';
         targetsLoaded = true;
@@ -102,10 +129,13 @@
     const id = operationId();
     try {
       if (action === 'start') {
+        const camera = useAddress ? identified : null;
+        if (!confirmed || (useAddress && (!camera || !labelMatches))) return;
         selected = id;
         const value = await api<Outcome>({
           path: '/api/v1/enrollments', method: 'POST', csrf,
-          body: { operationId: id, bridge, target, uid: uid || undefined, serial: serial || undefined, method, confirmation: confirmed }
+          body: { operationId: id, bridge, target: camera?.target ?? target, address: camera?.address, port: camera?.port,
+            uid: camera?.uid ?? (uid || undefined), serial: camera?.serial ?? (serial || undefined), method, confirmation: confirmed }
         });
         status = value.data?.status ?? '';
         message = outcomeText(value);
@@ -139,51 +169,73 @@
   <p class="muted">{t('enrollment-copy')}</p>
   {#if failure}<p class="error" role="alert">{failure}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
-  <div class="grid">
-    <div class="stack">
-      <div class="form-grid">
-        <label>{t('uid')}<input value={uid} oninput={event => setUid(event.currentTarget.value)} maxlength="40" autocomplete="off" /></label>
-        <label>{t('serial')}<input bind:value={serial} maxlength="64" autocomplete="off" /></label>
-      </div>
-      <div class="row">
-        <button onclick={scan}>{t(scanOn ? 'stop-scan' : 'scan')}</button>
-        <button disabled={!verified} onclick={makeIdentity}>{t('enrollment-qr')}</button>
-      </div>
-      <div class="scan" hidden={!scanOn}><video muted playsinline bind:this={video} aria-label={t('scan')}></video></div>
-
+  <div class="stack">
+    <div class="form-grid">
+      <label>{t('uid')}<input value={uid} oninput={event => setUid(event.currentTarget.value)} maxlength="40" autocomplete="off" /></label>
+      <label>{t('serial')}<input bind:value={serial} oninput={() => confirmed = false} maxlength="64" autocomplete="off" /></label>
     </div>
-    <details class="panel" ontoggle={event => { if (!event.currentTarget.open) closeWifi(); else if (!code) code = uidSuffix(uid); }}>
-      <summary>{t('wifi')}</summary>
-      <form class="stack" autocomplete="off" onsubmit={event => { event.preventDefault(); void generateWifi(); }}>
-        <small>{t('wifi-verified')} {t('wifi-ethernet')}</small>
-        <p class="notice">{t('wifi-copy')}</p>
-        <label>{t('wifi-ssid')}<input bind:value={ssid} autocomplete="off" maxlength="32" required /></label>
-        <label>{t('wifi-password')}<input type="password" bind:value={password} autocomplete="off" maxlength="64" /></label>
-        <label>{t('wifi-code')}<input bind:value={code} autocomplete="off" minlength="4" maxlength="4" required /></label>
-        <div class="row">
-          <button class="primary">{t('wifi-generate')}</button>
-          <button type="button" onclick={wipeWifi}>{t('wifi-clear')}</button>
-        </div>
-      </form>
-    </details>
+    <div class="row">
+      <button onclick={scan}>{t(scanOn ? 'stop-scan' : 'scan')}</button>
+      <button disabled={!verified} onclick={makeIdentity}>{t('enrollment-qr')}</button>
+    </div>
+    <div class="scan" hidden={!scanOn}><video muted playsinline bind:this={video} aria-label={t('scan')}></video></div>
   </div>
+  <details class="panel" ontoggle={event => { if (!event.currentTarget.open) closeWifi(); else if (!code) code = uidSuffix(uid); }}>
+    <summary>{t('wifi')}</summary>
+    <form class="stack" autocomplete="off" onsubmit={event => { event.preventDefault(); void generateWifi(); }}>
+      <small>{t('wifi-verified')} {t('wifi-ethernet')}</small>
+      <p class="notice">{t('wifi-copy')}</p>
+      <label>{t('wifi-ssid')}<input bind:value={ssid} autocomplete="off" maxlength="32" required /></label>
+      <label>{t('wifi-password')}<input type="password" bind:value={password} autocomplete="off" maxlength="64" /></label>
+      <label>{t('wifi-code')}<input bind:value={code} autocomplete="off" minlength="4" maxlength="4" required /></label>
+      <div class="row">
+        <button class="primary">{t('wifi-generate')}</button>
+        <button type="button" onclick={wipeWifi}>{t('wifi-clear')}</button>
+      </div>
+    </form>
+  </details>
   {#if bridges.some(item => item.enrollment)}
     <div class="form-grid">
       <SearchSelect label={t('bridge')} bind:value={bridge} onchange={loadTargets}
         options={bridges.filter(item => item.enrollment).map(item => ({ value: item.id, label: item.label }))} />
-      <SearchSelect label={t('enrollment-target')} bind:value={target} disabled={!targets.length}
-        options={targets.map(item => ({ value: item, label: item }))} />
-      <label>{t('enrollment-method')}<select bind:value={method}>
+      {#if addressLookup && targets.length}
+        <label>{t('enrollment-source')}<select bind:value={namedTarget} onchange={resetLookup}>
+          <option value={false}>{t('enrollment-by-address')}</option>
+          <option value={true}>{t('enrollment-target')}</option>
+        </select></label>
+      {/if}
+      {#if !useAddress}
+        <SearchSelect label={t('enrollment-target')} bind:value={target} disabled={!targets.length} onchange={resetLookup}
+          options={targets.map(item => ({ value: item, label: item }))} />
+      {/if}
+      <label>{t('enrollment-method')}<select bind:value={method} onchange={resetLookup}>
         <option value="initialize">{t('enrollment-init')}</option>
         <option value="import">{t('enrollment-import')}</option>
       </select></label>
     </div>
-    {#if targetsLoaded && !targets.length}
-      <p class="notice" role="status">{t('enrollment-no-targets')}</p>
+    {#if useAddress}
+      <form class="stack" onsubmit={event => { event.preventDefault(); void identifyCamera(); }}>
+        <div class="form-grid">
+          <label>{t('enrollment-address')}<input bind:value={address} oninput={resetLookup} autocomplete="off" required /></label>
+          <label>{t('enrollment-port')}<input type="number" min="1" max="65535" bind:value={port} oninput={resetLookup} placeholder={t('enrollment-configured-port')} /></label>
+        </div>
+        <div class="row"><button disabled={busy || identifying || !address.trim()}>{t(identifying ? 'enrollment-identifying' : 'enrollment-identify')}</button></div>
+      </form>
+      {#if identified}
+        <div class="panel stack" role="status">
+          <strong>{identified.model ?? identified.target} · {identified.address}:{identified.port}</strong>
+          <span>{t('uid')} · {identified.uid}</span>
+          {#if identified.serial}<span>{t('serial')} · {identified.serial}</span>{/if}
+          {#if !labelMatches}<span class="error">{t('enrollment-label-mismatch')}</span>{/if}
+        </div>
+      {/if}
+      <p class="muted">{t(method === 'initialize' ? 'enrollment-configured-init' : 'enrollment-configured-import')}</p>
+    {:else}
+      {#if targetsLoaded && !targets.length}<p class="notice" role="status">{t('enrollment-no-targets')}</p>{/if}
+      <p class="muted">{t(method === 'initialize' ? 'enrollment-init-help' : 'enrollment-import-help')}</p>
     {/if}
-    <p class="muted">{t(method === 'initialize' ? 'enrollment-init-help' : 'enrollment-import-help')}</p>
-    <label class="check"><input type="checkbox" bind:checked={confirmed} />{t('enrollment-confirm')}</label>
-    <div class="row"><button class="primary" disabled={busy || !verified || !bridge || !target || !confirmed || (method === 'initialize' && !uid)} onclick={() => enroll('start')}>{t('enrollment-start')}</button></div>
+    <label class="check"><input type="checkbox" bind:checked={confirmed} disabled={useAddress && !labelMatches} />{t('enrollment-confirm')}</label>
+    <div class="row"><button class="primary" disabled={busy || !bridge || !confirmed || (useAddress ? !labelMatches : !verified || !target || (method === 'initialize' && !uid))} onclick={() => enroll('start')}>{t('enrollment-start')}</button></div>
   {:else}
     <p class="muted">{t('enrollment-unavailable')}</p>
   {/if}

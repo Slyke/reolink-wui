@@ -11,6 +11,10 @@ import type { Bridge } from './bridge.js';
 
 const object = z.strictObject;
 const safeKey = z.string().regex(segment);
+const enrollmentUid = z.string().regex(/^[a-zA-Z0-9]{8,40}$/);
+const enrollmentSerial = z.string().regex(/^[a-zA-Z0-9_-]{4,64}$/);
+const enrollmentMethod = z.enum(['initialize', 'import']);
+const enrollmentPort = z.number().int().min(1).max(65535);
 const cameraLogin = object({
   operationId: uuid,
   username: z.string().min(1).max(64).refine(name => name.trim().length > 0 && !/\p{Cc}/u.test(name)),
@@ -57,6 +61,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     const response = await bridge.api({ path: endpoint, stableId, data, method: data === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(65_000), correlation });
     const value = shape({ response, body: await jsonResponse({ response }) });
     let cameraId: string | undefined;
+    if (value.remote && value.status === 'active') await bridge.scanInventory().catch(() => false);
     const stable = value.remote && bridge.stableId(value.remote);
     if (stable) {
       await runtime.sync();
@@ -82,24 +87,55 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     const response = await bridge.api({ path: '/enrollment-targets', correlation: request.id });
     const result = record(await jsonResponse({ response }));
     if (!response.ok || !Array.isArray(result.targets)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
-    return { targets: result.targets.filter(value => typeof value === 'string' && segment.test(value)).slice(0, 64) };
+    return { addressLookup: result.addressLookup === true, targets: result.targets.filter(value => typeof value === 'string' && segment.test(value)).slice(0, 64) };
+  });
+  api.get<{ Params: { bridge: string } }>(path + '/admin/bridges/:bridge/enrollment-targets/identify', async request => {
+    await runtime.admin({ request });
+    const bridge = bridgeFor(request.params.bridge);
+    const query = input({ schema: object({
+      address: z.ipv4(), port: z.coerce.number().int().min(1).max(65535).optional(), method: enrollmentMethod
+    }), value: request.query });
+    const search = new URLSearchParams({ address: query.address, method: query.method });
+    if (query.port !== undefined) search.set('port', String(query.port));
+    const response = await bridge.api({ path: '/enrollment-targets/identify', search: '?' + search, correlation: request.id });
+    const raw = record(await jsonResponse({ response }));
+    if (!response.ok) {
+      const errors = {
+        API_ENROLLMENT_ADDRESS_UNKNOWN: 'ENROLLMENT_ADDRESS_UNKNOWN',
+        API_ENROLLMENT_ADDRESS_AMBIGUOUS: 'ENROLLMENT_ADDRESS_AMBIGUOUS',
+        API_ENROLLMENT_PASSWORD_INVALID: 'ENROLLMENT_PASSWORD_INVALID',
+        API_ENROLLMENT_IDENTIFY_FAILED: 'ENROLLMENT_IDENTIFY_FAILED'
+      } as const;
+      const key = typeof raw.errorKey === 'string' && Object.hasOwn(errors, raw.errorKey)
+        ? errors[raw.errorKey as keyof typeof errors] : 'BRIDGE_UNAVAILABLE';
+      throw new Failure(key, response.status, undefined, {
+        upstreamStatus: response.status, bridgeCorrelationId: typeof raw.correlation_id === 'string' && correlationPattern.test(raw.correlation_id) ? raw.correlation_id : undefined
+      });
+    }
+    const result = z.object({ target: safeKey, address: z.ipv4(), port: enrollmentPort, uid: enrollmentUid,
+      serial: enrollmentSerial.nullish(), model: z.string().max(96).nullish() }).safeParse(raw);
+    if (!result.success || result.data.address !== query.address || (query.port !== undefined && result.data.port !== query.port)) {
+      throw new Failure('ENROLLMENT_IDENTIFY_FAILED', 502);
+    }
+    return result.data;
   });
   api.post(enrollments, async (request, reply) => {
     const { account } = await runtime.admin({ request, mutate: true });
     const data = input({
       schema: object({
         operationId: uuid, bridge: safeKey, target: safeKey,
-        uid: z.string().regex(/^[a-zA-Z0-9]{8,40}$/).optional(),
-        serial: z.string().regex(/^[a-zA-Z0-9-]{4,64}$/).optional(),
-        method: z.enum(['initialize', 'import']), confirmation: z.literal(true)
-      }).refine(value => (value.uid || value.serial) && (value.method !== 'initialize' || value.uid)),
+        uid: enrollmentUid.optional(), serial: enrollmentSerial.optional(),
+        address: z.ipv4().optional(), port: enrollmentPort.optional(),
+        method: enrollmentMethod, confirmation: z.literal(true)
+      }).refine(value => (value.uid || value.serial) && (value.method !== 'initialize' || value.uid)
+        && (value.address === undefined) === (value.port === undefined)),
       value: request.body
     });
     const bridge = bridgeFor(data.bridge);
     const value = await runtime.ops.run({
       id: data.operationId, actor: account.id, resource: data.operationId, action: 'enrollment.start', correlation: request.id,
       input: data, execute: async () => {
-        const intent = { id: data.operationId, uid: data.uid, serial: data.serial, target: data.target, method: data.method, confirmation: true };
+        const intent = { id: data.operationId, uid: data.uid, serial: data.serial, target: data.target, address: data.address, port: data.port, method: data.method, confirmation: true };
         await runtime.sql.query('INSERT INTO enrollments(id,bridge_id,owner_id,created,request) VALUES ($1,$2,$3,$4,$5)',
           data.operationId, bridge.config.id, account.id, Date.now(), JSON.stringify(intent));
         const value = await progress({

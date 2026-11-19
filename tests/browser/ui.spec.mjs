@@ -35,7 +35,7 @@ for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
     test.setTimeout(65000);
     page.setDefaultTimeout(6000);
-    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],fixedCameras:['beta'],capture:true,recordings:true,recordingCount:3,metadataPages:true,apiEvents:true,enrollmentTargets:[] });
+    const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],fixedCameras:['beta'],capture:true,recordings:true,recordingCount:3,metadataPages:true,apiEvents:true,enrollmentTargets:[],enrollmentAddress:'192.168.10.12' });
     const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false,recordingSettings:false,manageAccounts:false,enrollmentTargets:[]});
     const directory = await mkdtemp(join(tmpdir(),'wui-browser-'));
     const uiPort = await reserve();
@@ -1068,6 +1068,16 @@ for (const mode of ['browser','proxy']) {
       await expect(page.getByRole('combobox',{name:'Camera setup',exact:true})).toHaveValue('initialize');
       await page.getByRole('combobox',{name:'Camera setup',exact:true}).selectOption('import');
       await expect(page.getByText(/target’s importPassword/)).toBeVisible();
+      const wifiSection = page.locator('details').filter({has:page.locator('summary').filter({hasText:'Wi-Fi join QR'})});
+      const checkWifiRow = async () => {
+        const actions = await page.getByRole('button',{name:'Scan label',exact:true}).boundingBox();
+        const fields = await page.getByLabel('Device UID',{exact:true}).locator('xpath=../..').boundingBox();
+        const qr = await wifiSection.boundingBox();
+        expect(qr.y).toBeGreaterThanOrEqual(actions.y + actions.height);
+        expect(Math.abs(qr.x - fields.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(qr.width - fields.width)).toBeLessThanOrEqual(1);
+      };
+      await checkWifiRow();
       const scanImage=await QRCode.toBuffer('TESTUIDA9B7',{width:320,margin:4});
       await page.evaluate(bytes => {
         Object.defineProperty(navigator.mediaDevices,'getUserMedia',{configurable:true,value:async () => {
@@ -1133,8 +1143,41 @@ for (const mode of ['browser','proxy']) {
       }
       expect(JSON.stringify(observed)).not.toContain('fixture-wifi-password-123');
       expect(JSON.stringify(observed)).not.toContain('Fixture Network QA');
+      await wifiSection.locator('summary').click();
+      await page.getByRole('button',{name:/^Bridge /}).click();
+      await page.getByRole('option',{name:/Fixture bridge/}).click();
+      await page.getByRole('combobox',{name:'Camera setup',exact:true}).selectOption('initialize');
+      const address = page.getByLabel('Camera IP address');
+      const identify = page.getByRole('button',{name:'Identify camera',exact:true});
+      const startEnrollment = page.getByRole('button',{name:'Start enrollment'});
+      const confirm = page.getByRole('checkbox',{name:/I checked the printed identifier/});
+      await address.fill('192.168.10.11');
+      await identify.click();
+      await expect(page.getByRole('alert')).toContainText('No configured admin camera');
+      await address.fill('192.168.10.12');
+      const identityResponse = page.waitForResponse(response => response.url().includes('enrollment-targets/identify?'));
+      await identify.click();
+      expect(await (await identityResponse).text()).not.toContain('bridge-only-fixture');
+      await expect(page.getByText('E1 Pro · 192.168.10.12:9000')).toBeVisible();
+      await page.getByLabel('Device UID',{exact:true}).fill('TESTWUI002');
+      await expect(page.getByText(/differs from the label/)).toBeVisible();
+      await expect(confirm).toBeDisabled();
+      await page.getByLabel('Device UID',{exact:true}).fill('');
+      await confirm.check();
+      await page.getByLabel('Baichuan port (optional)').fill('9000');
+      await expect(startEnrollment).toBeDisabled();
+      await expect(confirm).not.toBeChecked();
+      await identify.click();
+      await confirm.check();
+      await startEnrollment.click();
+      await expect(page.getByText(/Camera registration is active/)).toBeVisible();
+      const sent = JSON.parse(observed.findLast(item => item.body && item.url.endsWith('/enrollments')).body);
+      expect(sent).toMatchObject({target:'alpha',address:'192.168.10.12',port:9000,uid:'TESTWUI001',serial:'FIXTURE-E1',method:'initialize',confirmation:true});
+      expect(sent).not.toHaveProperty('password');
+      await page.getByLabel('Device UID',{exact:true}).fill('TESTWUI001');
 
       await page.setViewportSize({width:375,height:812});
+      await checkWifiRow();
       await enrollmentButton.click();
       await expect(enrollmentQr).toBeVisible();
       expect((await enrollmentQr.boundingBox()).width).toBeLessThan(375);

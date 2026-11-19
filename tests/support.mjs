@@ -136,7 +136,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], capture = false, websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, manageAccounts = true, fixedCameras = [], enrollmentTargets } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], capture = false, websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, manageAccounts = true, fixedCameras = [], enrollmentTargets, enrollmentAddress } = {}) => {
   const previewRequests = [], recordingRequests = [];
   let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
@@ -301,7 +301,24 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       }
       return res.end(JSON.stringify(result));
     }
-    if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets}));
+    if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets,addressLookup:!!enrollmentAddress}));
+    if (enrollmentAddress && req.url.startsWith('/api/enrollment-targets/identify?')) {
+      const query = new URL(req.url,'http://127.0.0.1').searchParams;
+      if (query.get('address') !== enrollmentAddress || (query.has('port') && query.get('port') !== '9000')) {
+        res.statusCode = 404;
+        return res.end(JSON.stringify({errorKey:'API_ENROLLMENT_ADDRESS_UNKNOWN'}));
+      }
+      return res.end(JSON.stringify({target:'alpha',address:enrollmentAddress,port:9000,uid:'TESTWUI001',model:'E1 Pro',serial:'FIXTURE-E1',privateField:'bridge-only-fixture'}));
+    }
+    if (enrollmentAddress && req.url === '/api/enrollments' && req.method === 'POST') {
+      const intent = await read(req);
+      if (intent.target !== 'alpha' || intent.address !== enrollmentAddress || intent.port !== 9000 || intent.method !== 'initialize'
+          || intent.uid !== 'TESTWUI001' || intent.serial !== 'FIXTURE-E1' || intent.confirmation !== true) {
+        res.statusCode = 422;
+        return res.end(JSON.stringify({errorKey:'API_ENROLLMENT_INVALID'}));
+      }
+      return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
+    }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
       version:1, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
       previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
