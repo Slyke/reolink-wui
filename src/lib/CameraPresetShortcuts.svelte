@@ -6,6 +6,7 @@
 
   let { camera, csrf }: { camera: Camera; csrf: string } = $props();
   let slots = $state<Preset[]>([]), active = $state<number>(), photo = $state(''), error = $state('');
+  let jpeg = $state(false);
   let photoSlot = $state<number>(), revision = $state(0), disposed = false;
   const online = $derived(camera.availability.online === true && !camera.availability.stale);
   const clear = () => { if (photo) URL.revokeObjectURL(photo); photo = ''; photoSlot = undefined; };
@@ -38,7 +39,7 @@
       const result = await api<Blob | Outcome>({path:'/api/v1/cameras/'+camera.id+'/ptz/preset-snapshot',
         method:'POST',image:true,csrf,body:{operationId:operationId(),presetId:id}});
       if (disposed) return;
-      if (result instanceof Blob) { clear(); photo = URL.createObjectURL(result); photoSlot = id; }
+      if (result instanceof Blob) { clear(); jpeg = result.type === 'image/jpeg'; photo = URL.createObjectURL(result); photoSlot = id; }
       else error = outcomeText(result);
     } catch (err) { if (!disposed) error = errorText(err); }
     finally { if (!disposed) active = undefined; }
@@ -58,6 +59,6 @@
 {#if error}<p class="error" role="alert">{error}</p>{/if}
 {#if photo}
   <img class="snapshot" src={photo} alt={t('snapshot-alt')} />
-  <div class="row"><a href={photo} download={'preset-'+photoSlot+'.png'}>{t('download')}</a>
+  <div class="row"><a href={photo} download={'preset-'+photoSlot+(jpeg ? '.jpg' : '.png')}>{t(jpeg ? 'download-jpeg' : 'download')}</a>
     <button type="button" aria-label={t('close-snapshot')} onclick={clear}>{t('close')}</button></div>
 {/if}

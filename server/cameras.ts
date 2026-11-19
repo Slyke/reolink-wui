@@ -216,6 +216,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     recordingPreview: grant.has('recordings.view') && bridge.hasRecordingPreview(remote),
     recordingPlayback: grant.has('recordings.view') && bridge.hasRecordings(remote),
     capture: grant.has('capture') && bridge.canCapture(remote),
+    presetSnapshot: grant.has('capture') && (bridge.canCapture(remote) || bridge.hasPreview(remote)),
     mediaAllowed: grant.has('media.live'),
     preview: bridgePreview,
     previewState: grant.has('media.live') ? bridge.previewState(remote) : 'denied',

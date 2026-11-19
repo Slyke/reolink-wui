@@ -9,9 +9,11 @@ import { available, capabilities, statusPtz } from './cameras.js';
 import { record } from './bridge-channels.js';
 import { result } from './bridge.js';
 import { validatePng } from './png.js';
+import { bridgePreview } from './playback.js';
 import { presetPreferences, readPresetPreferences } from '../shared/presets.js';
 import type { ActionResult } from './operations.js';
 
+type PresetPhoto = { image: Buffer; type: 'image/png' | 'image/jpeg' };
 type Position = ReturnType<typeof statusPtz>['position'];
 function coordinates(position: Position) {
   const { pan, tilt, zoom } = position;
@@ -78,7 +80,7 @@ export function presetRoutes({ api, cameras, runtime, sendOutcome }: {
     const {row,bridge,grant,session} = await runtime.camera({request,id:request.params.id,permission:'ptz.write',mutate:true});
     if (!grant.has('capture') || !grant.has('ptz.read')) throw new Failure('ACCESS_DENIED',403);
     const caps = capabilities({bridge,remote:row.routeId,grant});
-    if (!caps.ptz?.presets || !caps.capture) throw new Failure('UNSUPPORTED',422);
+    if (!caps.ptz?.presets || !caps.presetSnapshot) throw new Failure('UNSUPPORTED',422);
     if (!available({bridge,remote:row.routeId}).online) throw new Failure('CAMERA_OFFLINE',409);
     const {operationId,presetId} = input({schema:z.strictObject({operationId:uuid,presetId:z.number().int().min(0).max(255)}),value:request.body});
     const actor = session.account.id, correlation = request.id;
@@ -88,8 +90,17 @@ export function presetRoutes({ api, cameras, runtime, sendOutcome }: {
       return response.ok === true && response.verified !== false ? statusPtz({raw:record(response.result)}).position : undefined;
     };
     const stillCurrent = async () => !closing && (await runtime.sql.query('SELECT id FROM cameras WHERE id=$1 AND ptz_intent=$2',row.id,operationId)).length > 0;
-    const operation = await runtime.ops.run<Buffer>({id:operationId,actor,resource:row.id,action:'ptz.preset_snapshot',input:presetId,correlation,
-      serialized:true,reconcileGroup:'ptz',execute:async ():Promise<ActionResult<Buffer>> => {
+    const takePhoto = async (): Promise<ActionResult<PresetPhoto>> => {
+      if (bridge.canCapture(row.routeId)) {
+        const response = await bridge.command({id:randomUUID(),camera:row.routeId,stableId:row.remote_id,correlation,command:{setting:'snapshot'},capture:true});
+        return {...result({reply:response,write:false}),data:response.ok === true ? {image:validatePng({result:response.result}),type:'image/png'} : undefined};
+      }
+      const {frame} = await bridgePreview({bridge,row,correlation,refresh:true});
+      if (!frame) throw new Failure('SNAPSHOT_INVALID',502);
+      return {outcome:'confirmed',data:{image:frame,type:'image/jpeg'}};
+    };
+    const operation = await runtime.ops.run<PresetPhoto>({id:operationId,actor,resource:row.id,action:'ptz.preset_snapshot',input:presetId,correlation,
+      serialized:true,reconcileGroup:'ptz',execute:async ():Promise<ActionResult<PresetPhoto>> => {
         await runtime.sql.query('UPDATE cameras SET ptz_intent=$1 WHERE id=$2',operationId,row.id);
         const listed = await command({op:'list_presets'});
         if (listed.ok !== true) return {...result({reply:listed,write:false}), data:undefined};
@@ -119,16 +130,20 @@ export function presetRoutes({ api, cameras, runtime, sendOutcome }: {
           if (!await stillCurrent()) return {outcome:'rejected',reason:'PTZ_CANCELLED'};
           if (!saved) await rememberPresetPosition(runtime.sql,row.id,presetId,preset.name ?? '',position);
           const prefs = readPresetPreferences(row.ptz_preferences);
-          const capture = await bridge.command({id:randomUUID(),camera:row.routeId,stableId:row.remote_id,correlation,command:{setting:'snapshot'},capture:true});
-          if (prefs.returnPreset !== null && prefs.returnPreset !== presetId && presets.some(item=>item.id === prefs.returnPreset) && await stillCurrent()) {
-            scheduleReturn(row.id,actor,operationId,prefs.returnPreset,prefs.returnSeconds,correlation);
+          try {
+            return await takePhoto();
+          } finally {
+            if (prefs.returnPreset !== null && prefs.returnPreset !== presetId && presets.some(item=>item.id === prefs.returnPreset) && await stillCurrent()) {
+              scheduleReturn(row.id,actor,operationId,prefs.returnPreset,prefs.returnSeconds,correlation);
+            }
           }
-          return {...result({reply:capture,write:false}),data:capture.ok === true ? validatePng({result:capture.result}) : undefined};
         }
         return {outcome:'unverified',reason:'PTZ_ARRIVAL_UNVERIFIED',bridgeCorrelationId:result({reply:move,write:true}).bridgeCorrelationId};
       }});
     if (!operation.data) return sendOutcome({reply,value:operation});
-    return reply.type('image/png').header('content-disposition','inline; filename="preset-'+presetId+'.png"').send(operation.data);
+    const { image, type } = operation.data;
+    const extension = type === 'image/jpeg' ? 'jpg' : 'png';
+    return reply.type(type).header('content-disposition','inline; filename="preset-'+presetId+'.'+extension+'"').send(image);
   });
   return scheduleReturn;
 }

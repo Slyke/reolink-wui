@@ -169,7 +169,7 @@ Image orientation buttons are shown in Camera settings. Only reported camera con
 
 Monitor and Dashboard share the Recordings, Camera settings, Refresh and Expand icons in the Live view heading. Expand, double-click or double-tap the preview to open the player. It starts the selected stream and displays the last preview until the first live frame arrives. Mobile also has a Start live stream button. On phones, PTZ fills the row below the video.
 
-Use the arrows beside each camera in Monitor to order both views. The WUI database stores the order per account. The first eight ordered PTZ presets appear on the Dashboard. Selecting one takes a snapshot after the bridge reports arrival. The PTZ panel lets an operator change their order and choose a timed return preset.
+Use the arrows beside each camera in Monitor to order both views. The WUI database stores the order per account. The first eight ordered PTZ presets appear on the Dashboard. Selecting one takes a snapshot after the bridge reports arrival. It uses the configured MQTT snapshot transport for PNG, or requests a fresh JPEG from the bridge preview API. The PTZ panel lets an operator change their order and choose a timed return preset.
 
 An open recording can be bookmarked or shared. The URL identifies the camera, date, recording and stream. Recipients sign in with their own recording access. Choosing a stream also saves that camera’s preference in the browser.
 

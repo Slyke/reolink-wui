@@ -356,6 +356,29 @@ test('camera ordering persists per account, is retryable, and cannot include a c
   assert.deepEqual(await list(adminHeaders),[first,second]);
 });
 
+test('a PTZ preset photo requests a fresh bridge JPEG when MQTT capture is unavailable', async t => {
+  const bridge = await fixtureBridge({previewCameras:['alpha']});
+  t.after(()=>bridge.close());
+  const {app,runtime,incoming,seed,signIn} = await launch({bridges:[bridge.config]});
+  t.after(()=>app.close());
+  await seed({username:'preset-jpeg',admin:true});
+  const headers = await signIn('preset-jpeg');
+  await eventually(()=>runtime.bridges.get('lab').feedReady);
+  const {cameras}=(await incoming({path:'/cameras',headers})).json();
+  const camera=cameras.find(c=>c.name==='Loading dock');
+  assert.equal(camera.capabilities.capture,false);
+  assert.equal(camera.capabilities.presetSnapshot,true);
+  const path='/cameras/'+camera.id+'/ptz';
+  const saved=await incoming({path,method:'POST',headers,payload:{operationId:uuid(),action:{op:'save_preset',preset_id:4,name:'Camera test'}}});
+  assert.equal(saved.json().outcome,'confirmed');
+  const baseline=bridge.previewRequests.length;
+  const photo=await incoming({path:path+'/preset-snapshot',method:'POST',headers,payload:{operationId:uuid(),presetId:4}});
+  assert.equal(photo.headers['content-type'],'image/jpeg',photo.body);
+  assert.match(photo.headers['content-disposition'],/preset-4\.jpg/);
+  assert.equal(photo.rawPayload.readUInt16BE(0),0xffd8);
+  assert.deepEqual(bridge.previewRequests.slice(baseline).map(p=>[p.camera,p.refresh]),[['alpha',true]]);
+});
+
 test('preset shortcuts take a fresh photo after reported arrival and newer motion cancels a scheduled return', async t => {
   const bridge = await fixtureBridge({capture:true});
   t.after(()=>bridge.close());

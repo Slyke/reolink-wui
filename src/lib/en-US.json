@@ -66,6 +66,7 @@
   "reolink-wui-snapshot": "Take snapshot",
   "reolink-wui-snapshot-alt": "Captured camera snapshot",
   "reolink-wui-download": "Download PNG",
+  "reolink-wui-download-jpeg": "Download JPEG",
   "reolink-wui-objects": "Objects",
   "reolink-wui-event-feed": "Event feed",
   "reolink-wui-event-type": "Event type",

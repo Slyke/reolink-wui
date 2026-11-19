@@ -32,7 +32,7 @@ const expectHover = async (page, button) => {
 };
 
 for (const mode of ['browser','proxy']) {
-  test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
+  test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page, browser }) => {
     test.setTimeout(100000);
     page.setDefaultTimeout(6000);
     const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],fixedCameras:['beta'],capture:true,recordings:true,recordingCount:3,metadataPages:true,apiEvents:true,enrollmentTargets:[],enrollmentAddress:'192.168.10.12' });
@@ -234,6 +234,25 @@ for (const mode of ['browser','proxy']) {
       await expect(expanded).toBeHidden();
       await page.setViewportSize({width:375,height:812});
       await assertMonitorLayout();
+      const phone = await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,storageState:await page.context().storageState()});
+      try {
+        const mobile = await phone.newPage();
+        await mobile.goto(publicOrigin+'/dashboard');
+        const tile = mobile.getByRole('article',{name:'Loading dock'});
+        await expect(tile.getByRole('button',{name:'Start live stream'})).toBeVisible();
+        const thumbnail = tile.getByRole('img',{name:'Loading dock camera preview'});
+        await thumbnail.scrollIntoViewIfNeeded();
+        const rect = await thumbnail.boundingBox();
+        const x = rect.x + rect.width/2, y = rect.y + rect.height/2;
+        await mobile.touchscreen.tap(x,y);
+        await expect(mobile.locator('dialog.live-dialog[open]')).toHaveCount(0);
+        await mobile.touchscreen.tap(x,y);
+        const player = mobile.getByRole('dialog',{name:'Live view · Loading dock'});
+        const liveFrame = player.getByRole('img',{name:'Live camera video'});
+        await expect.poll(()=>liveFrame.evaluate(el=>el.naturalWidth)).toBeGreaterThan(0);
+        await expect(player.getByRole('button',{name:'Stop live stream'})).toBeVisible();
+        await player.getByRole('button',{name:'Close'}).tap();
+      } finally { await phone.close(); }
       await page.setViewportSize({width:1280,height:720});
       await expect(page.getByRole('button',{name:/^Second camera/})).toBeVisible();
       const previewBaseline = bridge.previewRequests.length;

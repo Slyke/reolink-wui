@@ -92,9 +92,11 @@
   function expandOnDoublePress(node: HTMLElement) {
     let first: { x: number; y: number; time: number } | undefined;
     let down: { x: number; y: number; time: number } | undefined;
-    const reset = () => { first = undefined; down = undefined; };
+    let doubleTap = false;
+    const reset = () => { first = undefined; down = undefined; doubleTap = false; };
     const begin = (event: PointerEvent) => {
       if (event.pointerType !== 'touch' || !event.isPrimary) { reset(); return; }
+      doubleTap = false;
       down = { x: event.clientX, y: event.clientY, time: event.timeStamp };
     };
     const end = (event: PointerEvent) => {
@@ -103,15 +105,25 @@
       down = undefined;
       if (first && event.timeStamp - first.time <= 350 && Math.hypot(event.clientX - first.x, event.clientY - first.y) <= 32) {
         reset();
-        void show();
+        doubleTap = true;
       } else first = { x: event.clientX, y: event.clientY, time: event.timeStamp };
     };
+    // Touch browsers synthesize a click after pointerup. Open on that click so it
+    // finishes on the preview before the modal puts controls under the finger.
+    const completeTap = (event: MouseEvent) => {
+      if (!doubleTap) return;
+      reset();
+      event.preventDefault();
+      void show();
+    };
     const doubleClick = (event: MouseEvent) => { if (event.button === 0) void show(); };
+    node.addEventListener('click', completeTap);
     node.addEventListener('dblclick', doubleClick);
     node.addEventListener('pointerdown', begin);
     node.addEventListener('pointerup', end);
     node.addEventListener('pointercancel', reset);
     return { destroy() {
+      node.removeEventListener('click', completeTap);
       node.removeEventListener('dblclick', doubleClick);
       node.removeEventListener('pointerdown', begin);
       node.removeEventListener('pointerup', end);
@@ -342,7 +354,7 @@
       {@render actions?.()}
     </div>
   {/if}
-  {#if compact && camera.capabilities.capture && camera.capabilities.ptz?.read && camera.capabilities.ptz.write && camera.capabilities.ptz.presets}
+  {#if compact && (camera.capabilities.presetSnapshot ?? camera.capabilities.capture) && camera.capabilities.ptz?.read && camera.capabilities.ptz.write && camera.capabilities.ptz.presets}
     <CameraPresetShortcuts {camera} {csrf} />
   {/if}
   {#if !compact && !expanded}{@render guidance()}{/if}
