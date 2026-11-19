@@ -1,12 +1,13 @@
 <script lang="ts">
   import { t } from './api.js';
+  import InfoTip from './InfoTip.svelte';
   import RecordingPreview from './RecordingPreview.svelte';
   import type { RecordingPreviews } from './recording-previews.js';
   import { recordingTime, type RecordingGroup } from '../../shared/recording-groups.js';
 
-  let { previews, warming, recordings, date, available, playable, highlighted, onhover, onselect }: {
+  let { previews, warming, recordings, date, available, playable, highlighted, onhover, onselect, clockHint }: {
     previews: RecordingPreviews; warming: boolean; recordings: RecordingGroup[]; date: string; available: boolean; playable: boolean;
-    highlighted?: string; onhover: (id?: string) => void; onselect: (item: RecordingGroup, offsetMs: number) => void;
+    highlighted?: string; clockHint?:string; onhover: (id?: string) => void; onselect: (item: RecordingGroup, offsetMs: number) => void;
   } = $props();
   const day = $derived(recordingTime(date + 'T00:00:00'));
   let range = $state('fit');
@@ -76,7 +77,9 @@
 
 <svelte:document bind:visibilityState={visibility} onpointerdown={outside} onkeydown={event => {if (event.key === 'Escape' && pinned) clear();}} />
 <div class="recording-timeline stack">
-  <div class="row between"><h3>{t('recording-timeline')}</h3>
+  <div class="row between"><div class="field-heading timeline-title"><h3>{t('recording-timeline')}</h3>
+      {#if clockHint}<InfoTip label={t('recording-clock-label')} text={clockHint} />{/if}
+    </div>
     <select class="timeline-range" aria-label={t('recording-timeline-range')} bind:value={range} onchange={clear}>
       <option value="fit">{t('recording-timeline-fit')}</option><option value="day">{t('recording-timeline-day')}</option>
     </select>

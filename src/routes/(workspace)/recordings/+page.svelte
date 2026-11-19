@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
+  import { goto, replaceState } from '$app/navigation';
   import { api, errorText, t, url } from '$lib/api.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import type { Camera } from '$lib/models.js';
@@ -9,14 +10,18 @@
   import RecordingPreview from '$lib/RecordingPreview.svelte';
   import RecordingTimeline from '$lib/RecordingTimeline.svelte';
   import { RecordingPreviews } from '$lib/recording-previews.js';
-  import { groupRecordings, recordingTime, type RecordingGroup } from '../../../../shared/recording-groups.js';
+  import { groupRecordings, recordingTime, recordingVariant, type RecordingGroup } from '../../../../shared/recording-groups.js';
   import { recordingSize, recordingDuration, recordingKinds } from '$lib/recordings.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
-  import type { RecordingList, StorageInfo } from '../../../../shared/recordings.js';
+  import { recordingDate, recordingStream, type Recording, type RecordingList, type StorageInfo } from '../../../../shared/recordings.js';
 
   const fieldId = $props.id();
   let cameras = $state<Camera[]>([]);
-  let selected = $state('');
+  const linkedCamera = $derived(page.url.searchParams.get('camera'));
+  const linkedDate = $derived(recordingDate.safeParse(page.url.searchParams.get('date')).data);
+  const linkedClip = $derived(page.url.searchParams.get('recording'));
+  const linkedStream = $derived(recordingStream.safeParse(page.url.searchParams.get('stream')).data);
+  const selected = $derived(linkedCamera ?? cameras.find(item => item.capabilities.recordings)?.id ?? cameras[0]?.id ?? '');
   const camera = $derived(cameras.find(item => item.id === selected));
   let storage = $state<StorageInfo>();
   const playbackAvailable = $derived(Boolean(storage?.playbackAvailable ?? camera?.capabilities.recordingPlayback));
@@ -37,8 +42,13 @@
     const cache = previews;
     return () => cache.close();
   });
-  let recording = $state<RecordingGroup>();
-  let startPosition = $state(0);
+  const recording = $derived(linkedClip && linkedCamera === selected && listing && listing.date === linkedDate
+    ? listing.recordings.find(group => group.variants.some(item => item.id === linkedClip)) : undefined);
+  const stream = $derived(linkedStream ?? recording?.variants.find(item => item.id === linkedClip)?.stream ?? 'sub');
+  const startPosition = $derived.by(() => {
+    const offset = Number(page.url.searchParams.get('at'));
+    return recording && Number.isSafeInteger(offset) ? Math.max(0, Math.min(offset, recordingTime(recording.end) - recordingTime(recording.start))) : 0;
+  });
   let highlighted = $state<string>();
   let date = $state('');
   let userSelectedDate = false;
@@ -71,7 +81,53 @@
     pageNumber = 0;
     try { localStorage.setItem('reolink-wui-recordings-time-order', timeOrder); } catch { /* Storage can be unavailable. */ }
   };
-  const select = (item: RecordingGroup, offsetMs = 0) => { recording = item; startPosition = offsetMs; };
+  const listUrl = (cameraId: string, day?: string) => {
+    const result = new URL(page.url);
+    for (const key of ['camera', 'date', 'recording', 'stream', 'at']) result.searchParams.delete(key);
+    if (cameraId) result.searchParams.set('camera', cameraId);
+    if (day) result.searchParams.set('date', day);
+    return result;
+  };
+  const navigate = (target: URL, replaceState: boolean, fromList = false) => goto(target, {
+    replaceState, keepFocus: true, noScroll: true, state: { ...page.state, recordingFromList: fromList }
+  });
+  const openedFromList = () => 'recordingFromList' in page.state && page.state.recordingFromList === true;
+  const savedStream = (): Recording['stream'] => {
+    try { return localStorage.getItem('reolink-wui-recording-stream-' + selected) === 'main' ? 'main' : 'sub'; }
+    catch { return 'sub'; }
+  };
+  const openClip = async (group: RecordingGroup, quality: Recording['stream'], offset: number) => {
+    if (!listing) return;
+    const base = listUrl(selected, listing.date);
+    const target = new URL(base);
+    const variant = recordingVariant({ group, stream: quality });
+    target.searchParams.set('recording', variant.id);
+    target.searchParams.set('stream', variant.stream);
+    if (offset > 0) target.searchParams.set('at', String(Math.round(offset)));
+    const opening = !linkedClip;
+    if (opening && page.url.href !== base.href) await navigate(base, true);
+    if (page.url.href !== target.href) await navigate(target, !opening, opening || openedFromList());
+  };
+  const select = (item: RecordingGroup, offsetMs = 0) => openClip(item, linkedClip ? stream : savedStream(), offsetMs);
+  const chooseStream = (value: Recording['stream']) => {
+    if (!recording) return;
+    try { localStorage.setItem('reolink-wui-recording-stream-' + selected, value); } catch { /* Storage can be unavailable. */ }
+    void openClip(recording, value, startPosition);
+  };
+  const closePlayer = () => {
+    if (!linkedClip) return;
+    const base = listUrl(camera?.id ?? '', linkedDate);
+    if (openedFromList()) {
+      // Close also takes effect if the browser reloads before its popstate event.
+      replaceState(base, { ...page.state, recordingFromList:false });
+      window.history.back();
+    } else void navigate(base, true);
+  };
+  const submitDate = () => {
+    const target = listUrl(selected, date);
+    if (page.url.href === target.href) void search();
+    else void navigate(target, true);
+  };
   const hover = (id?: string) => {
     highlighted = id;
     if (id && listing) {
@@ -114,7 +170,6 @@
     listController = current;
     const combined = signal ? AbortSignal.any([signal, current.signal]) : current.signal;
     loading = true;
-    recording = undefined;
     pageNumber = 0;
     searchError = '';
     try {
@@ -159,22 +214,29 @@
       if (controller === current) reading = false;
     }
   };
+  let loadedCamera: string | undefined, loadedSupport: boolean | undefined;
   $effect(() => {
-    const id = camera?.id;
-    const supported = camera?.capabilities.recordings;
+    const id = camera?.id, supported = camera?.capabilities.recordings, day = linkedDate;
     untrack(() => {
+      if (id === loadedCamera && supported === loadedSupport) {
+        if (day && supported) {
+          userSelectedDate = true;
+          date = day;
+          if (listing?.date !== day) void search();
+        }
+        return;
+      }
+      loadedCamera = id; loadedSupport = supported;
       controller?.abort();
       listController?.abort();
       storage = undefined;
       listing = undefined;
-      recording = undefined;
-      date = '';
-      userSelectedDate = false;
+      date = day ?? '';
+      userSelectedDate = Boolean(day);
       storageError = '';
       searchError = '';
       if (id && supported) void refresh();
     });
-    return () => { controller?.abort(); listController?.abort(); };
   });
 
   onMount(() => {
@@ -193,10 +255,7 @@
       try {
         const result = await api<{ cameras: Camera[] }>({ path: '/api/v1/cameras', signal: request.signal });
         if (request.signal.aborted || current !== sequence) return;
-        const requested = selected || page.url.searchParams.get('camera');
         cameras = result.cameras;
-        selected = cameras.find(item => item.id === requested)?.id
-          ?? cameras.find(item => item.capabilities.recordings)?.id ?? cameras[0]?.id ?? '';
         cameraError = '';
       } catch (err) {
         if (!request.signal.aborted && current === sequence) cameraError = errorText(err);
@@ -208,12 +267,11 @@
       if (JSON.parse(event.data).kind !== 'access-changed') return;
       controller?.abort(); listController?.abort();
       previews.close();
-      recording = undefined;
       listing = undefined;
       cameras = [];
       void listCameras();
     };
-    return () => { request.abort(); access.close(); };
+    return () => { request.abort(); controller?.abort(); listController?.abort(); access.close(); };
   });
 </script>
 
@@ -226,7 +284,7 @@
     <button disabled={initial || reading || loading || !camera?.capabilities.recordings} onclick={refresh}>{t('refresh')}</button>
   </div>
   {#if cameras.length}
-    <SearchSelect label={t('camera-noun')} bind:value={selected} options={cameras.map((item, index) => ({
+    <SearchSelect label={t('camera-noun')} value={selected} onchange={({ value }) => { void navigate(listUrl(value), true); }} options={cameras.map((item, index) => ({
       value: item.id, label: item.name ?? t('camera-generic', { index: index + 1 }), detail: item.model
     }))} />
   {:else if initial}
@@ -236,6 +294,10 @@
   {/if}
   {#if camera && !camera.capabilities.recordings}<p class="muted">{t('recordings-unavailable')}</p>{/if}
   {#if cameraError}<p role="alert" class="error">{cameraError}</p>{/if}
+  {#if linkedClip && !initial && !cameraError && (!camera || !linkedDate || (!loading && listing && listing.date === linkedDate && !recording))}
+    <p role="status" class="notice">{t('recording-link-unavailable')}</p>
+    <div class="row"><button onclick={closePlayer}>{t('recordings-back')}</button></div>
+  {/if}
 </section>
 
 {#if camera?.capabilities.recordings}
@@ -276,10 +338,9 @@
         <button aria-pressed={layout === 'table'} onclick={() => chooseLayout('table')}>{t('recording-layout-table')}</button>
       </div>
     </div>
-    <form class="row recording-search" onsubmit={event => { event.preventDefault(); void search(); }}>
+    <form class="row recording-search" onsubmit={event => { event.preventDefault(); submitDate(); }}>
       <label>{t('recording-date')}<input type="date" required bind:value={date} oninput={() => { userSelectedDate = true; }} /></label>
       <button disabled={loading || !date}>{t('recordings-search')}</button>
-      {#if clockComparison}<span class="muted">{t('recording-clock-comparison', clockComparison)}</span>{/if}
     </form>
     {#if date && !loading}
       {#key camera.id + '/' + date}
@@ -294,7 +355,7 @@
     {#if loading}
       <p role="status">{t('recordings-searching')}</p>
     {:else if listing?.recordings.length}
-      <RecordingTimeline {previews} warming={!recording} recordings={listing.recordings} date={listing.date} available={Boolean(camera.capabilities.recordingPreview)}
+      <RecordingTimeline {previews} clockHint={clockComparison ? t('recording-clock-comparison',clockComparison) : undefined} warming={!recording} recordings={listing.recordings} date={listing.date} available={Boolean(camera.capabilities.recordingPreview)}
         playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
       <div class="row recording-list-controls">
         <div class="field">
@@ -361,7 +422,7 @@
     {#if listing?.truncated}<p class="notice">{t('recordings-truncated')}</p>{/if}
   </section>
   {#if recording && playbackAvailable}
-    <RecordingPlayer canExport={camera.capabilities.recordingExport} metadataAvailable={camera.capabilities.recordingMetadata} {startPosition} camera={selected} name={camera.name ?? t('camera-noun')} {recording} recordings={listing?.recordings ?? []}
-      onselect={item => select(item)} onclose={() => { recording = undefined; }} onrenew={renew} />
+    <RecordingPlayer {stream} onstream={chooseStream} canExport={camera.capabilities.recordingExport} metadataAvailable={camera.capabilities.recordingMetadata} {startPosition} camera={selected} name={camera.name ?? t('camera-noun')} {recording} recordings={listing?.recordings ?? []}
+      onselect={item => select(item)} onclose={closePlayer} onrenew={renew} />
   {/if}
 {/if}

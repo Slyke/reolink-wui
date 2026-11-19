@@ -12,6 +12,7 @@ export const ptzSchema = z.discriminatedUnion('op', [
   object({ op: z.literal('stop') }),
   object({ op: z.literal('status') }),
   object({ op: z.literal('list_presets') }),
+  object({ op: z.literal('delete_preset'), preset_id: int(0, 255) }),
   object({ op: z.literal('goto_preset'), preset_id: int(0, 255) }),
   object({ op: z.literal('save_preset'), preset_id: int(0, 255), replace: z.boolean().optional(), name: z.string().trim().min(1).refine(value => Buffer.byteLength(value) <= 32 && !/\p{Cc}/u.test(value)) }),
   object({ op: z.literal('set_zoom'), position: int(0, 2147483647) })
@@ -217,6 +218,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     capture: grant.has('capture') && bridge.canCapture(remote),
     mediaAllowed: grant.has('media.live'),
     preview: bridgePreview,
+    previewState: grant.has('media.live') ? bridge.previewState(remote) : 'denied',
     bridgePreview,
     viaProxy: proxy && grant.has('media.live'),
     media,
@@ -228,7 +230,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     ptz: grant.has('ptz.read') || grant.has('ptz.write') ? {
       discovery, supported: bool(raw.supported), read: grant.has('ptz.read'), write: bridge.canCommand(remote) && grant.has('ptz.write'),
       pan: bool(raw.pan), tilt: bool(raw.tilt), diagonal: bool(raw.diagonal), directionalZoom: bool(raw.directional_zoom),
-      presets: bool(raw.presets), savePresets: raw.save_presets === true, speed: range(raw.speed_range), zoom: range(raw.zoom_range), duration: range(raw.duration_ms)
+      presets: bool(raw.presets), savePresets: raw.save_presets === true, deletePresets: raw.delete_presets === true, speed: range(raw.speed_range), zoom: range(raw.zoom_range), duration: range(raw.duration_ms)
     } : undefined,
     settings
   };
@@ -252,6 +254,7 @@ export const validatePtz = ({ action, caps }: {
     if (caps?.supported !== false) return;
   } else if (caps?.supported) {
     if (action.op === 'status' || ((action.op === 'list_presets' || action.op === 'goto_preset') && caps.presets)) return;
+    if (action.op === 'delete_preset' && caps.presets && caps.deletePresets && caps.write) return;
     if (action.op === 'save_preset' && caps.presets && caps.savePresets && caps.write) return;
     if (action.op === 'set_zoom' && allowedRange({ value: action.position, bounds: caps.zoom })) return;
     if (action.op === 'move') {

@@ -30,6 +30,8 @@
   let source: EventSource | undefined;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let loadSequence = 0;
+  let savingOrder = $state(false);
+  let orderError = $state('');
   let active = false;
   const camera = $derived(cameras.find(item => item.id === selected));
   const feedReady = $derived(feed && !gaps.some(gap => gap.cause === 'bridge-connection' && gap.recoveredAt === undefined));
@@ -89,6 +91,26 @@
       if (err instanceof UiError && err.reason === 'NOT_AUTHENTICATED') await workspace.refreshSession();
     } finally {
       if (generation === loadSequence) loading = false;
+    }
+  };
+  const moveCamera = async (index: number, offset: -1 | 1) => {
+    const moving = cameras[index], neighbor = cameras[index + offset];
+    if (savingOrder || !moving || !neighbor) return;
+    savingOrder = true;
+    orderError = '';
+    try {
+      const { order } = await api<{ order: string[] }>({
+        path: '/api/v1/cameras/order', method: 'PUT', csrf: workspace.current().csrf,
+        body: offset === -1 ? { earlier: moving.id, later: neighbor.id } : { earlier: neighbor.id, later: moving.id }
+      });
+      loadSequence++;
+      const rank = new Map(order.map((id, position) => [id, position]));
+      cameras = [...cameras].sort((a, b) => (rank.get(a.id) ?? order.length) - (rank.get(b.id) ?? order.length));
+    } catch (err) {
+      orderError = errorText(err);
+      await loadCameras();
+    } finally {
+      savingOrder = false;
     }
   };
   const scheduleRefresh = () => {
@@ -199,13 +221,29 @@
       <h2>{t('cameras')}</h2>
       <nav class="stack camera-list" aria-label={t('camera-access')}>
         {#each cameras as item, index (item.id)}
-          <button aria-pressed={item.id === selected} onclick={() => selected = item.id}>
-            <strong>{item.name ?? t('camera-generic', { index: index + 1 })}</strong>
-            <small>{item.model ?? t('model-unknown')}</small>
-            <span class="pill" data-status={cameraStatus(item)}>{t(cameraStatus(item))}</span>
-          </button>
+          {@const label = item.name ?? t('camera-generic', { index: index + 1 })}
+          <div class="camera-selector-row">
+            <button class="camera-choice" aria-pressed={item.id === selected} onclick={() => selected = item.id}>
+              <strong>{label}</strong>
+              <small>{item.model ?? t('model-unknown')}</small>
+              <span class="pill" data-status={cameraStatus(item)}>{t(cameraStatus(item))}</span>
+            </button>
+            <div class="camera-order-controls">
+              {#each [-1, 1] as offset}
+                {@const direction = offset === -1 ? -1 : 1}
+                {@const action = t(direction === -1 ? 'camera-order-up' : 'camera-order-down', { camera: label })}
+                <button class="icon-button" type="button" aria-label={action} title={action}
+                  disabled={savingOrder || !cameras[index + direction]} onclick={() => moveCamera(index, direction)}>
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d={direction === -1 ? 'M5 12l7-7 7 7M12 5v15' : 'M5 12l7 7 7-7M12 19V4'} />
+                  </svg>
+                </button>
+              {/each}
+            </div>
+          </div>
         {/each}
       </nav>
+      {#if orderError}<p class="error" role="alert">{orderError}</p>{/if}
     </aside>
     {#key camera.id}
       <CameraPanel {camera} {revision} previewTag={previewTags[camera.id]} pushConnected={feed} {events} {historyError} {alertFrameRequest}

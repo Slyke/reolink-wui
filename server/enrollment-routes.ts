@@ -191,7 +191,8 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     const response = await bridge.api({ stableId: row.remote_id, path: '/cameras/' + row.routeId + '/users', correlation: request.id, signal: AbortSignal.timeout(22_000) });
     const data = record(await jsonResponse({ response }));
     if (!response.ok || !Array.isArray(data.users)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
-    return { writable: data.writable === true, manageAccounts: data.writable === true && data.manageAccounts === true, requiresUid: data.requiresUid === true, users: data.users.slice(0,32).flatMap(raw => {
+    const reason = typeof data.writeBlockReason === 'string' && ['vault','rotation','administrator','firmware'].includes(data.writeBlockReason) ? data.writeBlockReason : undefined;
+    return { writable: data.writable === true, writeBlockReason:reason, manageAccounts: data.writable === true && data.manageAccounts === true, requiresUid: data.requiresUid === true, users: data.users.slice(0,32).flatMap(raw => {
       const user = record(raw);
       return typeof user.username === 'string' && user.username.length > 0 && user.username.length <= 64
         ? [{ username: user.username, administrator: user.administrator === true, bridgeLogin: user.bridge_login === true }] : [];

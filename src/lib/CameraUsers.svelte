@@ -3,7 +3,7 @@
   import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { api, errorText, t, operationId, outcomeText, type Outcome } from './api.js';
   type User = { username: string; administrator: boolean; bridgeLogin: boolean };
-  type Accounts = { users: User[]; writable: boolean; manageAccounts: boolean; requiresUid: boolean };
+  type Accounts = { users: User[]; writable: boolean; manageAccounts: boolean; requiresUid: boolean; writeBlockReason?: string };
   type Action = 'add' | 'password' | 'remove';
   let { base, csrf, online, onrotation }: { base: string; csrf: string; online: boolean; onrotation?: (status: string) => void } = $props();
   let accounts = $state<Accounts>(), action = $state<Action>(), username = $state('');
@@ -107,7 +107,7 @@
         </tbody>
       </table>
     </div>
-    {#if !accounts.writable}<p class="muted">{t('camera-user-no-write')}</p>
+    {#if !accounts.writable}<p class="muted">{t(accounts.writeBlockReason ? 'camera-user-block-'+accounts.writeBlockReason : 'camera-user-no-write')}</p>
     {:else if !accounts.manageAccounts}<p class="muted">{t('camera-users-upgrade')}</p>{/if}
     {#if action && accounts.writable}
       <form class="stack" bind:this={editor} onsubmit={event => { event.preventDefault(); void save(); }}>

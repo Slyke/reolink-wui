@@ -84,7 +84,18 @@ const migrations = [
   ALTER TABLE event_history_settings ADD COLUMN storage TEXT NOT NULL DEFAULT '{"mode":"defaults"}';`,
   `UPDATE cameras SET preview_interval_ms=2000;`,
   `ALTER TABLE cameras ADD COLUMN hardware_source TEXT;
-  ALTER TABLE cameras ADD COLUMN history_key TEXT;`
+  ALTER TABLE cameras ADD COLUMN history_key TEXT;`,
+  `ALTER TABLE cameras ADD COLUMN ptz_preferences TEXT;
+  ALTER TABLE cameras ADD COLUMN ptz_intent TEXT;
+  ALTER TABLE oidc_flows ADD COLUMN return_path TEXT;
+  CREATE TABLE preset_positions (
+    camera TEXT NOT NULL REFERENCES cameras(id) ON DELETE CASCADE, slot INTEGER NOT NULL, name TEXT NOT NULL,
+    position TEXT NOT NULL, PRIMARY KEY(camera,slot)
+  );`,
+  `CREATE TABLE account_camera_orders (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    camera_order TEXT NOT NULL
+  );`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {
@@ -188,7 +199,7 @@ export const openDb = async ({ config }: { config: Config['database'] }) => {
 
 export type CameraRef = {
   id: string; bridge_id: string; remote_id: string; hardware_source: string | null; history_key: string | null; rtsp_proxy: string | null;
-  preview_interval_ms: number; preview_refresh_on_alert: PreviewAlert;
+  preview_interval_ms: number; preview_refresh_on_alert: PreviewAlert; ptz_preferences: string | null; ptz_intent: string | null;
 };
 export type CameraAccess = CameraRef & { permissions: Permission[] };
 export type Account = { id: string; label: string; admin: number; enabled: number };
@@ -196,7 +207,7 @@ export type Session = Account & {
   expires: string | number; method: 'local' | 'oidc' | 'proxy'; issuer: string | null; subject: string | null;
 };
 
-export const camerasFor = async ({ sql, account, id }: { sql: Sql; account: Account; id?: string }): Promise<CameraAccess[]> => {
+export const camerasFor = async ({ sql, account, id }: { sql: Pick<Sql,'query'>; account: Account; id?: string }): Promise<CameraAccess[]> => {
   if (account.admin === 1) {
     const rows = await sql.query<CameraRef>(
       id ? 'SELECT * FROM cameras WHERE id=$1' : 'SELECT * FROM cameras ORDER BY id', ...(id ? [id] : [])

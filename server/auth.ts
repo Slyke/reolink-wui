@@ -7,6 +7,7 @@ import type { Account, Sql, Session } from './db.js';
 import { audit } from './db.js';
 import { Failure } from './errors.js';
 import { dispatcher } from './net.js';
+import { recordingReturnPath } from '../shared/urls.js';
 import { forwardProofHeader, verifiedIdentityHeader, ingressSubject, samePeer, sameSecret, subject } from './trusted-proxy.js';
 
 export const hash = ({ value }: { value: string }) => createHash('sha256').update(value).digest('hex');
@@ -244,6 +245,8 @@ export class Auth {
   async oidcStart({ request, reply }: { request: FastifyRequest; reply: FastifyReply }) {
     this.throttle({ request, name: 'oidc', method: 'oidc' });
     const client = await this.discover().catch(() => { throw new Failure('OIDC_FAILED', 502); });
+    const origin = this.config.publicOrigin.origin;
+    const next = recordingReturnPath(new URL(request.url,origin).searchParams.get('next'),origin) ?? null;
     const token = randomToken();
     const state = oidc.randomState();
     const nonce = oidc.randomNonce();
@@ -251,8 +254,8 @@ export class Auth {
     await this.sql.transaction(async query => {
       await query('DELETE FROM oidc_flows WHERE expires <= $1 OR id=$2',
         Date.now(), hash({ value: cookie({ request, name: flowCookie }) ?? token }));
-      await query('INSERT INTO oidc_flows(id,state,nonce,verifier,expires) VALUES ($1,$2,$3,$4,$5)',
-        hash({ value: token }), state, nonce, verifier, Date.now() + 300_000);
+      await query('INSERT INTO oidc_flows(id,state,nonce,verifier,expires,return_path) VALUES ($1,$2,$3,$4,$5,$6)',
+        hash({ value: token }), state, nonce, verifier, Date.now() + 300_000, next);
     });
     setCookie({ reply, name: flowCookie, value: token, seconds: 300 });
     return reply.redirect(oidc.buildAuthorizationUrl(client, {
@@ -264,8 +267,8 @@ export class Auth {
   async oidcFinish({ request, reply }: { request: FastifyRequest; reply: FastifyReply }) {
     const token = cookie({ request, name: flowCookie });
     if (!token) throw new Failure('OIDC_FAILED', 400);
-    const [flow] = await this.sql.query<{ state: string; nonce: string; verifier: string }>(
-      'DELETE FROM oidc_flows WHERE id=$1 AND expires>$2 RETURNING state,nonce,verifier', hash({ value: token }), Date.now()
+    const [flow] = await this.sql.query<{ state: string; nonce: string; verifier: string; return_path: string | null }>(
+      'DELETE FROM oidc_flows WHERE id=$1 AND expires>$2 RETURNING state,nonce,verifier,return_path', hash({ value: token }), Date.now()
     );
     setCookie({ reply, name: flowCookie, value: '', seconds: 0 });
     if (!flow) throw new Failure('OIDC_FAILED', 400);
@@ -277,7 +280,7 @@ export class Auth {
     }).then(tokens => tokens.claims()).catch(() => { throw new Failure('OIDC_FAILED', 401); });
     if (!claims || typeof claims.sub !== 'string' || claims.sub.length > 180) throw new Failure('OIDC_FAILED', 401);
     await this.external({ request, reply, method: 'oidc', identity: { issuer: new URL(claims.iss).href, subject: claims.sub } });
-    return reply.redirect('/', 303);
+    return reply.redirect(recordingReturnPath(flow.return_path,this.config.publicOrigin.origin) ?? '/', 303);
   }
 
   async logout({ request, reply }: { request: FastifyRequest; reply: FastifyReply }) {

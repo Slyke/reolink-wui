@@ -28,7 +28,9 @@
       }
       session = undefined;
       appearance.setAccount({});
-      await goto('/', { replaceState: true });
+      const destination = page.url.pathname === '/recordings' && page.url.searchParams.has('recording')
+        ? '/?' + new URLSearchParams({ next: page.url.pathname + page.url.search }) : '/';
+      await goto(destination, { replaceState: true });
     } catch (err) {
       session = undefined;
       appearance.setAccount({});

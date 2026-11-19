@@ -2,6 +2,7 @@
   import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
   import { api, errorText, fetchPreview, operationId, outcomeText, t, UiError, url, type Outcome } from './api.js';
   import CameraPtz from './CameraPtz.svelte';
+  import CameraPresetShortcuts from './CameraPresetShortcuts.svelte';
   import { dismissOnBackdrop } from './dialog.js';
   import type { Camera } from './models.js';
 
@@ -12,6 +13,7 @@
   const id = $props.id();
   const base = $derived('/api/v1/cameras/' + camera.id);
   const enabled = $derived(camera.capabilities.preview);
+  const previewPending = $derived(camera.capabilities.mediaAllowed && camera.capabilities.previewState === 'unknown');
   const canStream = $derived(camera.capabilities.media.length > 0);
   const showPtz = $derived(camera.capabilities.ptz?.supported && (camera.capabilities.ptz.read || camera.capabilities.ptz.write));
   let panel: HTMLDivElement;
@@ -78,14 +80,57 @@
       if (sequence === playbackSequence) liveBusy = false;
     }
   };
-  const show = async ({ play }: { play: boolean }) => {
+  const show = async () => {
+    if (expanded || !camera.capabilities.mediaAllowed || (!enabled && !canStream)) return;
     expanded = true;
     liveMessage = '';
     await tick();
-    if (!dialog.isConnected) return;
+    if (!expanded || !dialog?.isConnected) return;
     if (!dialog.open) dialog.showModal();
-    if (play) await startLive();
+    if (canStream) await startLive();
   };
+  function expandOnDoublePress(node: HTMLElement) {
+    let first: { x: number; y: number; time: number } | undefined;
+    let down: { x: number; y: number; time: number } | undefined;
+    const reset = () => { first = undefined; down = undefined; };
+    const begin = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch' || !event.isPrimary) { reset(); return; }
+      down = { x: event.clientX, y: event.clientY, time: event.timeStamp };
+    };
+    const end = (event: PointerEvent) => {
+      if (!down || !event.isPrimary || event.pointerType !== 'touch' || event.timeStamp - down.time > 350
+          || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 20) { reset(); return; }
+      down = undefined;
+      if (first && event.timeStamp - first.time <= 350 && Math.hypot(event.clientX - first.x, event.clientY - first.y) <= 32) {
+        reset();
+        void show();
+      } else first = { x: event.clientX, y: event.clientY, time: event.timeStamp };
+    };
+    const doubleClick = (event: MouseEvent) => { if (event.button === 0) void show(); };
+    node.addEventListener('dblclick', doubleClick);
+    node.addEventListener('pointerdown', begin);
+    node.addEventListener('pointerup', end);
+    node.addEventListener('pointercancel', reset);
+    return { destroy() {
+      node.removeEventListener('dblclick', doubleClick);
+      node.removeEventListener('pointerdown', begin);
+      node.removeEventListener('pointerup', end);
+      node.removeEventListener('pointercancel', reset);
+    } };
+  }
+
+  // Some browsers report load for a multipart image only after the connection closes.
+  function firstLiveFrame(node: HTMLImageElement, path: string) {
+    let animation = 0;
+    const check = () => {
+      if (playback !== path) return;
+      if (node.naturalWidth > 0 && node.naturalHeight > 0) playing = true;
+      else animation = requestAnimationFrame(check);
+    };
+    animation = requestAnimationFrame(check);
+    return { destroy() { cancelAnimationFrame(animation); } };
+  }
+
   const close = () => {
     expanded = false;
     liveMessage = '';
@@ -99,7 +144,7 @@
   });
   $effect(() => {
     // Resume when the selected surface or playback changes.
-    void [enabled, expanded, playback, camera.previewIntervalMs, camera.previewPush, pushConnected];
+    void [enabled, previewPending, expanded, playback, camera.previewIntervalMs, camera.previewPush, pushConnected];
     untrack(() => resumePreview?.());
   });
   $effect(() => {
@@ -182,7 +227,8 @@
     resumePreview = () => {
       if (!enabled) {
         request?.abort();
-        clear();
+        if (previewPending) failed = true;
+        else clear();
         finishedAt = undefined;
       }
       resume();
@@ -221,13 +267,16 @@
 
 {#snippet preview()}
   <div class="viewport preview-viewport">
-    {#if image && enabled}
+    {#if image && (enabled || previewPending)}
       <img src={image} alt={t('preview-alt', { camera: name })}
         onload={() => { previewLoaded = true; }}
         onerror={() => { failed = true; previewLoaded = false; }} />
       {#if failed}<small class="preview-notice">{t('preview-stale')}</small>{/if}
     {:else}
-      <p>{t(!enabled ? 'preview-unconfigured' : failed ? 'preview-offline' : 'preview-waiting')}</p>
+      <p>{t(enabled ? (failed ? 'preview-offline' : 'preview-waiting') :
+        camera.capabilities.previewState === 'unconfigured' ? 'preview-unconfigured' :
+        camera.capabilities.previewState === 'denied' ? 'preview-denied' :
+        camera.capabilities.previewState === 'unavailable' ? 'preview-no-api' : 'preview-connecting')}</p>
     {/if}
   </div>
 {/snippet}
@@ -268,7 +317,7 @@
       {/if}
       {#if !large}
         <button class="icon-button" type="button" title={t('live-enlarge')} aria-label={t('live-enlarge')}
-          aria-haspopup="dialog" disabled={!enabled && !canStream} onclick={() => show({ play: false })}>
+          aria-haspopup="dialog" disabled={!enabled && !canStream} onclick={show}>
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
           </svg>
@@ -283,20 +332,23 @@
     <h2 id={headingId ?? id + '-inline'}>{t('live')}</h2>
     {@render toolbar(false)}
   </div>
-  <div bind:this={panel}>{@render preview()}</div>
+  <div class="live-preview-target" bind:this={panel} use:expandOnDoublePress>{@render preview()}</div>
   {#if camera.capabilities.mediaAllowed || actions}
-    <div class="row">
+    <div class="row live-primary-actions">
       {#if camera.capabilities.mediaAllowed}
-        <button class="primary" type="button" aria-haspopup="dialog" disabled={!canStream}
-          onclick={() => show({ play: true })}>{t('live-start')}</button>
+        <button class="primary mobile-live-start" type="button" aria-haspopup="dialog" disabled={!canStream}
+          onclick={show}>{t('live-start')}</button>
       {/if}
       {@render actions?.()}
     </div>
   {/if}
+  {#if compact && camera.capabilities.capture && camera.capabilities.ptz?.read && camera.capabilities.ptz.write && camera.capabilities.ptz.presets}
+    <CameraPresetShortcuts {camera} {csrf} />
+  {/if}
   {#if !compact && !expanded}{@render guidance()}{/if}
 </div>
 
-<dialog class="live-dialog" aria-labelledby={id + '-title'} bind:this={dialog} use:dismissOnBackdrop onclose={close}>
+<dialog class="live-dialog" class:with-ptz={showPtz} aria-labelledby={id + '-title'} bind:this={dialog} use:dismissOnBackdrop onclose={close}>
   {#if expanded}
     <div class="stack">
       <div class="row between panel-title">
@@ -308,16 +360,28 @@
       </div>
       <div class="live-dialog-body" class:with-ptz={showPtz}>
         <div class="stack">
-          {#if playback}
-            {@const path = playback}
-            <div class="viewport">
-              <img src={url(path)} alt={t('live-alt')}
-                onload={() => { if (playback === path) playing = true; }}
-                onerror={() => failLive({ path })} />
-            </div>
-          {:else}
-            {@render preview()}
-          {/if}
+          <div class="live-display">
+            {#if playback}
+              {#key playback}
+                {@const path = playback}
+                <div class="viewport">
+                  <img src={url(path)} alt={t('live-alt')} use:firstLiveFrame={path}
+                    onload={() => { if (playback === path) playing = true; }}
+                    onerror={() => failLive({ path })} />
+                </div>
+              {/key}
+            {:else if liveBusy}
+              <div class="viewport" aria-hidden="true"></div>
+            {:else}
+              {@render preview()}
+            {/if}
+            {#if liveBusy || (playback && !playing)}
+              <div class="viewport stream-loading">
+                {#if image && (enabled || previewPending)}<img src={image} alt="" />{/if}
+                <span role="status">{t('live-starting')}</span>
+              </div>
+            {/if}
+          </div>
           <div class="row">
             {#if canStream}
               <select class="stream-quality" aria-label={t('live-quality')} bind:value={stream} disabled={liveBusy}
@@ -334,7 +398,6 @@
               <button class="primary" type="button" disabled={!canStream} onclick={startLive}>{t('live-start')}</button>
             {/if}
           </div>
-          {#if liveBusy || (playback && !playing)}<p role="status" class="muted">{t('live-starting')}</p>{/if}
           {#if liveMessage}<p role="status" class="notice">{liveMessage}</p>{/if}
           {@render guidance()}
         </div>

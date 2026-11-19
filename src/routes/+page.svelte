@@ -1,5 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
+  import { recordingReturnPath } from '../../shared/urls.js';
   import { onMount } from 'svelte';
   import { api, errorText, t, url } from '$lib/api.js';
   import type { SessionView } from '$lib/models.js';
@@ -9,10 +11,12 @@
   let error = $state('');
   let username = $state(''), password = $state('');
 
+  const returnPath = $derived(recordingReturnPath(page.url.searchParams.get('next'), page.url.origin));
+  const destination = $derived(returnPath ?? '/monitor');
   const loadSession = async () => {
     try {
       session = await api<SessionView>({ path: '/api/v1/session' });
-      if (session.user) await goto('/monitor', { replaceState: true });
+      if (session.user) await goto(destination, { replaceState: true });
     } catch (err) {
       error = errorText(err);
     } finally {
@@ -25,7 +29,7 @@
     try {
       const body = method === 'local' ? { username, password } : undefined;
       await api({ path: '/api/v1/session/' + method, method: 'POST', body });
-      await goto('/monitor');
+      await goto(destination);
     } catch (err) {
       error = errorText(err);
     } finally {
@@ -57,7 +61,7 @@
         </form>
       {/if}
       {#if session?.methods?.proxy}<button disabled={busy} onclick={() => signIn({ method: 'proxy' })}>{t('proxy-signin')}</button>{/if}
-      {#if session?.methods?.oidc}<a class="button primary" href={url('/api/v1/session/oidc/start')}>{t('oidc-signin')}</a>{/if}
+      {#if session?.methods?.oidc}<a class="button primary" href={url('/api/v1/session/oidc/start') + (returnPath ? '?' + new URLSearchParams({next:returnPath}) : '')}>{t('oidc-signin')}</a>{/if}
       {#if session?.methods && !Object.values(session.methods).some(Boolean)}<p class="muted">{t('no-signin')}</p>{/if}
     {/if}
   </section>

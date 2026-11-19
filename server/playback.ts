@@ -121,12 +121,18 @@ export class Playback {
       source: row.rtsp_proxy, controller: new AbortController(), viewers: new Set(), done: Promise.resolve()
     };
     shared.viewers.add(output);
-    const close = () => { output.destroy(); };
+    const detach = () => {
+      if (shared.viewers.delete(output) && !shared.viewers.size) shared.controller.abort();
+    };
+    const close = () => {
+      detach();
+      // End the downstream HTTP response so reverse proxies release the browser connection.
+      if (!output.destroyed && !output.writableEnded) output.end('--wui--\r\n');
+    };
     signal.addEventListener('abort', close, { once: true });
     output.once('close', () => {
       signal.removeEventListener('abort', close);
-      shared.viewers.delete(output);
-      if (!shared.viewers.size) shared.controller.abort();
+      detach();
     });
     if (shared.latest) output.write(shared.latest);
     if (!active) {

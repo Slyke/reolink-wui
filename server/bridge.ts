@@ -431,6 +431,11 @@ export class Bridge {
       && this.priority.some(source => (source === 'ws' || source === 'mqtt') && this.coversCamera(source, camera) && this.feeds.get(source)?.ready);
   }
 
+  previewState(camera: string) {
+    if (!this.http) return 'unavailable';
+    if (!this.has('v1')) return 'unknown';
+    return this.previewCameras.has(camera) ? 'configured' : 'unconfigured';
+  }
   hasPreview(camera: string) {
     return this.has('v1') && this.previewCameras.has(camera);
   }

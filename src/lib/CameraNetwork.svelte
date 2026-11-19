@@ -76,7 +76,7 @@
         {#if rtsp?.supported && rtsp.port}<p>{t('network-rtsp-port',{port:String(rtsp.port)})}</p>{/if}
         {#if rtsp?.supported === false}<p class="muted">{t('network-rtsp-unsupported')}</p>
         {:else if access.write && (rtsp?.supported || !access.read)}
-          <form class="row" onsubmit={e=>{e.preventDefault();void saveRtsp();}}>
+          <form class="row network-rtsp-actions" onsubmit={e=>{e.preventDefault();void saveRtsp();}}>
             <label>{t('network-rtsp-service')}
               <select bind:value={choice} disabled={busy || rtspBusy}>
                 {#if choice === undefined}<option value={undefined} disabled>{t('choose-option')}</option>{/if}
@@ -98,24 +98,26 @@
         {#if network.link.dhcp != null}<dt>{t('network-addressing')}</dt><dd>{network.link.dhcp ? 'DHCP' : t('network-static')}</dd>{/if}
       </dl>
     {/if}
-    {#if network?.wifi?.ssid}<p>{t('network-current-ssid', {name:network.wifi.ssid})}</p>{/if}
-    {#if canEdit}
-      <form class="stack" onsubmit={event=>{event.preventDefault();void save();}}>
-        <p class="muted">{t('network-wired-help')}</p>
-        <div class="form-grid">
-          <label>{t('wifi-ssid')}<input list={listId} disabled={busy} autocomplete="off" bind:value={ssid} required /></label>
-          {#if !openNetwork}<label>{t('wifi-password')}<input type="password" autocomplete="new-password" disabled={busy} bind:value={password} required /></label>{/if}
-        </div>
-        <datalist id={listId}>{#each network?.wifi?.nearby ?? [] as name}<option value={name}></option>{/each}</datalist>
-        <label class="row"><input type="checkbox" disabled={busy} bind:checked={openNetwork} onchange={()=>password=''} />{t('network-open')}</label>
-        <div class="row"><button class="primary" disabled={busy || !valid}>{t('network-save')}</button></div>
-      </form>
-    {:else if network && !network.wifi?.configurable}
-      <p class="muted">{t('network-no-wifi')}</p>
-    {/if}
+    <fieldset class="stack"><legend>{t('network-wifi')}</legend>
+      {#if network?.wifi?.ssid}<p>{t('network-current-ssid', {name:network.wifi.ssid})}</p>{/if}
+      {#if canEdit}
+        <form class="stack" onsubmit={event=>{event.preventDefault();void save();}}>
+          <p class="muted">{t('network-wired-help')}</p>
+          <div class="form-grid">
+            <label>{t('wifi-ssid')}<input list={listId} disabled={busy} autocomplete="off" bind:value={ssid} required /></label>
+            {#if !openNetwork}<label>{t('wifi-password')}<input type="password" autocomplete="new-password" disabled={busy} bind:value={password} required /></label>{/if}
+          </div>
+          <datalist id={listId}>{#each network?.wifi?.nearby ?? [] as name}<option value={name}></option>{/each}</datalist>
+          <label class="row"><input type="checkbox" disabled={busy} bind:checked={openNetwork} onchange={()=>password=''} />{t('network-open')}</label>
+          <div class="row"><button class="primary" disabled={busy || !valid}>{t('network-save')}</button></div>
+        </form>
+      {:else if network && !network.wifi?.configurable}
+        <p class="muted">{t('network-no-wifi')}</p>
+      {/if}
+      {#if message}<p role="status">{message}</p>{/if}
+      {#if error}<p class="error" role="alert">{error}</p>{/if}
+    </fieldset>
     {#if access.read}<div class="row"><button disabled={busy || rtspBusy} onclick={refresh}>{t('network-reload')}</button></div>{/if}
     {#if busy}<p role="status">{t('loading')}</p>{/if}
-    {#if message}<p role="status">{message}</p>{/if}
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
   {/if}
 </SettingsDisclosure>

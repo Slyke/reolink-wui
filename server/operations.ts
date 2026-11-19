@@ -10,6 +10,7 @@ type Stored = {
   bridge_correlation: string | null; started: number | string
 };
 const stalledMs = 95_000;
+const uncertainMs = 28_000;
 
 const publicResult = ({ row }: { row: Stored }) => {
   const stalled = row.outcome === 'pending' && Number(row.started) + stalledMs < Date.now();
@@ -83,12 +84,20 @@ export class Operations {
     return { id, correlationId: correlation, ...result };
   }
 
+  async ptzRecoveryDelay(camera: string) {
+    const rows = await this.sql.query<{outcome:string; started:number|string}>(
+      "SELECT outcome, MAX(started) AS started FROM operations WHERE resource=$1 AND reconcile_group='ptz' AND outcome IN ('unknown','pending') GROUP BY outcome",camera
+    );
+    if (!rows.length) return 0;
+    return Math.max(1,...rows.map(row=>Number(row.started)+(row.outcome==='pending'?stalledMs:uncertainMs)-Date.now()+1));
+  }
+
   async reconcile({ camera, group, before }: { camera: string; group: string; before: number }) {
     // Keep an in-flight or recently disconnected write fenced while it can still be executing on the bridge.
     await this.sql.query(
       `UPDATE operations SET outcome=CASE WHEN outcome='pending' THEN 'unknown' ELSE outcome END,reconcile_group=NULL
        WHERE resource=$1 AND reconcile_group=$2 AND ((outcome='unverified' AND started<$5) OR (outcome='unknown' AND started<$3) OR (outcome='pending' AND started<$4))`,
-      camera, group, before - 28_000, before - stalledMs, before
+      camera, group, before - uncertainMs, before - stalledMs, before
     );
   }
 

@@ -122,8 +122,8 @@ for (const proxy of [false,true]) {
       }
       if (oidc) {
         const id = await seed({issuer: new URL(oidc.issuer).href, subject:'stable-subject'});
-        const finish = async ({fault} = {}) => {
-          const start = await incoming({path:'/session/oidc/start'});
+        const finish = async ({fault,next} = {}) => {
+          const start = await incoming({path:'/session/oidc/start'+(next?'?'+new URLSearchParams({next}):'')});
           assert.equal(start.statusCode,303,start.body);
           const params = new URL(start.headers.location).searchParams;
           assert.equal(params.get('code_challenge_method'),'S256');
@@ -137,8 +137,11 @@ for (const proxy of [false,true]) {
           assert.equal((await incoming({path,headers})).statusCode,400);
           return done;
         };
-        const done = await finish();
+        const sharedRecording='/recordings?camera=fixture&date=2026-11-17&recording=clip&stream=main';
+        const done = await finish({next:sharedRecording});
         assert.equal(done.statusCode,303,done.body);
+        assert.equal(done.headers.location,sharedRecording);
+        assert.equal((await finish({next:'https://other.invalid/recordings'})).headers.location,'/');
         const authCookie = done.cookies.find(cookie => cookie.name==='__Host-reolink_session');
         const session = (await incoming({path:'/session',headers:{cookie:authCookie.name+'='+authCookie.value}})).json();
         assert.equal(session.user.id,id);

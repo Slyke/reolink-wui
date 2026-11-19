@@ -33,7 +33,7 @@ const expectHover = async (page, button) => {
 
 for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page }) => {
-    test.setTimeout(65000);
+    test.setTimeout(100000);
     page.setDefaultTimeout(6000);
     const bridge = await fixtureBridge({ previewCameras:['alpha','beta'],fixedCameras:['beta'],capture:true,recordings:true,recordingCount:3,metadataPages:true,apiEvents:true,enrollmentTargets:[],enrollmentAddress:'192.168.10.12' });
     const remoteBridge = await fixtureBridge({websocket:true,apiEvents:true,namePrefix:'Remote ',imageSettings:false,recordingSettings:false,manageAccounts:false,enrollmentTargets:[]});
@@ -98,7 +98,16 @@ for (const mode of ['browser','proxy']) {
       await expect(page).toHaveURL(publicOrigin+'/monitor');
       await expect(page.locator('html')).toHaveAttribute('data-palette','retro');
       await expect(page.locator('html')).toHaveAttribute('data-theme','light');
-      await page.getByRole('button',{name:/Loading dock/}).click();
+      const cameraChoices = page.locator('.camera-list .camera-choice strong');
+      await expect(cameraChoices).toHaveCount(2);
+      const originalOrder = await cameraChoices.allTextContents();
+      const reordered = [...originalOrder].reverse();
+      await page.getByRole('button',{name:'Move '+originalOrder[1]+' up'}).click();
+      await expect(cameraChoices).toHaveText(reordered);
+      await page.reload();
+      await expect(cameraChoices).toHaveText(reordered);
+      await expect(page.getByRole('button',{name:'Move '+reordered[0]+' up'})).toBeDisabled();
+      await page.getByRole('button',{name:/^Loading dock/}).click();
       await expect(page.getByRole('heading',{name:'Loading dock'})).toBeVisible();
       await expect(page.getByText('Event feed connected')).toBeVisible();
       expect(observed.some(item => new URL(item.url).pathname === prefix + '/v1/events')).toBe(true);
@@ -146,8 +155,13 @@ for (const mode of ['browser','proxy']) {
         const ptz = columns.locator('.camera-ptz');
         if (await ptz.count()) {
           const controls = await ptz.boundingBox();
-          expect(controls.x).toBeGreaterThanOrEqual(live.x + live.width);
-          expect(Math.abs(controls.y-live.y)).toBeLessThan(2);
+          if (page.viewportSize().width <= 800) {
+            expect(controls.y).toBeGreaterThanOrEqual(live.y + live.height);
+            expect(Math.abs(controls.width - live.width)).toBeLessThan(2);
+          } else {
+            expect(controls.x).toBeGreaterThanOrEqual(live.x + live.width);
+            expect(Math.abs(controls.y-live.y)).toBeLessThan(2);
+          }
         } else expect(Math.abs((await columns.boundingBox()).width - live.width)).toBeLessThan(2);
       };
       await assertMonitorLayout();
@@ -221,7 +235,7 @@ for (const mode of ['browser','proxy']) {
       await page.setViewportSize({width:375,height:812});
       await assertMonitorLayout();
       await page.setViewportSize({width:1280,height:720});
-      await expect(page.getByRole('button',{name:/Second camera/})).toBeVisible();
+      await expect(page.getByRole('button',{name:/^Second camera/})).toBeVisible();
       const previewBaseline = bridge.previewRequests.length;
       await page.getByRole('link',{name:'Dashboard',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/dashboard');
@@ -230,6 +244,7 @@ for (const mode of ['browser','proxy']) {
         await expect(preview).toBeVisible();
         await preview.evaluate(image => image.decode());
       }
+      await expect(page.locator('article.camera-tile h2 a')).toHaveText(reordered);
       const betaPreviews = () => bridge.previewRequests.slice(previewBaseline).filter(request => request.camera === 'beta');
       await expect.poll(() => betaPreviews().some(request => request.unchanged)).toBe(true);
       const previews = betaPreviews();
@@ -240,10 +255,20 @@ for (const mode of ['browser','proxy']) {
       const largeView = page.getByRole('dialog',{name:'Live view · Loading dock'});
       const expandView = card.getByRole('button',{name:'Enlarge live view'});
       const previewTile = await card.getByRole('img',{name:'Loading dock camera preview'}).boundingBox();
-      await expandView.click();
-      const enlargedPreview = largeView.getByRole('img',{name:'Loading dock camera preview'});
-      await expect(enlargedPreview).toBeVisible();
-      expect((await enlargedPreview.boundingBox()).width).toBeGreaterThan(previewTile.width);
+      await expect(card.getByRole('button',{name:'Start live stream'})).toHaveCount(0);
+      let releaseFirstFrame;
+      bridge.holdMediaUntil(new Promise(resolve => { releaseFirstFrame = resolve; }));
+      try {
+        await expandView.click();
+        const overlay = largeView.locator('.stream-loading');
+        await expect(overlay.getByRole('status')).toHaveText('Loading stream…');
+        const poster = overlay.locator('img');
+        await expect(poster).toHaveAttribute('src',await card.getByRole('img',{name:'Loading dock camera preview'}).getAttribute('src'));
+        expect(await poster.evaluate(el=>getComputedStyle(el).filter)).toBe('brightness(0.4)');
+      } finally { releaseFirstFrame(); bridge.holdMediaUntil(undefined); }
+      await expect(largeView.locator('.stream-loading')).toHaveCount(0);
+      const enlargedLive = largeView.getByRole('img',{name:'Live camera video'});
+      expect((await enlargedLive.boundingBox()).width).toBeGreaterThan(previewTile.width);
       await page.mouse.click(2,2);
       await expect(largeView).toBeHidden();
       await expect(expandView).toBeFocused();
@@ -257,7 +282,7 @@ for (const mode of ['browser','proxy']) {
       await fixedView.getByRole('button',{name:'Close'}).click();
 
       const dashboardPlayback = liveResponse();
-      await card.getByRole('button',{name:'Start live stream'}).click();
+      await card.getByRole('img',{name:'Loading dock camera preview'}).dblclick();
       await dashboardPlayback;
       const video = largeView.getByRole('img',{name:'Live camera video'});
       await expect.poll(() => video.evaluate(image => image.naturalWidth)).toBeGreaterThan(0);
@@ -274,6 +299,18 @@ for (const mode of ['browser','proxy']) {
       expect(tiltUp.x).toBeCloseTo(center.x,0); expect(tiltDown.x).toBeCloseTo(center.x,0);
       expect(panLeft.x).toBeLessThan(center.x); expect(panRight.x).toBeGreaterThan(center.x);
       expect(tiltUp.y).toBeLessThan(center.y); expect(tiltDown.y).toBeGreaterThan(center.y);
+      const statusBox = modalPtz.getByRole('status',{name:'Command status'});
+      const geometry = async () => Promise.all([largeView,largeView.locator('.viewport'),pan,statusBox].map(async item => {
+        const box = await item.boundingBox();
+        return [box.x,box.y,box.width,box.height].map(Math.round);
+      }));
+      const atRest = await geometry();
+      bridge.failNextPtzMove('PTZ_MOVE_START_FAILED');
+      const afterTimeout = ptzRequest('status');
+      await pan.click(); await afterTimeout;
+      await expect(statusBox).toContainText('Stop confirmed.');
+      await expect(statusBox).toContainText('Reference');
+      expect(await geometry()).toEqual(atRest);
       const prior = bridge.requests.length;
       const tapRead = ptzRequest('status');
       await pan.click(); await tapRead;
@@ -357,24 +394,43 @@ for (const mode of ['browser','proxy']) {
       await liveView.getByRole('button',{name:'Refresh live view'}).click();
       await manualFrame;
       const streamResponse = liveResponse();
-      await liveView.getByRole('button',{name:'Start live stream'}).click();
+      await expect(liveView.getByRole('button',{name:'Start live stream'})).toHaveCount(0);
+      await liveView.getByRole('button',{name:'Enlarge live view'}).click();
       await streamResponse;
       const live = largeView.getByRole('img',{name:'Live camera video'});
       await expect.poll(() => live.evaluate(element => element.naturalWidth)).toBeGreaterThan(0);
       await expect(largeView.getByText('Bridge camera relay',{exact:true})).toHaveCount(0);
       await expect(largeView.getByRole('button',{name:'Refresh live view'})).toHaveCount(0);
-      await modalPtz.getByRole('button',{name:'Load presets'}).click();
-      await expect(modalPtz.getByRole('option',{name:'Default'})).toBeAttached();
+      await expect(modalPtz.getByRole('button',{name:'Load presets'})).toHaveCount(0);
+      await expect(modalPtz.getByLabel('Presets',{exact:true}).getByRole('option',{name:'Default'})).toBeAttached();
       await modalPtz.getByRole('spinbutton',{name:'Absolute zoom',exact:true}).fill('7');
       await modalPtz.getByRole('button',{name:'Set zoom'}).click();
       await expect.poll(() => bridge.requests.some(r => r.action?.op === 'set_zoom' && r.action.position === 7)).toBe(true);
+      const saveDisclosure = modalPtz.locator('details.ptz-save').filter({has:page.locator('summary',{hasText:'Save a preset'})});
+      await expect(saveDisclosure).not.toHaveAttribute('open','');
+      await saveDisclosure.locator('summary').click();
       await modalPtz.getByLabel('Preset number').fill('3');
       await modalPtz.getByLabel('Preset name').fill('Entrance');
       await modalPtz.getByRole('button',{name:'Save current position'}).click();
-      await expect(modalPtz.getByRole('option',{name:'3 · Entrance'})).toBeAttached();
+      await expect(modalPtz.getByLabel('Presets',{exact:true}).getByRole('option',{name:'3 · Entrance'})).toBeAttached();
       await expect(modalPtz.getByRole('button',{name:'Replace saved position'})).toBeEnabled();
       await modalPtz.getByRole('button',{name:'Recall preset'}).click();
       await expect.poll(() => bridge.requests.some(r => r.action?.op === 'goto_preset' && r.action.preset_id === 3)).toBe(true);
+      const presetOptions = modalPtz.locator('details').filter({has:page.locator('summary',{hasText:'Preset order and return'})});
+      await presetOptions.locator('summary').click();
+      await presetOptions.getByRole('button',{name:'Move preset 3 earlier'}).click();
+      await presetOptions.getByLabel('Return to preset').selectOption('2');
+      await presetOptions.getByLabel('Return after (seconds)').fill('8');
+      await presetOptions.getByRole('button',{name:'Save changes',exact:true}).click();
+      await expect(statusBox).toContainText('Preset preferences saved');
+      await presetOptions.locator('summary').click();
+      const deleteButton=modalPtz.getByRole('button',{name:'Delete preset',exact:true});
+      page.once('dialog',d=>d.dismiss());
+      await deleteButton.click();
+      await expect(modalPtz.getByLabel('Presets',{exact:true})).toHaveValue('3');
+      page.once('dialog',d=>d.accept());
+      await deleteButton.click();
+      await expect(statusBox).toContainText('Preset 3 deleted');
       await largeView.getByRole('button',{name:'Stop live stream'}).click();
       await expect(largeView.getByRole('img',{name:/camera preview$/})).toBeVisible();
       await expect(largeView.getByRole('link',{name:'Configure playback'})).toHaveCount(0);
@@ -636,7 +692,11 @@ for (const mode of ['browser','proxy']) {
       const network=page.getByRole('group',{name:'Network and Wi-Fi',exact:true});
       await network.locator('summary').click();
       await expect(network.getByText('192.0.2.3')).toBeVisible();
+      const wifiBox = network.getByRole('group',{name:'Wi-Fi',exact:true});
+      await expect(wifiBox.getByLabel('Wi-Fi network name')).toBeVisible();
       const rtspService = network.getByLabel('Camera RTSP service');
+      const bottom = element => element.evaluate(el=>Math.round(el.getBoundingClientRect().bottom));
+      expect(Math.abs(await bottom(rtspService) - await bottom(network.getByRole('button',{name:'Save RTSP setting'})))).toBeLessThanOrEqual(1);
       await expect(network.getByText('Camera port 8554')).toBeVisible();
       await expect(rtspService.locator('option:checked')).toHaveText('Off');
       await rtspService.selectOption({label:'On'});
@@ -763,6 +823,22 @@ for (const mode of ['browser','proxy']) {
       const dashboardFeed = page.waitForResponse(response => new URL(response.url()).pathname === prefix+'/v1/events');
       await page.getByRole('link',{name:'Dashboard',exact:true}).click();
       await dashboardFeed;
+      const presetTile = page.locator('article.camera-tile').filter({has:page.locator('a[href="/monitor?camera='+camera.id+'"]')});
+      const presetKeys = presetTile.getByRole('group',{name:'Preset snapshots'});
+      await expect(presetKeys.getByRole('button')).toHaveText(['2']);
+      bridge.setPresetList(Array.from({length:10},(_,i)=>[i+1,'Preset '+(i+1)]));
+      const presetsChanged = () => page.evaluate(id=>window.dispatchEvent(new CustomEvent('camera-presets',{detail:id})),camera.id);
+      await presetsChanged();
+      await expect(presetKeys.getByRole('button')).toHaveCount(8);
+      const keys = await presetKeys.getByRole('button').evaluateAll(items => items.map(el=>el.getBoundingClientRect().y));
+      expect(keys[0]).toBe(keys[3]);
+      expect(keys[4]).toBeGreaterThan(keys[3]);
+      bridge.setPresetList([[2,'Default']]);
+      await presetsChanged();
+      await expect(presetKeys.getByRole('button')).toHaveText(['2']);
+      await presetKeys.getByRole('button',{name:/Go to preset 2/}).click();
+      await expect(presetTile.getByRole('img',{name:'Captured camera snapshot'})).toBeVisible();
+      await presetTile.getByRole('button',{name:'Close snapshot'}).click();
       await expect.poll(() => frameTimings.length).toBeGreaterThanOrEqual(2);
       expect(frameTimings[1].start - frameTimings[0].end).toBeGreaterThanOrEqual(650);
       await expect.poll(()=>frameTimings.every(item=>item.end !== undefined)).toBe(true);
@@ -833,7 +909,14 @@ for (const mode of ['browser','proxy']) {
         await route.fulfill({ response, json:{ ...await response.json(), refreshedAt:clockCheck } });
       },{times:1});
       await page.getByRole('button',{name:'Refresh',exact:true}).click();
-      await expect(page.getByText('At the last check the camera read 12:30 and your clock read 13:30.')).toBeVisible();
+      const clockInfo = page.locator('.timeline-title .info-button');
+      await expect(clockInfo).toBeVisible();
+      const clockHint = page.getByText('At the last check the camera read 12:30 and your clock read 13:30.');
+      await expect(clockHint).toBeHidden();
+      await clockInfo.click();
+      await expect(clockHint).toBeVisible();
+      await page.getByRole('heading',{name:'Recording timeline'}).click();
+      await expect(clockHint).toBeHidden();
       await expect(storagePanel.getByRole('alert')).toHaveCount(0);
       await expect(storagePanel.getByText('64 GB',{exact:true})).toBeVisible();
       await expect(inputDate).toHaveValue('2026-11-16');
@@ -852,7 +935,10 @@ for (const mode of ['browser','proxy']) {
       bridge.setRecordingCount(3);
       await page.reload();
       await expect(sort).toHaveValue('asc');
-      await expect(inputDate).toHaveValue('2026-11-17');
+      await expect(inputDate).toHaveValue('2026-11-16');
+      await inputDate.fill('2026-11-17');
+      await page.getByRole('button',{name:'Search recordings'}).click();
+      await expect(firstClip).toHaveAttribute('datetime',/^2026-11-17/);
       await expect(page.getByText('64 GB',{exact:true})).toBeVisible();
       await expect(page.getByText('16 GB',{exact:true})).toBeVisible();
       await expect(page.locator('.recording-grid .recording-card')).toHaveCount(3);
@@ -929,7 +1015,38 @@ for (const mode of ['browser','proxy']) {
       await expect(recordingVideo).toBeVisible();
       await expect.poll(() => recordingVideo.evaluate(video => video.readyState)).toBeGreaterThanOrEqual(1);
       await expect(recordingDialog.getByRole('combobox',{name:'Stream quality'}).locator('option')).toHaveCount(2);
-      await recordingDialog.getByRole('combobox',{name:'Stream quality'}).selectOption('main');
+      const recordingQuality = recordingDialog.getByRole('combobox',{name:'Stream quality'});
+      await recordingQuality.selectOption('main');
+      await expect.poll(()=>new URL(page.url()).searchParams.get('stream')).toBe('main');
+      const share = page.url(), params = new URL(share).searchParams;
+      expect(params.get('camera')).toBe(new URL(await recordingVideo.getAttribute('src'), publicOrigin).pathname.split('/cameras/')[1].split('/')[0]);
+      expect(params.get('date')).toBe('2026-11-17');
+      expect(params.get('recording')).toMatch(/^[a-f0-9]{64}$/);
+      const recipient = await page.context().browser().newContext();
+      try {
+        const tab = await recipient.newPage();
+        await tab.goto(share);
+        await tab.getByLabel('Username').fill('fixture-user');
+        await tab.getByLabel('Password',{exact:true}).fill(localPassword);
+        await tab.getByRole('button',{name:'Sign in with password'}).click();
+        const sharedPlayer = tab.getByRole('dialog',{name:/Recorded playback/});
+        await expect(tab).toHaveURL(share);
+        await expect(sharedPlayer.getByLabel('Stream quality')).toHaveValue('main');
+        await expect(sharedPlayer.locator('video')).toBeVisible();
+        await tab.reload();
+        await expect(sharedPlayer.getByLabel('Stream quality')).toHaveValue('main');
+        await sharedPlayer.getByRole('button',{name:'Close',exact:true}).click();
+        await expect(sharedPlayer).toHaveCount(0);
+        await expect(tab.locator('input[type="date"]')).toHaveValue('2026-11-17');
+      } finally { await recipient.close(); }
+      await page.goBack();
+      await expect(recordingDialog).toHaveCount(0);
+      await page.goForward();
+      await expect(recordingQuality).toHaveValue('main');
+      await recordingDialog.getByRole('button',{name:'Close',exact:true}).click();
+      await expect(recordingDialog).toHaveCount(0);
+      await page.getByRole('button',{name:'Play',exact:true}).first().click();
+      await expect(recordingQuality).toHaveValue('main');
       await expect.poll(()=>recordingVideo.evaluate(video=>video.readyState)).toBeGreaterThanOrEqual(1);
       await recordingDialog.getByRole('combobox',{name:'Stream quality'}).selectOption('sub');
       await expect.poll(()=>recordingVideo.evaluate(video=>video.readyState)).toBeGreaterThanOrEqual(1);
@@ -1044,6 +1161,7 @@ for (const mode of ['browser','proxy']) {
       expect((await recordingDialog.boundingBox()).width).toBeLessThanOrEqual(375);
       await recordingDialog.getByRole('button',{name:'Close',exact:true}).click();
       await page.setViewportSize({width:1280,height:720});
+      await expect(recordingDialog).toHaveCount(0);
       bridge.setPlaybackAvailable(false);
       await runtime.ready();
       await page.reload();
@@ -1058,7 +1176,13 @@ for (const mode of ['browser','proxy']) {
       const cdp = await page.context().newCDPSession(page);
       await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1});
       const rail=page.locator('.timeline-rail');
-      await rail.scrollIntoViewIfNeeded();
+      await expect(page.getByText('Searching the camera’s recordings…')).toHaveCount(0);
+      await rail.evaluate(element=>element.scrollIntoView({block:'center',behavior:'instant'}));
+      await expect.poll(()=>rail.locator('.timeline-segment').first().evaluate(el=>{
+        const r=el.getBoundingClientRect();
+        const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+        return hit===el ? 'rail segment' : JSON.stringify({hit:hit?.tagName,classes:hit?.className,dialog:document.querySelector('dialog[open]')?.className,rect:r.toJSON(),scroll:scrollY,path:location.search});
+      })).toBe('rail segment');
       const [firstSegment,lastSegment]=await Promise.all([rail.locator('.timeline-segment').first().boundingBox(),rail.locator('.timeline-segment').last().boundingBox()]);
       const touchPoint=box=>({x:box.x+box.width/2,y:box.y+box.height/2});
       await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[touchPoint(firstSegment)]});

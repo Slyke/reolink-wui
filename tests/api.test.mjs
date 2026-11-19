@@ -202,6 +202,13 @@ for (const database of dbs) test('authorization, operations and live revocation:
   assert.equal((await second.read()).done,false);
   assert.equal(bridge.counts().mediaClosed,0);
   assert.equal((await incoming({path:secondUrl.slice('/api/v1'.length),method:'DELETE',headers:allowed})).statusCode,204);
+  let ending = '';
+  for (;;) {
+    const { done, value } = await second.read();
+    if (done) break;
+    ending = (ending + Buffer.from(value).toString('latin1')).slice(-16);
+  }
+  assert.ok(ending.endsWith('--wui--\r\n'));
   await eventually(() => bridge.counts().mediaOpened === 1 && bridge.counts().mediaClosed === 1);
   assert.match(Buffer.from((await eventReader.read()).value).toString(), /access-changed/);
   assert.equal((await eventReader.read()).done,true);
@@ -325,6 +332,94 @@ test('admin event-source arrays apply live, fail over across all feeds and survi
   assert.deepEqual(second.runtime.bridges.get('lab').eventSources,['mqtt','api','ws']);
   await eventually(()=>second.runtime.bridges.get('lab').upstream().connections.find(item=>item.id==='mqtt')?.feed==='active');
   assert.equal(fixture.counts().writes,0);
+});
+
+test('camera ordering persists per account, is retryable, and cannot include a camera outside its grants', async t => {
+  const bridge = await fixtureBridge();
+  t.after(()=>bridge.close());
+  const {app,runtime,incoming,seed,signIn} = await launch({bridges:[bridge.config]});
+  t.after(()=>app.close());
+  await seed({username:'order-admin',admin:true});
+  const viewer = await seed({username:'order-viewer',admin:false});
+  const adminHeaders = await signIn('order-admin'), viewerHeaders = await signIn('order-viewer');
+  const list = async headers => (await incoming({path:'/cameras',headers})).json().cameras.map(c=>c.id);
+  await eventually(async ()=>(await list(adminHeaders)).length===2);
+  const [first,second] = await list(adminHeaders);
+  const move = headers => incoming({path:'/cameras/order',method:'PUT',headers,payload:{earlier:second,later:first}});
+  await runtime.sql.query('INSERT INTO grants VALUES ($1,$2,$3)',viewer,first,JSON.stringify(['view']));
+  assert.equal((await move(viewerHeaders)).statusCode,404);
+  await runtime.sql.query('INSERT INTO grants VALUES ($1,$2,$3)',viewer,second,JSON.stringify(['view']));
+  assert.equal((await move({cookie:viewerHeaders.cookie})).statusCode,403);
+  assert.deepEqual((await move(viewerHeaders)).json().order,[second,first]);
+  assert.deepEqual((await move(viewerHeaders)).json().order,[second,first]);
+  assert.deepEqual(await list(await signIn('order-viewer')),[second,first]);
+  assert.deepEqual(await list(adminHeaders),[first,second]);
+});
+
+test('preset shortcuts take a fresh photo after reported arrival and newer motion cancels a scheduled return', async t => {
+  const bridge = await fixtureBridge({capture:true});
+  t.after(()=>bridge.close());
+  const {app,runtime,incoming,seed,signIn} = await launch({bridges:[bridge.config]});
+  t.after(()=>app.close());
+  await seed({username:'preset-operator',admin:true});
+  const headers = await signIn('preset-operator');
+  await eventually(()=>runtime.bridges.get('lab').feedReady);
+  const [camera] = await runtime.sql.query("SELECT id FROM cameras WHERE remote_id='alpha'");
+  const base='/cameras/'+camera.id+'/ptz';
+  const ptz = action=>incoming({path:base,method:'POST',headers,payload:{operationId:uuid(),action}});
+  const savePrefs = () => incoming({path:base+'/preferences',method:'PUT',headers,
+    payload:{order:[3,2],returnPreset:3,returnSeconds:1}});
+  const shoot = presetId=>incoming({path:base+'/preset-snapshot',method:'POST',headers,payload:{operationId:uuid(),presetId}});
+  assert.equal((await ptz({op:'save_preset',preset_id:3,name:'Desk'})).json().outcome,'confirmed');
+  assert.equal((await savePrefs()).statusCode,200);
+  assert.deepEqual((await ptz({op:'list_presets'})).json().data.preferences.order,[3,2]);
+  assert.equal((await shoot(99)).json().reason,'PTZ_PRESET_MISSING');
+  const photo = await shoot(2);
+  assert.equal(photo.headers['content-type'],'image/png',photo.body);
+  assert.deepEqual(photo.rawPayload,png());
+  const returns=()=>bridge.requests.filter(entry=>entry.action?.op==='goto_preset' && entry.action?.preset_id===3).length;
+  await eventually(()=>returns()===1,3500);
+  const second = await shoot(2);
+  assert.equal(second.statusCode,200);
+  await ptz({op:'stop'});
+  await new Promise(resolve=>setTimeout(resolve,1200));
+  assert.equal(returns(),1);
+  assert.equal((await shoot(2)).headers['content-type'],'image/png');
+  await ptz({op:'delete_preset',preset_id:3});
+  const afterDeletion = (await ptz({op:'list_presets'})).json().data;
+  assert.equal(afterDeletion.presets.some(item=>item.id===3),false);
+  assert.deepEqual(afterDeletion.preferences,{order:[2],returnPreset:null,returnSeconds:1});
+  await seed({username:'preset-viewer',admin:false});
+  const viewer=await signIn('preset-viewer');
+  assert.equal((await incoming({path:base+'/preset-snapshot',method:'POST',headers:viewer,payload:{operationId:uuid(),presetId:2}})).statusCode,403);
+});
+
+test('PTZ distinguishes a confirmed stop from an unknown stop and reports when another position read is due', async t => {
+  const bridge = await fixtureBridge();
+  t.after(()=>bridge.close());
+  const {app,runtime,incoming,seed,signIn} = await launch({bridges:[bridge.config]});
+  t.after(()=>app.close());
+  await seed({username:'ptz-operator',admin:true});
+  const headers = await signIn('ptz-operator');
+  await eventually(()=>runtime.bridges.get('lab').feedReady);
+  const camera = (await incoming({path:'/admin',headers})).json().cameras[0].id;
+  const ptz = (action,operationId=uuid())=>incoming({path:'/cameras/'+camera+'/ptz',method:'POST',headers,payload:{operationId,action}});
+  const move = {op:'move',direction:'left',duration_ms:150};
+  bridge.failNextPtzMove('PTZ_MOVE_START_FAILED');
+  const stopped = (await ptz(move)).json();
+  assert.equal(stopped.outcome,'unverified');
+  assert.equal(stopped.data.stopped,true);
+  assert.equal(stopped.data.startAcknowledged,false);
+  assert.equal((await ptz(move)).statusCode,200);
+  const uncertain=uuid();
+  bridge.failNextPtzMove('PTZ_TIMED_STOP_FAILED');
+  assert.equal((await ptz(move,uncertain)).json().outcome,'unknown');
+  const immediate=(await ptz({op:'status'})).json();
+  assert.ok(immediate.data.retryAfterMs>0 && immediate.data.retryAfterMs<=28_001);
+  assert.equal((await ptz(move)).json().errorKey,'RECONCILE_REQUIRED');
+  await runtime.sql.query('UPDATE operations SET started=$1 WHERE id=$2',Date.now()-29_000,uncertain);
+  assert.equal((await ptz({op:'status'})).json().data.retryAfterMs,undefined);
+  assert.equal((await ptz(move)).statusCode,200);
 });
 
 test('HTTP reply loss reports unknown while the MQTT feed reconnects', async t => {

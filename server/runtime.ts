@@ -318,20 +318,41 @@ export class Runtime {
     return { row: { ...row, routeId: remote }, grant, bridge, session };
   }
 
-  async views({ account }: { account: Account }) {
-    await this.sync();
-    const rows = await camerasFor({ sql: this.sql, account });
+  private async orderedCameraRows(account: Account, query: Sql['query']) {
+    const rows = await camerasFor({ sql: { query }, account });
+    const [preferences] = await query<{ camera_order: string }>('SELECT camera_order FROM account_camera_orders WHERE account_id=$1', account.id);
+    const order: string[] = JSON.parse(preferences?.camera_order ?? '[]');
+    const ranks = new Map(order.map((id, index) => [id, index]));
     return rows.flatMap(row => {
       const bridge = this.bridges.get(row.bridge_id);
-      const grant = new Set(row.permissions);
       const remote = bridge?.remoteId(row.remote_id);
-      if (!bridge || !remote || !grant.has('view')) return [];
-      return [{
-        id: row.id, ...information({ state: bridge.state(remote) }),
-        availability: available({ bridge, remote }),
-        previewIntervalMs: row.preview_interval_ms, previewPush: bridge.previewPush(remote), refreshOnAlert: row.preview_refresh_on_alert,
-        capabilities: capabilities({ bridge, remote, grant, proxy: !!row.rtsp_proxy })
-      }];
+      return bridge && remote && row.permissions.includes('view') ? [{ row, bridge, remote }] : [];
+    }).sort((a, b) => (ranks.get(a.row.id) ?? order.length) - (ranks.get(b.row.id) ?? order.length));
+  }
+
+  async reorderCameras(account: Account, earlier: string, later: string) {
+    return this.sql.transaction(async query => {
+      const ids = (await this.orderedCameraRows(account, query)).map(({ row }) => row.id);
+      const first = ids.indexOf(earlier);
+      const second = ids.indexOf(later);
+      if (first < 0 || second < 0) throw new Failure('CAMERA_UNKNOWN', 404);
+      if (Math.abs(first - second) !== 1) throw new Failure('OPERATION_CONFLICT', 409);
+      if (first > second) {
+        [ids[first], ids[second]] = [ids[second], ids[first]];
+        await query('INSERT INTO account_camera_orders(account_id,camera_order) VALUES($1,$2) ON CONFLICT(account_id) DO UPDATE SET camera_order=excluded.camera_order', account.id, JSON.stringify(ids));
+      }
+      return ids;
     });
+  }
+
+  async views({ account }: { account: Account }) {
+    await this.sync();
+    const rows = await this.orderedCameraRows(account, this.sql.query);
+    return rows.map(({ row, bridge, remote }) => ({
+      id: row.id, ...information({ state: bridge.state(remote) }),
+      availability: available({ bridge, remote }),
+      previewIntervalMs: row.preview_interval_ms, previewPush: bridge.previewPush(remote), refreshOnAlert: row.preview_refresh_on_alert,
+      capabilities: capabilities({ bridge, remote, grant: new Set(row.permissions), proxy: !!row.rtsp_proxy })
+    }));
   }
 }

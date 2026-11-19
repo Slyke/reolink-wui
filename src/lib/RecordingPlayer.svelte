@@ -7,8 +7,9 @@
   import { recordingStages, type RecordingMetadata } from '../../shared/recordings.js';
   import { recordingTime, recordingVariant, type RecordingGroup } from '../../shared/recording-groups.js';
 
-  let { canExport, metadataAvailable, camera, name, recording, recordings, startPosition = 0, onselect, onclose, onrenew }: {
+  let { canExport, metadataAvailable, camera, name, recording, recordings, startPosition = 0, stream, onstream, onselect, onclose, onrenew }: {
     canExport: boolean; metadataAvailable: boolean; camera: string; name: string; recording: RecordingGroup; recordings: RecordingGroup[]; startPosition?: number;
+    stream: 'main' | 'sub'; onstream: (stream: 'main' | 'sub') => void;
     onselect: (recording: RecordingGroup) => void; onclose: () => void; onrenew: () => Promise<void>;
   } = $props();
   const id = $props.id();
@@ -16,7 +17,6 @@
   let title: HTMLHeadingElement;
   let video = $state<HTMLVideoElement>();
   let mode = $state<'next' | 'loop' | 'stop'>('stop');
-  let stream = $state<'main' | 'sub'>('sub');
   const variant = $derived(recordingVariant({ group: recording, stream }));
   let metadata = $state<RecordingMetadata>();
   let jsonOpen = $state(false), compactVideo = $state(false), copyStatus = $state('');
@@ -139,7 +139,7 @@
   };
   const changeStream = (event: Event) => {
     if (video && source) seekTime = recordingTime(variant.start) + video.currentTime * 1000;
-    stream = (event.currentTarget as HTMLSelectElement).value as 'main' | 'sub';
+    onstream((event.currentTarget as HTMLSelectElement).value as 'main' | 'sub');
   };
   const target = (camera: string, id: string) => url('/api/v1/cameras/' + camera + '/recordings/' + id + '/video');
   const get = (path: string, signal: AbortSignal) => fetch(path, {
@@ -220,11 +220,11 @@
   onDestroy(() => video?.pause());
 </script>
 
-<dialog class="media-dialog recording-dialog" bind:this={dialog} use:dismissOnBackdrop onclose={onclose} aria-labelledby="recording-playback-title">
+<dialog class="media-dialog recording-dialog" bind:this={dialog} use:dismissOnBackdrop={onclose} oncancel={event => { event.preventDefault(); onclose(); }} aria-labelledby="recording-playback-title">
   <div class="recording-toolbar">
     <div class="row between panel-title">
       <h2 id="recording-playback-title" bind:this={title} tabindex="-1">{t('recording-playback')} · {name}</h2>
-      <button onclick={() => dialog.close()}>{t('close')}</button>
+      <button onclick={onclose}>{t('close')}</button>
     </div>
     <div class="recording-controls">
       <button disabled={!previous} onclick={() => select(previous)}>{t('recording-previous')}</button>

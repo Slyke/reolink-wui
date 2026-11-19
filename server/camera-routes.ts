@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { record } from './bridge-channels.js';
+import { presetRoutes, rememberPresetPosition } from './preset-routes.js';
+import { readPresetPreferences } from '../shared/presets.js';
 import { result } from './bridge.js';
 import {
   available, capabilities, groupFor, groupSchema, information, ptzSchema, readback, rules,
@@ -23,10 +25,16 @@ const checkOnline = ({ bridge, row }: Awaited<ReturnType<Runtime['camera']>>) =>
 
 export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
   const cameras = path + '/cameras';
+  const scheduleReturn = presetRoutes({ api, cameras, runtime, sendOutcome });
   api.get(cameras, async request => {
     const { account } = await runtime.auth.require({ request });
     const cameras = await runtime.views({ account });
     return { cameras, ...(account.admin === 1 ? { inventory: runtime.inventoryState() } : {}) };
+  });
+  api.put(cameras + '/order', async request => {
+    const { account } = await runtime.auth.require({ request, mutate: true });
+    const { earlier, later } = input({ schema: z.strictObject({ earlier: uuid, later: uuid }).refine(pair => pair.earlier !== pair.later), value: request.body });
+    return { order: await runtime.reorderCameras(account, earlier, later) };
   });
   api.get<{ Params: { id: string } }>(cameras + '/:id', async request => {
     const { row, bridge, grant } = await runtime.camera({ request, id: request.params.id, permission: 'view' });
@@ -61,6 +69,9 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
       action: 'ptz.' + action.op, input: { action, interrupts }, reconcileGroup: read || stop ? undefined : 'ptz',
       bypass: stop, serialized: !read,
       execute: async () => {
+        if (['move','stop','goto_preset','set_zoom','delete_preset','save_preset'].includes(action.op)) {
+          await runtime.sql.query('UPDATE cameras SET ptz_intent=$1 WHERE id=$2',operationId,row.id);
+        }
         if (interrupts) {
           await runtime.sql.transaction(async query => {
             await query('DELETE FROM ptz_interrupts WHERE expires <= $1', Date.now());
@@ -75,15 +86,41 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
         }
         const response = await bridge.command({ camera: row.routeId, stableId: row.remote_id, id: operationId, command: { setting: 'ptz', action }, correlation: request.id });
         const outcome = result({ reply: response, write: !read });
-        // Older bridges report this after the release interrupted Start but an acknowledged Stop followed.
-        if (action.op === 'move' && response.errorKey === 'PTZ_START_INTERRUPTED') {
-          return { outcome: 'unverified', bridgeCorrelationId: outcome.bridgeCorrelationId, data: { stopped:true, interrupted:true } };
+        // Native timed_move returns these Start errors only after an acknowledged Stop.
+        // A failed Stop has its own error and must keep the unknown-outcome barrier.
+        if (action.op === 'move' && ['PTZ_START_INTERRUPTED','PTZ_MOVE_START_FAILED'].includes(String(response.errorKey))) {
+          return {outcome:'unverified',bridgeCorrelationId:outcome.bridgeCorrelationId,
+            data:{stopped:true,startAcknowledged:false,interrupted:response.errorKey==='PTZ_START_INTERRUPTED'}};
         }
         if (response.errorKey === 'PTZ_PRESET_OCCUPIED') return { ...outcome, outcome:'rejected', reason:'PTZ_PRESET_OCCUPIED' };
-        if (action.op === 'status' && response.ok === true) await runtime.ops.reconcile({ camera: row.id, group: 'ptz', before });
+        let retryAfterMs: number | undefined;
+        if (action.op === 'status' && response.ok === true) {
+          await runtime.ops.reconcile({camera:row.id,group:'ptz',before});
+          retryAfterMs = await runtime.ops.ptzRecoveryDelay(row.id) || undefined;
+        }
         if (response.ok === true) {
           const status = statusPtz({ raw: record(response.result) });
-          return { ...outcome, data: grant.has('ptz.read') ? status : { stopped: status.stopped, interrupted: status.interrupted } };
+          if (action.op === 'save_preset' && outcome.outcome === 'confirmed') {
+            await rememberPresetPosition(runtime.sql,row.id,action.preset_id,action.name,status.position);
+          }
+          if (action.op === 'delete_preset' && outcome.outcome === 'confirmed') {
+            await runtime.sql.transaction(async query => {
+              await query('DELETE FROM preset_positions WHERE camera=$1 AND slot=$2', row.id, action.preset_id);
+              const [current] = await query<{ ptz_preferences: string | null }>('SELECT ptz_preferences FROM cameras WHERE id=$1', row.id);
+              const prefs = readPresetPreferences(current.ptz_preferences);
+              prefs.order = prefs.order.filter(slot => slot !== action.preset_id);
+              if (prefs.returnPreset === action.preset_id) prefs.returnPreset = null;
+              await query('UPDATE cameras SET ptz_preferences=$1 WHERE id=$2', JSON.stringify(prefs), row.id);
+            });
+          }
+          if (action.op === 'goto_preset') {
+            const prefs = readPresetPreferences(row.ptz_preferences);
+            if (prefs.returnPreset !== null && prefs.returnPreset !== action.preset_id) {
+              scheduleReturn(row.id,session.account.id,operationId,prefs.returnPreset,prefs.returnSeconds,request.id);
+            }
+          }
+          const preferences = action.op === 'list_presets' ? readPresetPreferences(row.ptz_preferences) : undefined;
+          return { ...outcome, data: grant.has('ptz.read') ? {...status,retryAfterMs,preferences} : { stopped: status.stopped, interrupted: status.interrupted } };
         }
         return outcome;
       }

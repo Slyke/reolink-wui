@@ -76,7 +76,7 @@ const caps = {
     spotlight: { manual:true, brightness:true, brightness_min:0, brightness_max:100 },
     ai_person: { sensitivity:true, delay_seconds:true }, ai_pet: { sensitivity:true, delay_seconds:true }
   } },
-  ptz: { discovery: 'detected', supported:true, pan:true, tilt:true, presets:true, save_presets:true, duration_ms:{min:50,max:3000}, speed_range:{min:1,max:64}, zoom_range:{min:0,max:27} }
+  ptz: { discovery: 'detected', supported:true, pan:true, tilt:true, presets:true, save_presets:true, delete_presets:true, duration_ms:{min:50,max:3000}, speed_range:{min:1,max:64}, zoom_range:{min:0,max:27} }
 };
 
 const pngChunk = (name, data) => {
@@ -143,6 +143,8 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let motion = true;
   let sensitivity = 40;
   const presets = new Map([[2,'Default']]);
+  let presetPan = 12;
+  const presetPans = new Map([[2,22]]);
   let brightness = 5;
   const schedule = {enabled:true,schedules:{continuous:'0'.repeat(168),motion:'1'.repeat(168)}};
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
@@ -162,10 +164,12 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let identities = {}, physical = {};
   let inventoryReads = 0;
   let playbackAvailable = true;
+  let mediaStartGate;
   let playbackFailure;
   let storageFailure;
   const ai = { ai_person:{sensitivity:76,delay_seconds:2}, ai_pet:{sensitivity:60,delay_seconds:0} };
   let lose = false;
+  let ptzFailure;
   let writes = 0;
   let mediaOpened = 0;
   let mediaClosed = 0;
@@ -237,17 +241,30 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       motion_detection: { enabled:motion, sensitivity },
       ai_detection: ai['ai_' + command.class]
     }[command.setting] ?? { status_led:led, vendor:{ secret:token } };
-    if (command.setting === 'ptz' && command.action.op === 'move') writes++;
+    if (command.setting === 'ptz' && command.action.op === 'move') {
+      writes++;
+      if (ptzFailure) {
+        const errorKey = ptzFailure; ptzFailure = undefined;
+        return {id,ok:false,correlation_id:uuid(),errorKey};
+      }
+    }
+    if (command.setting === 'ptz' && command.action.op === 'delete_preset') {
+      presets.delete(command.action.preset_id);
+      presetPans.delete(command.action.preset_id);
+      writes++;
+    }
     if (command.setting === 'ptz' && command.action.op === 'save_preset') {
       const {preset_id,name,replace} = command.action;
       if (presets.has(preset_id) && !replace) return {id,ok:false,errorKey:'PTZ_PRESET_OCCUPIED'};
       presets.set(preset_id,name);
+      presetPans.set(preset_id,presetPan);
       writes++;
     }
+    if (command.setting === 'ptz' && command.action.op === 'goto_preset') presetPan = presetPans.get(command.action.preset_id) ?? presetPan;
     return {
-      id, ok:true, correlation_id: uuid(), verified: command.action?.op !== 'move',
+      id, ok:true, correlation_id: uuid(), verified: command.action?.op !== 'move' && command.action?.op !== 'goto_preset',
       state,
-      result: { position: { pan: 12, tilt: 5, zoom: {position: 8} }, stopped: true, presets: Array.from(presets,([id,name]) => ({id,name})) }
+      result: { position: { pan: presetPan, tilt: 5, zoom: {position: 8} }, stopped: true, presets: Array.from(presets,([id,name]) => ({id,name})) }
     };
   };
   const broker = await fixtureBroker();
@@ -470,6 +487,8 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.url.endsWith('/settings/leds')) return res.end(JSON.stringify({ values:{ leds:{status_led:led,ir_mode:'auto'} } }));
     if (/\/media\/(main|sub)$/.test(req.url)) {
       mediaOpened++;
+      if (mediaStartGate) await mediaStartGate;
+      if (res.destroyed) return;
       res.writeHead(200, { 'content-type': 'multipart/x-mixed-replace; boundary=reolink-frame' });
       res.write(mediaFrame.subarray(0, 5));
       const first = globalThis.setTimeout(() => res.write(mediaFrame.subarray(5)), 20);
@@ -518,6 +537,8 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       http:{url:root,token:token}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
     },
     correlations, requests, previewRequests, recordingRequests,
+    holdMediaUntil: gate => { mediaStartGate = gate; },
+    setPresetList: entries => { presets.clear(); for (const [id,name] of entries) presets.set(id,name); },
     setPlaybackAvailable: value => { playbackAvailable = value; },
     setRecordingCount: value => { recordingCount = value; },
     setStorageFailure: value => { storageFailure = value; },
@@ -534,6 +555,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     },
     counts: () => ({ writes, mediaOpened, mediaClosed, inventoryReads, callbacks:callbacks.length }),
     lose: () => { lose = true; },
+    failNextPtzMove: key => { ptzFailure = key; },
     reportInventory: async (cameras, stableIds = {}, hardware = {}, publish = true) => {
       physical = hardware;
       inventory = cameras;
