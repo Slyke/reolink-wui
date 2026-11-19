@@ -1,13 +1,15 @@
 <script lang="ts">
-  import type { CameraNetwork } from '../../shared/network.js';
+  import type { CameraNetwork, RtspSettings } from '../../shared/network.js';
   import { validWifiName, validWifiPassword } from '../../shared/network.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
   import SettingsDisclosure from './SettingsDisclosure.svelte';
 
-  let {base, csrf, access}: {base: string; csrf: string; access: {read: boolean; write: boolean; available: boolean}} = $props();
+  let {base, csrf, access}: {base: string; csrf: string; access: {read: boolean; write: boolean; available: boolean; rtsp?: boolean}} = $props();
   const listId = $props.id();
   let network = $state<CameraNetwork>(), busy = $state(false), error = $state(''), message = $state('');
   let ssid = $state(''), password = $state(''), openNetwork = $state(false), expanded = $state(false);
+  let rtsp = $state<RtspSettings>(), choice = $state<boolean | undefined>();
+  let rtspBusy = $state(false), rtspError = $state(''), rtspMessage = $state('');
   const canEdit = $derived(access.available && access.write && (!access.read || network?.wifi?.configurable === true));
   const valid = $derived(validWifiName(ssid) && validWifiPassword(password,openNetwork));
 
@@ -18,14 +20,38 @@
     ssid = next.wifi?.ssid ?? '';
   }
   export async function refresh() {
-    if (!expanded || !access.available || !access.read || busy) return;
+    if (!expanded || !access.available || !access.read || busy || rtspBusy) return;
     busy = true; password = ''; openNetwork = false; message = '';
-    try { await read(); } catch (err) { network = undefined; error = errorText(err); } finally { busy = false; }
+    try { await Promise.all([read().catch(err => { network = undefined; error = errorText(err); }),readRtsp()]); }
+    finally { busy = false; }
   }
-  export function working() { return busy; }
+  async function readRtsp() {
+    if (!access.rtsp || !access.read) return;
+    rtspError = ''; rtspMessage = '';
+    try {
+      rtsp = await api<RtspSettings>({path:base+'/network/rtsp'});
+      choice = rtsp.supported ? rtsp.enabled : undefined;
+    } catch (err) { rtsp = undefined; choice = undefined; rtspError = errorText(err); }
+  }
+  async function saveRtsp() {
+    if (!access.write || choice === undefined || rtspBusy || busy) return;
+    rtspBusy = true; rtspError = ''; rtspMessage = '';
+    try {
+      const value = await api<Outcome>({path:base+'/network/rtsp',method:'PUT',csrf,body:{operationId:operationId(),enabled:choice}});
+      if (value.outcome === 'confirmed') {
+        rtsp = {supported:true,enabled:value.data.enabled,port:value.data.port};
+        rtspMessage = t('network-rtsp-saved');
+      } else {
+        rtspError = outcomeText(value);
+        if (value.outcome === 'unknown') {rtsp=undefined;choice=undefined;}
+      }
+    } catch (err) {rtspError=errorText(err);rtsp=undefined;choice=undefined;}
+    finally {rtspBusy=false;}
+  }
+  export function working() { return busy || rtspBusy; }
   function toggle(show: boolean) {
     expanded = show;
-    if (show && !network) void refresh();
+    if (show) void refresh();
     if (!show) password = '';
   }
   async function save() {
@@ -45,6 +71,25 @@
   {#if !access.available}
     <p class="muted">{t('network-bridge-update')}</p>
   {:else}
+    {#if access.rtsp}
+      <fieldset class="stack"><legend>{t('network-rtsp')}</legend>
+        {#if rtsp?.supported && rtsp.port}<p>{t('network-rtsp-port',{port:String(rtsp.port)})}</p>{/if}
+        {#if rtsp?.supported === false}<p class="muted">{t('network-rtsp-unsupported')}</p>
+        {:else if access.write && (rtsp?.supported || !access.read)}
+          <form class="row" onsubmit={e=>{e.preventDefault();void saveRtsp();}}>
+            <label>{t('network-rtsp-service')}
+              <select bind:value={choice} disabled={busy || rtspBusy}>
+                {#if choice === undefined}<option value={undefined} disabled>{t('choose-option')}</option>{/if}
+                <option value={true}>{t('on')}</option><option value={false}>{t('off')}</option>
+              </select>
+            </label>
+            <button class="primary" disabled={busy || rtspBusy || choice === undefined || (rtsp?.supported && choice === rtsp.enabled)}>{t('network-rtsp-save')}</button>
+          </form>
+        {:else if rtsp?.supported}<p>{t('network-rtsp-service')} · {t(rtsp.enabled ? 'on' : 'off')}</p>{/if}
+        {#if rtspError}<p class="error" role="alert">{rtspError}</p>{/if}
+        {#if rtspMessage}<p role="status">{rtspMessage}</p>{/if}
+      </fieldset>
+    {/if}
     {#if network?.link}
       <dl class="network-facts">
         {#if network.link.address}<dt>{t('network-wired-address')}</dt><dd>{network.link.address}</dd>{/if}
@@ -68,7 +113,7 @@
     {:else if network && !network.wifi?.configurable}
       <p class="muted">{t('network-no-wifi')}</p>
     {/if}
-    {#if access.read}<div class="row"><button disabled={busy} onclick={refresh}>{t('network-reload')}</button></div>{/if}
+    {#if access.read}<div class="row"><button disabled={busy || rtspBusy} onclick={refresh}>{t('network-reload')}</button></div>{/if}
     {#if busy}<p role="status">{t('loading')}</p>{/if}
     {#if message}<p role="status">{message}</p>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}

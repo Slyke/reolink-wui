@@ -53,7 +53,7 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
     });
     const { row, bridge, grant, session } = context;
     const stop = action.op === 'stop';
-    if (!stop) checkOnline(context);
+    if (!stop && !read) checkOnline(context);
     validatePtz({ action, caps: capabilities({ bridge, remote: row.routeId, grant }).ptz });
     const before = Date.now();
     const operation = await runtime.ops.run<unknown>({
@@ -75,6 +75,11 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
         }
         const response = await bridge.command({ camera: row.routeId, stableId: row.remote_id, id: operationId, command: { setting: 'ptz', action }, correlation: request.id });
         const outcome = result({ reply: response, write: !read });
+        // Older bridges report this after the release interrupted Start but an acknowledged Stop followed.
+        if (action.op === 'move' && response.errorKey === 'PTZ_START_INTERRUPTED') {
+          return { outcome: 'unverified', bridgeCorrelationId: outcome.bridgeCorrelationId, data: { stopped:true, interrupted:true } };
+        }
+        if (response.errorKey === 'PTZ_PRESET_OCCUPIED') return { ...outcome, outcome:'rejected', reason:'PTZ_PRESET_OCCUPIED' };
         if (action.op === 'status' && response.ok === true) await runtime.ops.reconcile({ camera: row.id, group: 'ptz', before });
         if (response.ok === true) {
           const status = statusPtz({ raw: record(response.result) });

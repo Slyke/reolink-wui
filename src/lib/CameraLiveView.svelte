@@ -46,8 +46,9 @@
   };
   const failLive = ({ path }: { path: string }) => {
     if (path !== playback) return;
+    const receivedFrame = playing;
     void stopLive();
-    liveMessage = t('live-display');
+    liveMessage = t(receivedFrame ? 'live-ended' : 'live-display');
   };
   const startLive = async () => {
     if (!expanded || !canStream || liveBusy) return;

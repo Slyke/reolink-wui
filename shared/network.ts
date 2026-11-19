@@ -1,3 +1,5 @@
+export type RtspSettings = {supported:false} | {supported:true; enabled:boolean; port:number | null};
+
 export type CameraNetwork = {
   link: { address: string | null; netmask: string | null; gateway: string | null; dhcp: boolean | null } | null;
   wifi: { ssid: string | null; nearby: string[]; configurable: boolean } | null;

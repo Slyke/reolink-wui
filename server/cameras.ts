@@ -13,6 +13,7 @@ export const ptzSchema = z.discriminatedUnion('op', [
   object({ op: z.literal('status') }),
   object({ op: z.literal('list_presets') }),
   object({ op: z.literal('goto_preset'), preset_id: int(0, 255) }),
+  object({ op: z.literal('save_preset'), preset_id: int(0, 255), replace: z.boolean().optional(), name: z.string().trim().min(1).refine(value => Buffer.byteLength(value) <= 32 && !/\p{Cc}/u.test(value)) }),
   object({ op: z.literal('set_zoom'), position: int(0, 2147483647) })
 ]);
 
@@ -220,14 +221,14 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     viaProxy: proxy && grant.has('media.live'),
     media,
     alerts: { read: grant.has('alerts.read'), write: bridge.canCommand(remote) && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
-    network: { read:grant.has('settings.network.read'), write:grant.has('settings.network.write'), available:bridge.hasNetwork(remote) },
+    network: { read:grant.has('settings.network.read'), write:grant.has('settings.network.write'), available:bridge.hasNetwork(remote), rtsp:bridge.hasNetwork(remote) && bridge.has('rtspSettings') },
     cameraUsers: grant.has('device.rotate') && bridge.hasUsers(remote),
     rotate: grant.has('device.rotate') && bridge.has('enrollment'),
     freshSettings: bridge.has('v1'),
     ptz: grant.has('ptz.read') || grant.has('ptz.write') ? {
       discovery, supported: bool(raw.supported), read: grant.has('ptz.read'), write: bridge.canCommand(remote) && grant.has('ptz.write'),
       pan: bool(raw.pan), tilt: bool(raw.tilt), diagonal: bool(raw.diagonal), directionalZoom: bool(raw.directional_zoom),
-      presets: bool(raw.presets), speed: range(raw.speed_range), zoom: range(raw.zoom_range), duration: range(raw.duration_ms)
+      presets: bool(raw.presets), savePresets: raw.save_presets === true, speed: range(raw.speed_range), zoom: range(raw.zoom_range), duration: range(raw.duration_ms)
     } : undefined,
     settings
   };
@@ -251,6 +252,7 @@ export const validatePtz = ({ action, caps }: {
     if (caps?.supported !== false) return;
   } else if (caps?.supported) {
     if (action.op === 'status' || ((action.op === 'list_presets' || action.op === 'goto_preset') && caps.presets)) return;
+    if (action.op === 'save_preset' && caps.presets && caps.savePresets && caps.write) return;
     if (action.op === 'set_zoom' && allowedRange({ value: action.position, bounds: caps.zoom })) return;
     if (action.op === 'move') {
       const direction = action.direction;

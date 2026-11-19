@@ -30,7 +30,8 @@
   let message = $state(''), failure = $state(''), busy = $state(false);
   let selected = $state('');
   let enrollments = $state<{ id: string; bridge_id: string }[]>([]);
-  type EnrollmentProgress = { status: string; cameraId?: string };
+  let canEnableRtsp = $state(false), enableRtsp = $state(true);
+  type EnrollmentProgress = { status: string; cameraId?: string; rtsp?:string };
   let progress = $state<EnrollmentProgress>();
   const verified = $derived(validIdentifiers({ uid, serial }));
   const uidSuffix = (value: string) => value && validIdentifiers({uid:value,serial:''}) ? value.slice(-4) : '';
@@ -109,13 +110,15 @@
   };
   const loadTargets = async () => {
     resetLookup();
+    canEnableRtsp = false; enableRtsp = method === 'initialize';
     addressLookup = false; namedTarget = false; address = ''; port = undefined;
     targets = []; target = ''; targetsLoaded = false; confirmed = false; failure = '';
     const generation = ++targetGeneration;
     if (!bridge) return;
     try {
-      const data = await api<{ targets: string[]; addressLookup?: boolean }>({ path: '/api/v1/admin/bridges/' + bridge + '/enrollment-targets' });
+      const data = await api<{ targets: string[]; addressLookup?: boolean; enableRtsp?: boolean }>({ path: '/api/v1/admin/bridges/' + bridge + '/enrollment-targets' });
       if (generation === targetGeneration) {
+        canEnableRtsp = data.enableRtsp === true;
         addressLookup = data.addressLookup === true;
         targets = data.targets;
         target = targets.length === 1 ? targets[0] : '';
@@ -143,7 +146,7 @@
         const value = await api<Outcome>({
           path: '/api/v1/enrollments', method: 'POST', csrf,
           body: { operationId: id, bridge, target: camera?.target ?? target, address: camera?.address, port: camera?.port,
-            uid: camera?.uid ?? (uid || undefined), serial: camera?.serial ?? (serial || undefined), method, confirmation: confirmed }
+            uid: camera?.uid ?? (uid || undefined), serial: camera?.serial ?? (serial || undefined), method, enableRtsp: canEnableRtsp && enableRtsp ? true : undefined, confirmation: confirmed }
         });
         progress = value.data;
         message = outcomeText(value);
@@ -217,7 +220,7 @@
         <SearchSelect label={t('enrollment-target')} bind:value={target} disabled={!targets.length} onchange={resetLookup}
           options={targets.map(item => ({ value: item, label: item }))} />
       {/if}
-      <label>{t('enrollment-method')}<select bind:value={method} onchange={resetLookup}>
+      <label>{t('enrollment-method')}<select bind:value={method} onchange={() => { enableRtsp = method === 'initialize'; resetLookup(); }}>
         <option value="initialize">{t('enrollment-init')}</option>
         <option value="import">{t('enrollment-import')}</option>
       </select></label>
@@ -245,6 +248,9 @@
       {#if targetsLoaded && !targets.length}<p class="notice" role="status">{t('enrollment-no-targets')}</p>{/if}
       <p class="muted">{t(method === 'initialize' ? 'enrollment-init-help' : 'enrollment-import-help')}</p>
     {/if}
+    {#if canEnableRtsp}
+      <label class="check"><input type="checkbox" bind:checked={enableRtsp} disabled={busy} />{t('enrollment-enable-rtsp')}</label>
+    {/if}
     <label class="check"><input type="checkbox" bind:checked={confirmed} disabled={useAddress && !labelMatches} />{t('enrollment-confirm')}</label>
     <div class="row"><button class="primary" disabled={busy || !bridge || !confirmed || (useAddress ? !labelMatches : !verified || !target || (method === 'initialize' && !uid))} onclick={() => enroll('start')}>{t('enrollment-start')}</button></div>
   {:else}
@@ -262,6 +268,7 @@
   {#if progress?.status}
     <div class="row" role="status">
       <p class="notice">{t('enrollment-status-' + progress.status)}</p>
+      {#if progress.rtsp}<p class:notice={progress.rtsp !== 'enabled'}>{t('enrollment-rtsp-' + progress.rtsp)}</p>{/if}
       {#if progress.status === 'active'}
         {#if progress.cameraId}<a href={'/monitor?camera=' + progress.cameraId}>{t('enrollment-open-monitor')}</a>
         {:else}<span class="muted">{t('enrollment-inventory-pending')}</span>{/if}

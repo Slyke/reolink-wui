@@ -128,13 +128,11 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
   .monitor-columns.with-ptz .camera-ptz .form-grid { display: grid; grid-template-columns: minmax(0, 1fr); }
   .monitor-columns.with-ptz .camera-ptz :is(button,select,input) { max-width: 100%; min-width: 0; }
   .monitor-columns.with-ptz .camera-ptz button { white-space: normal; }
-  .monitor-columns.with-ptz .camera-ptz .ptz-moves { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .25rem; }
-  .monitor-columns.with-ptz .ptz-moves button { padding-inline: .2rem; }
-  .monitor-columns.with-ptz .ptz-moves .danger { grid-column: 1 / -1; }
-  .monitor-columns.with-ptz .ptz-caption { display: none; }
-  .monitor-columns.with-ptz .ptz-symbol { display: inline; }
 }
-.ptz-symbol { display: none; }
+.ptz-pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(.12rem, 1%, .35rem); width: min(100%, 10rem); justify-self: center; }
+.camera-ptz .ptz-arrow { display: grid; place-items: center; padding: 0; min-width: 0; min-height: 0; width: 100%; aspect-ratio: 1; touch-action: none; user-select: none; -webkit-touch-callout: none; }
+.camera-ptz .ptz-arrow svg { width: min(60%, 1.5rem); height: auto; pointer-events: none; }
+.camera-ptz .row .ptz-arrow { width: 2.75rem; }
 @container (max-width: 26rem) {
   .event-row { grid-template-columns: minmax(0, 1fr); }
 }

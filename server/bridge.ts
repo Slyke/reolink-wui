@@ -63,7 +63,7 @@ export class Bridge {
   private apiChannel?: ApiChannel;
   private priority: EventSource[] = [];
   private readonly http?: Link;
-  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, previewNotifications: false, settings: undefined as SettingsGroup[] | undefined };
+  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, rtspSettings: false, previewNotifications: false, settings: undefined as SettingsGroup[] | undefined };
   private scanning?: Promise<boolean>;
   private inventoryFailed = false;
   private readonly mediaStreams = new Map<string, string[]>();
@@ -392,7 +392,7 @@ export class Bridge {
     throw new Failure('OUTCOME_UNKNOWN', 502, 'unknown');
   }
 
-  has(feature: 'v1' | 'media' | 'enrollment' | 'callbacks') {
+  has(feature: 'v1' | 'media' | 'enrollment' | 'callbacks' | 'rtspSettings') {
     return this.bridgeVersion[feature];
   }
 
@@ -580,6 +580,7 @@ export class Bridge {
     this.bridgeVersion.inventory = ok && contract.inventory === true;
     this.bridgeVersion.media = ok && this.config.http?.relay === true && contract.media === true;
     this.bridgeVersion.enrollment = ok && contract.enrollment === true;
+    this.bridgeVersion.rtspSettings = ok && contract.rtspSettings === true;
     this.bridgeVersion.callbacks = ok && contract.callbacks === true;
     this.mediaStreams.clear();
     if (this.bridgeVersion.media) {
@@ -647,7 +648,7 @@ const rejectedBeforeWrite = new Set([
   'API_CAMERA_IDENTITY_CHANGED', 'CONTROL_ID_CONFLICT', 'CONTROL_VALIDATION_FAILED', 'CONTROL_TRANSPORT_DISABLED', 'CONTROL_QUEUE_UNAVAILABLE',
   'CONTROL_CAPABILITIES_UNAVAILABLE', 'CONTROL_UNSUPPORTED', 'CONTROL_SETTING_UNSUPPORTED',
   'PTZ_CAPABILITIES_UNAVAILABLE', 'PTZ_UNSUPPORTED', 'PTZ_TRANSPORT_DISABLED', 'PTZ_SPEED_UNSUPPORTED',
-  'PTZ_ZOOM_OUT_OF_RANGE', 'PTZ_PRESET_UNKNOWN', 'PTZ_REQUEST_EXPIRED', 'PTZ_QUEUED_MOVE_CANCELLED',
+  'PTZ_ZOOM_OUT_OF_RANGE', 'PTZ_PRESET_UNKNOWN', 'PTZ_REQUEST_EXPIRED', 'PTZ_QUEUED_MOVE_CANCELLED', 'PTZ_MOVE_CANCELLED',
   'SNAPSHOT_CAPTURE_BUSY', 'CALLBACK_CONFIG_INVALID', 'CALLBACK_UPDATE_MISSING', 'CALLBACK_REMOVE_MISSING',
   'CALLBACK_CONFIG_CHANGED', 'CALLBACK_DESTINATION_DENIED', 'API_SCOPE_DENIED'
 ]);

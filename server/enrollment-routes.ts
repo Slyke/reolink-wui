@@ -43,6 +43,7 @@ const shape = ({ response, body }: { response: Response; body: unknown }) => {
   );
   return {
     status: status ?? 'waiting',
+    rtsp: typeof raw.rtsp === 'string' && ['enabled','unsupported','failed','unverified'].includes(raw.rtsp) ? raw.rtsp : undefined,
     remote: typeof raw.camera_id === 'string' && segment.test(raw.camera_id) ? raw.camera_id : undefined,
     bridgeCorrelationId: typeof raw.correlation_id === 'string' && correlationPattern.test(raw.correlation_id) ? raw.correlation_id : undefined
   };
@@ -58,7 +59,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
   const progress = async ({ bridge, endpoint, stableId, data, correlation }: {
     bridge: Bridge; endpoint: string; stableId?: string; data?: unknown; correlation: string
   }) => {
-    const response = await bridge.api({ path: endpoint, stableId, data, method: data === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(65_000), correlation });
+    const response = await bridge.api({ path: endpoint, stableId, data, method: data === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(endpoint.startsWith('/enrollments') && data !== undefined ? 85_000 : 65_000), correlation });
     const value = shape({ response, body: await jsonResponse({ response }) });
     let cameraId: string | undefined;
     if (value.remote && value.status === 'active') await bridge.scanInventory().catch(() => false);
@@ -68,7 +69,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
       const [row] = await runtime.sql.query<{ id: string }>('SELECT id FROM cameras WHERE bridge_id=$1 AND remote_id=$2', bridge.config.id,stable);
       cameraId = row?.id;
     }
-    return { status: value.status, cameraId, bridgeCorrelationId: value.bridgeCorrelationId };
+    return { status: value.status, cameraId, rtsp:value.rtsp, bridgeCorrelationId: value.bridgeCorrelationId };
   };
   const outcome = (status: string) => {
     if (status === 'recovery-required') return 'unknown';
@@ -87,7 +88,7 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     const response = await bridge.api({ path: '/enrollment-targets', correlation: request.id });
     const result = record(await jsonResponse({ response }));
     if (!response.ok || !Array.isArray(result.targets)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
-    return { addressLookup: result.addressLookup === true, targets: result.targets.filter(value => typeof value === 'string' && segment.test(value)).slice(0, 64) };
+    return { addressLookup: result.addressLookup === true, enableRtsp: result.enableRtsp === true && bridge.has('rtspSettings'), targets: result.targets.filter(value => typeof value === 'string' && segment.test(value)).slice(0, 64) };
   });
   api.get<{ Params: { bridge: string } }>(path + '/admin/bridges/:bridge/enrollment-targets/identify', async request => {
     await runtime.admin({ request });
@@ -126,16 +127,17 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
         operationId: uuid, bridge: safeKey, target: safeKey,
         uid: enrollmentUid.optional(), serial: enrollmentSerial.optional(),
         address: z.ipv4().optional(), port: enrollmentPort.optional(),
-        method: enrollmentMethod, confirmation: z.literal(true)
+        method: enrollmentMethod, enableRtsp:z.boolean().optional(), confirmation: z.literal(true)
       }).refine(value => (value.uid || value.serial) && (value.method !== 'initialize' || value.uid)
         && (value.address === undefined) === (value.port === undefined)),
       value: request.body
     });
     const bridge = bridgeFor(data.bridge);
+    if (data.enableRtsp && !bridge.has('rtspSettings')) throw new Failure('UNSUPPORTED',422);
     const value = await runtime.ops.run({
       id: data.operationId, actor: account.id, resource: data.operationId, action: 'enrollment.start', correlation: request.id,
       input: data, execute: async () => {
-        const intent = { id: data.operationId, uid: data.uid, serial: data.serial, target: data.target, address: data.address, port: data.port, method: data.method, confirmation: true };
+        const intent = { id: data.operationId, uid: data.uid, serial: data.serial, target: data.target, address: data.address, port: data.port, method: data.method, ...(data.enableRtsp ? {enableRtsp:true} : {}), confirmation: true };
         await runtime.sql.query('INSERT INTO enrollments(id,bridge_id,owner_id,created,request) VALUES ($1,$2,$3,$4,$5)',
           data.operationId, bridge.config.id, account.id, Date.now(), JSON.stringify(intent));
         const value = await progress({

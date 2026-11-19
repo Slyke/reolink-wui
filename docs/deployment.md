@@ -48,7 +48,7 @@ For MQTT TLS over an authenticated tunnel that provides only the broker leaf cer
 
 ## Enrollment and callbacks
 
-In the bridge's `api` config, set a persistent `storageDirectory` and a named target with the device host, Baichuan port, and camera ID. For an initialized camera, put its credential in the bridge target's `importPassword`. Use the existing bridge PSK in the WUI bridge record. [Bridge configuration](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#authorization-and-enrollment)
+In the bridge configuration, set `api.storageDirectory` to retain enrollment records and put the camera in `cameras[]` with its LAN address, Baichuan port, username and password reference. Use the existing bridge PSK in the WUI bridge record. [Bridge configuration](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#authorization-and-enrollment)
 
 ```json5
 http: {
@@ -58,13 +58,11 @@ http: {
 },
 ```
 
-For a new Wi-Fi Lumus, open **Settings → Enrollment**. Scan the printed label with the WUI or type the UID. Show the **Wi-Fi join QR** to the camera. Once it joins the network, use its DHCP address in a named target on the bridge. For example, this entry uses a placeholder address and a new camera ID.
+Connect the camera to the LAN by Ethernet or its supported Wi-Fi setup method. Open **Settings → Enrollment**, enter its address and choose **Identify camera**. Match the reported UID against its label. Choose **Set first admin password** for a factory camera or **Use an existing password** to verify an initialized camera. The bridge uses the password from its camera configuration.
 
-```json
-{"api":{"targets":{"setup-bench":{"host":"192.168.1.42","port":9000,"cameraId":"bench-camera"}}}}
-```
+**Enable RTSP streaming after verifying the camera** starts checked for first-password setup and unchecked for existing-password enrollment. The bridge reads the camera's port settings, enables RTSP when needed, and reports the verified result alongside the registration. A failed or unsupported RTSP change still allows registration to complete. For an enrolled camera, open **Settings → Camera settings → Network and Wi-Fi → RTSP streaming** to read the switch and port or change the switch. This uses the bridge's Baichuan connection.
 
-Merge the target into the existing bridge configuration and restart the bridge. Select that target and **Set first admin password**. The bridge checks the UID, generates a password, sets it over the LAN and verifies the login. For an initialized camera choose **Use an existing password**. The **Show device ID QR** button lets another WUI scanner fill in the printed identifiers. After the credential is verified, restart the bridge to activate the camera.
+A separately configured named target under `api.targets` can also be used for enrollment. The enrollment result indicates when a bridge restart is needed.
 
 For callbacks, prepare a receiver that accepts event JSON via HTTP POST and returns a 2xx response. Add the exact URL to the WUI bridge record, for example `callbacks: { alerts: "https://alerts.example.invalid/events" }`. Allow the same URL in `api.callbackDestinations` on the bridge. Use the bridge HTTP token. Restart the configured services and open **Settings → Bridge callbacks**. Choose the bridge and approved receiver, then add a callback ID and optional event and camera filters. [Bridge callback payloads and filters](https://github.com/Slyke/reolink-bridge/blob/master/docs/interfaces.md#manage-downstream-callbacks)
 
@@ -83,7 +81,7 @@ api: {
 },
 ```
 
-The relay reads H.264 over RTSP/TCP with the configured camera credentials. In the WUI bridge record set `http` to the bridge HTTPS endpoint, bearer token, and TLS trust reference. When the bridge advertises a video profile, WUI enables relay playback by default. Set `http.relay: false` to disable that playback path. [Bridge video and preview API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md)
+The relay uses the configured camera credentials and accepts H.264 or H.265. Each camera media profile defaults to `transport: "auto"`. If RTSP cannot deliver a first frame, the bridge tries live video over the camera’s Baichuan port. Select `"rtsp"` or `"baichuan"` to require one transport. A background preview is enabled separately by including that camera's ID in `api.previews.cameras`. In the WUI bridge record set `http` to the bridge HTTPS endpoint, bearer token, and TLS trust reference. When the bridge advertises a video profile, WUI enables relay playback by default. Set `http.relay: false` to disable that playback path. [Bridge video and preview API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md)
 
 For an external video source, open **Settings → Camera settings → Playback** and select **RTSP proxy**. Enter a credential-free private RTSP/TCP restream URL that the WUI API can reach. For Frigate, use `rtsp://frigate-host:8554/stream-name` with the configured go2rtc stream name. The API container includes FFmpeg. [Frigate RTSP setup](https://docs.frigate.video/configuration/restream/)
 

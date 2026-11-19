@@ -76,7 +76,7 @@ const caps = {
     spotlight: { manual:true, brightness:true, brightness_min:0, brightness_max:100 },
     ai_person: { sensitivity:true, delay_seconds:true }, ai_pet: { sensitivity:true, delay_seconds:true }
   } },
-  ptz: { discovery: 'detected', supported:true, pan:true, tilt:true, presets:true, duration_ms:{min:50,max:3000}, speed_range:{min:1,max:64}, zoom_range:{min:0,max:27} }
+  ptz: { discovery: 'detected', supported:true, pan:true, tilt:true, presets:true, save_presets:true, duration_ms:{min:50,max:3000}, speed_range:{min:1,max:64}, zoom_range:{min:0,max:27} }
 };
 
 const pngChunk = (name, data) => {
@@ -142,10 +142,12 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let led = false;
   let motion = true;
   let sensitivity = 40;
+  const presets = new Map([[2,'Default']]);
   let brightness = 5;
   const schedule = {enabled:true,schedules:{continuous:'0'.repeat(168),motion:'1'.repeat(168)}};
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const networks = new Map();
+  const rtspSwitches = new Map();
   const accountLists = new Map(), rotationStates = new Map();
   const enrolled = new Set();
   const accountsFor = (id) => {
@@ -236,10 +238,16 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       ai_detection: ai['ai_' + command.class]
     }[command.setting] ?? { status_led:led, vendor:{ secret:token } };
     if (command.setting === 'ptz' && command.action.op === 'move') writes++;
+    if (command.setting === 'ptz' && command.action.op === 'save_preset') {
+      const {preset_id,name,replace} = command.action;
+      if (presets.has(preset_id) && !replace) return {id,ok:false,errorKey:'PTZ_PRESET_OCCUPIED'};
+      presets.set(preset_id,name);
+      writes++;
+    }
     return {
       id, ok:true, correlation_id: uuid(), verified: command.action?.op !== 'move',
       state,
-      result: { position: { pan: 12, tilt: 5, zoom: {position: 8} }, stopped: true, presets: [{id: 2, name:'Default'}] }
+      result: { position: { pan: 12, tilt: 5, zoom: {position: 8} }, stopped: true, presets: Array.from(presets,([id,name]) => ({id,name})) }
     };
   };
   const broker = await fixtureBroker();
@@ -302,7 +310,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       }
       return res.end(JSON.stringify(result));
     }
-    if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets,addressLookup:!!enrollmentAddress}));
+    if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets,addressLookup:!!enrollmentAddress,enableRtsp:true}));
     if (enrollmentAddress && req.url.startsWith('/api/enrollment-targets/identify?')) {
       const query = new URL(req.url,'http://127.0.0.1').searchParams;
       if (query.get('address') !== enrollmentAddress || (query.has('port') && query.get('port') !== '9000')) {
@@ -319,13 +327,14 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
         return res.end(JSON.stringify({errorKey:'API_ENROLLMENT_INVALID'}));
       }
       enrolled.add(intent.id);
-      return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
+      if (intent.enableRtsp) rtspSwitches.set('alpha',true);
+      return res.end(JSON.stringify({status:'active',camera_id:'alpha',rtsp:intent.enableRtsp?'enabled':null}));
     }
     if (req.method === 'GET' && req.url.startsWith('/api/enrollments/') && enrolled.has(req.url.split('/').at(-1))) {
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      version:1, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
       previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -341,6 +350,14 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     const cameraId = req.url.split('/')[3];
     if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
+    if (req.url.endsWith('/network/rtsp')) {
+      if (req.method === 'PUT') {
+        const {enabled} = await read(req);
+        rtspSwitches.set(cameraId,enabled);
+        return res.end(JSON.stringify({outcome:'confirmed',enabled,port:8554}));
+      }
+      return res.end(JSON.stringify({supported:true,enabled:rtspSwitches.get(cameraId) ?? false,port:8554}));
+    }
     if (req.url.endsWith('/network')) {
       if (req.method === 'GET') return res.end(JSON.stringify({
         wifi:{ssid:networks.get(cameraId) ?? 'Fixture LAN',nearby:['Fixture LAN','Office wireless'],configurable:true,key:'should-never-leave-the-bridge'},

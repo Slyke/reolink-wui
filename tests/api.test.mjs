@@ -642,7 +642,7 @@ if (process.env.WUI_TEST_RTSP) test('RTSP override streams video and leaves prev
   assert.equal((await set({source:'proxy',proxyUrl:'file:///etc/passwd'})).statusCode,400);
   assert.equal((await set({source:'proxy',proxyUrl})).statusCode,200);
   const state = await incoming({path:prefix+'/playback',headers});
-  assert.deepEqual(state.json(),{source:'proxy',proxyUrl,previewIntervalMs:5000,refreshOnAlert:'off'});
+  assert.deepEqual(state.json(),{source:'proxy',proxyUrl,previewIntervalMs:2000,refreshOnAlert:'off'});
   const preview = await incoming({path:prefix+'/preview',headers});
   assert.equal(preview.statusCode,200,preview.body);
   assert.equal(preview.headers['content-type'],'image/jpeg');
@@ -907,6 +907,14 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   }
   assert.equal((await incoming({path:root+'/users',headers:restricted})).statusCode,403);
   const networkPath=root+'/network';
+  const rtspPath=networkPath+'/rtsp';
+  assert.equal((await incoming({path:rtspPath,headers:restricted})).statusCode,403);
+  assert.equal((await incoming({path:rtspPath,headers:restricted,method:'PUT',payload:{operationId:uuid(),enabled:true}})).statusCode,403);
+  const rtspRead=await incoming({path:rtspPath,headers:privileged});
+  assert.deepEqual(rtspRead.json(),{supported:true,enabled:false,port:8554});
+  const changeRtsp=await incoming({path:rtspPath,headers:privileged,method:'PUT',payload:{operationId:uuid(),enabled:true}});
+  assert.equal(changeRtsp.json().outcome,'confirmed',changeRtsp.body);
+  assert.deepEqual((await incoming({path:rtspPath,headers:privileged})).json(),{supported:true,enabled:true,port:8554});
   assert.equal((await incoming({path:networkPath,headers:restricted})).statusCode,403);
   const networkRead=await incoming({path:networkPath,headers:privileged});
   assert.equal(networkRead.json().wifi.ssid,'Fixture LAN',networkRead.body);
