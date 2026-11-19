@@ -14,7 +14,9 @@
   type CameraIdentity = { target: string; address: string; port: number; uid: string; serial?: string | null; model?: string | null };
   let addressLookup = $state(false), namedTarget = $state(false);
   let address = $state(''), port = $state<number | undefined>(undefined);
-  let identified = $state<CameraIdentity | null>(null), identifying = $state(false);
+  let identified = $state<CameraIdentity | null>(null);
+  let lookupState = $state<'idle' | 'loading' | 'finished'>('idle');
+  const identifying = $derived(lookupState === 'loading');
   let lookupGeneration = 0;
   const useAddress = $derived(addressLookup && !namedTarget);
   const labelMatches = $derived(!!identified && (!uid || uid.toUpperCase() === identified.uid.toUpperCase())
@@ -90,19 +92,19 @@
   };
   const resetLookup = () => {
     ++lookupGeneration;
-    identified = null; identifying = false; confirmed = false; failure = ''; message = '';
+    identified = null; lookupState = 'idle'; confirmed = false; failure = ''; message = '';
   };
   const identifyCamera = async () => {
     resetLookup();
     const generation = lookupGeneration;
     const query = new URLSearchParams({ address: address.trim(), method });
     if (port !== undefined) query.set('port', String(port));
-    identifying = true;
+    lookupState = 'loading';
     try {
       const result = await api<CameraIdentity>({ path: '/api/v1/admin/bridges/' + bridge + '/enrollment-targets/identify?' + query });
       if (generation === lookupGeneration) identified = result;
     } catch (error) { if (generation === lookupGeneration) failure = errorText(error); }
-    finally { if (generation === lookupGeneration) identifying = false; }
+    finally { if (generation === lookupGeneration) lookupState = 'finished'; }
   };
   const loadTargets = async () => {
     resetLookup();
@@ -229,7 +231,9 @@
           {#if !labelMatches}<span class="error">{t('enrollment-label-mismatch')}</span>{/if}
         </div>
       {/if}
-      <p class="muted">{t(method === 'initialize' ? 'enrollment-configured-init' : 'enrollment-configured-import')}</p>
+      {#if method === 'import' || lookupState !== 'idle'}
+        <p class="muted">{t(method === 'initialize' ? 'enrollment-configured-init' : 'enrollment-configured-import')}</p>
+      {/if}
     {:else}
       {#if targetsLoaded && !targets.length}<p class="notice" role="status">{t('enrollment-no-targets')}</p>{/if}
       <p class="muted">{t(method === 'initialize' ? 'enrollment-init-help' : 'enrollment-import-help')}</p>
