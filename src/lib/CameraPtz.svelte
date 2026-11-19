@@ -45,6 +45,7 @@
     ...(ptz?.diagonal ? ['left_up', 'right_up', 'left_down', 'right_down'] : []),
     ...(ptz?.directionalZoom ? ['zoom_in', 'zoom_out'] : [])
   ]);
+  const symbols: Record<string,string> = {left:'←',right:'→',up:'↑',down:'↓',left_up:'↖',right_up:'↗',left_down:'↙',right_down:'↘',zoom_in:'＋',zoom_out:'−'};
   onDestroy(stop);
 </script>
 
@@ -62,15 +63,15 @@
           <label>{t('duration')}<input type="number" min={ptz.duration?.min} max={ptz.duration?.max} bind:value={duration} /></label>
           {#if ptz.speed}<label>{t('speed')}<input type="number" placeholder={t('default-speed')} min={ptz.speed.min} max={ptz.speed.max} bind:value={speed} /></label>{/if}
         </div>
-        <div class="row">
+        <div class="row ptz-moves">
           {#each directions as direction}
-            <button disabled={!online} onpointerdown={event => {
+            <button disabled={!online} aria-label={t('move-' + direction)} title={t('move-' + direction)} onpointerdown={event => {
               if (event.button !== 0 || !event.isPrimary || moving) return;
               pointer = event.pointerId;
               event.currentTarget.setPointerCapture(event.pointerId);
               void move(direction);
             }} onpointerup={stop} onpointercancel={stop} onlostpointercapture={() => { if (pointer !== undefined) stop(); }}
-            onclick={event => { if (event.detail === 0) void move(direction); }}>{t('move-' + direction)}</button>
+            onclick={event => { if (event.detail === 0) void move(direction); }}><span class="ptz-symbol" aria-hidden="true">{symbols[direction]}</span><span class="ptz-caption">{t('move-' + direction)}</span></button>
           {/each}
           <button class="danger" onclick={() => ptzAction({ op: 'stop' }, false, operationId(), movement)}>{t('stop')}</button>
         </div>

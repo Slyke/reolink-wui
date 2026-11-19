@@ -5,6 +5,7 @@
   let { base, csrf, online }: { base: string; csrf: string; online: boolean } = $props();
   let busy = $state(false), status = $state(''), message = $state(''), error = $state('');
 
+  export function setStatus(value: string) { status = value; message = ''; error = ''; }
   const rotate = async ({ action }: { action?: 'rotate' | 'reconcile' } = {}) => {
     if (action === 'rotate' && !confirm(t('rotate-confirm'))) return;
     busy = true;
@@ -27,7 +28,7 @@
   };
 </script>
 
-<SettingsDisclosure title={t('rotation')}>
+<SettingsDisclosure title={t('rotation')} ontoggle={expanded => { if (expanded && !status && !busy) void rotate(); }}>
   <p class="muted">{t('rotation-help')}</p>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}

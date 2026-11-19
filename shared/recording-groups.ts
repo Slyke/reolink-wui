@@ -39,3 +39,21 @@ export const groupRecordings = ({ recordings }: { recordings: Recording[] }): Re
 export const recordingVariant = ({ group, stream }: { group: RecordingGroup; stream: 'main' | 'sub' }) => (
   group.variants.find(item => item.stream === stream) ?? group.variants[0]
 );
+
+// Start and end are camera-local, whole-second timestamps. Include the two
+// overnight gaps and merge overlapping main/sub clips before offering a range.
+export function recordingGaps(date: string, clips: ReadonlyArray<Pick<Recording,'start'|'end'>>) {
+  const start = recordingTime(date + 'T00:00:00');
+  const clock = (second: number) => new Date(start + second * 1000).toISOString().slice(11,19);
+  const gaps: {from:string; to:string}[] = [];
+  const seconds = (stamp: string) => Math.floor((recordingTime(stamp) - start) / 1000);
+  let cursor = 0;
+  for (const item of [...clips].sort((a,b) => a.start.localeCompare(b.start))) {
+    const first = Math.max(0,seconds(item.start)), last = Math.min(86399,seconds(item.end));
+    if (last < cursor || first > 86399) continue;
+    if (cursor < first) gaps.push({from:clock(cursor),to:clock(first-1)});
+    cursor = Math.max(cursor, last + 1);
+  }
+  if (cursor <= 86399) gaps.push({from:clock(cursor),to:clock(86399)});
+  return gaps;
+}

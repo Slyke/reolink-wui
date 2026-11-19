@@ -21,42 +21,95 @@
     void previews.warm(recordings, rangeStart, rangeEnd, railWidth, controller.signal);
     return () => controller.abort();
   });
-  let hover = $state<{ item: RecordingGroup; offsetMs: number; percent: number }>();
+  let hover = $state<{ item?: RecordingGroup; offsetMs: number; time: number; percent: number; cursor: number }>();
+  let pinned = $state(false);
+  let touchPointer: number | undefined;
+  const byId = $derived(new Map(recordings.map(item => [item.id,item])));
   const position = (item: RecordingGroup) => Math.max(0, (recordingTime(item.start) - rangeStart) / span * 100);
   const width = (item: RecordingGroup) => Math.min(100 - position(item), (recordingTime(item.end) - Math.max(rangeStart,recordingTime(item.start))) / span * 100);
-  const point = (item: RecordingGroup, event?: PointerEvent) => {
+  const point = (item?: RecordingGroup, x?: number) => {
     const bounds = rail.getBoundingClientRect();
-    const time = event ? rangeStart + (event.clientX - bounds.left) / bounds.width * span : recordingTime(item.start);
-    const offsetMs = Math.floor(Math.max(0,Math.min(time - recordingTime(item.start),recordingTime(item.end) - recordingTime(item.start) - 1000)) / 1000) * 1000;
-    const half = Math.min(144,window.innerWidth * .35) / bounds.width * 100;
-    hover = { item, offsetMs, percent: Math.max(half,Math.min(100 - half,(time - rangeStart) / span * 100)) };
-    onhover(item.id);
+    if (!bounds.width) return;
+    const raw = x === undefined ? recordingTime(item!.start)
+      : rangeStart + Math.max(0,Math.min(1,(x - bounds.left) / bounds.width)) * span;
+    const start = item ? recordingTime(item.start) : 0;
+    const offsetMs = item ? Math.max(0, Math.floor(Math.min(raw-start,recordingTime(item.end)-start-1)/1000)*1000) : 0;
+    const time = item ? start + offsetMs : Math.min(rangeEnd-1,raw);
+    const cursor = Math.max(0,Math.min(100,(raw-rangeStart)/span*100));
+    const half = Math.min(50,Math.min(144,window.innerWidth * .35) / bounds.width * 100);
+    hover = { item, offsetMs, time, cursor, percent:Math.max(half,Math.min(100-half,cursor)) };
+    onhover(item?.id);
   };
-  const leave = () => { hover = undefined; onhover(); };
+  const clear = () => { pinned = false; hover = undefined; onhover(); };
+  const leave = () => { if (!pinned) clear(); };
+  const scrub = (event: PointerEvent) => {
+    // Captured touch events keep their original target. Hit-test the rail at the
+    // finger's current x so narrow, visually enlarged segments remain reachable.
+    const bounds = rail.getBoundingClientRect();
+    const x = Math.max(bounds.left+1,Math.min(bounds.right-1,event.clientX));
+    const segment = document.elementFromPoint(x,bounds.top+bounds.height/2)?.closest<HTMLElement>('.timeline-segment');
+    point(segment && rail.contains(segment) ? byId.get(segment.dataset.id!) : undefined,x);
+  };
+  const begin = (event: PointerEvent) => {
+    if (event.pointerType === 'mouse' || !event.isPrimary || (event.target as Element).closest('.timeline-hover')) return;
+    pinned = true;
+    touchPointer = event.pointerId;
+    rail.setPointerCapture(event.pointerId);
+    scrub(event);
+  };
+  const finish = (event: PointerEvent) => {
+    if (touchPointer !== event.pointerId) return;
+    if (event.type === 'pointerup') scrub(event);
+    touchPointer = undefined;
+    if (rail.hasPointerCapture(event.pointerId)) rail.releasePointerCapture(event.pointerId);
+  };
+  const jump = () => {
+    if (!playable || !hover?.item) return;
+    const {item,offsetMs} = hover;
+    clear();
+    onselect(item,offsetMs);
+  };
+  const outside = (event: PointerEvent) => {
+    if (pinned && event.target instanceof Node && !rail.contains(event.target)) clear();
+  };
 </script>
 
-<svelte:document bind:visibilityState={visibility} />
+<svelte:document bind:visibilityState={visibility} onpointerdown={outside} onkeydown={event => {if (event.key === 'Escape' && pinned) clear();}} />
 <div class="recording-timeline stack">
   <div class="row between"><h3>{t('recording-timeline')}</h3>
-    <select class="timeline-range" aria-label={t('recording-timeline-range')} bind:value={range}>
+    <select class="timeline-range" aria-label={t('recording-timeline-range')} bind:value={range} onchange={clear}>
       <option value="fit">{t('recording-timeline-fit')}</option><option value="day">{t('recording-timeline-day')}</option>
     </select>
     <div class="row timeline-legend"><span class="timeline-key busy"></span>{t('recording-busy')}<span class="timeline-key"></span>{t('recording-still')}</div>
   </div>
-  <div class="timeline-rail" bind:this={rail} bind:clientWidth={railWidth} onpointerleave={leave} role="group" aria-label={t('recording-timeline')}>
+  <div class="timeline-rail" bind:this={rail} bind:clientWidth={railWidth} onpointerleave={leave} onpointerdown={begin}
+    onpointermove={event => {if (event.pointerId === touchPointer) scrub(event);}}
+    onpointerup={finish} onpointercancel={finish} role="group" aria-label={t('recording-timeline')}>
     {#each recordings as item (item.id)}
-      <button type="button" class="timeline-segment" data-highlighted={highlighted === item.id}
+      <button type="button" class="timeline-segment" data-id={item.id} data-highlighted={highlighted === item.id}
         style:left={position(item) + '%'} style:width={width(item) + '%'} aria-disabled={!playable}
         aria-label={t('recording-play-at', { time: item.start.replace('T',' ') })}
         title={item.start.slice(11) + '–' + item.end.slice(11)}
-        onpointerenter={event => point(item,event)} onpointermove={event => point(item,event)}
-        onfocus={() => point(item)} onblur={leave}
-        onclick={() => { if (playable) onselect(item,hover?.item.id === item.id ? hover.offsetMs : 0); }}></button>
+        onpointerenter={event => { if (!pinned && event.pointerType === 'mouse') point(item,event.clientX); }}
+        onpointermove={event => { if (!pinned && event.pointerType === 'mouse') point(item,event.clientX); }}
+        onfocus={() => { if (!pinned) point(item); }} onblur={leave}
+        onclick={event => {
+          if (!playable || (pinned && event.detail > 0)) return;
+          onselect(item,hover?.item?.id === item.id ? hover.offsetMs : 0);
+        }}></button>
     {/each}
     {#if hover}
-      <div class="timeline-hover stack" style:left={hover.percent + '%'} role="tooltip">
-        <RecordingPreview {previews} recording={hover.item.id} {available} offsetMs={Math.max(0,hover.offsetMs - (recordingTime(hover.item.variants[0].start) - recordingTime(hover.item.start)))} eager />
-        <time>{new Date(recordingTime(hover.item.start) + hover.offsetMs).toISOString().slice(11,19)}</time>
+      {#if pinned}<span class="timeline-cursor" style:left={hover.cursor + '%'} aria-hidden="true"></span>{/if}
+      <div class="timeline-hover stack" class:pinned style:left={hover.percent + '%'} role={pinned ? 'group' : 'tooltip'}
+        aria-label={pinned ? t('recording-timeline') : undefined}>
+        {#if hover.item}
+          <RecordingPreview {previews} recording={hover.item.id} {available} offsetMs={Math.max(0,hover.offsetMs - (recordingTime(hover.item.variants[0].start) - recordingTime(hover.item.start)))} eager />
+        {:else}
+          <span class="muted">{t('recording-still')}</span>
+        {/if}
+        <div class="row between"><time>{new Date(hover.time).toISOString().slice(11,19)}</time>
+          {#if pinned && hover.item && playable}<button type="button" onclick={jump}>{t('jump-recording')}</button>{/if}
+        </div>
       </div>
     {/if}
   </div>

@@ -17,6 +17,7 @@
   let error = $state('');
   let settings = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let playback = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
+  let rotation = $state<{ setStatus: (status: string) => void }>();
   const camera = $derived(cameras.find(item => item.id === selected));
 
   const refresh = async ({ manual = false }: { manual?: boolean } = {}) => {
@@ -75,7 +76,7 @@
       <p class="panel muted">{t('settings-empty')}</p>
     {/if}
     <SettingsPanel bind:this={settings} {camera} csrf={workspace.current().csrf} {online} {base} />
-    {#if camera.capabilities.cameraUsers}<CameraUsers {base} csrf={workspace.current().csrf} {online} />{/if}
-    {#if camera.capabilities.rotate}<CredentialRotation {base} csrf={workspace.current().csrf} {online} />{/if}
+    {#if camera.capabilities.cameraUsers}<CameraUsers onrotation={status => rotation?.setStatus(status)} {base} csrf={workspace.current().csrf} {online} />{/if}
+    {#if camera.capabilities.rotate}<CredentialRotation bind:this={rotation} {base} csrf={workspace.current().csrf} {online} />{/if}
   {/key}
 {/if}

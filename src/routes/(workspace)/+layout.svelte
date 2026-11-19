@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { goto } from '$app/navigation';
+  import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { onDestroy, onMount, setContext } from 'svelte';
   import { api, errorText, t } from '$lib/api.js';
+  import { dismissOnBackdrop } from '$lib/dialog.js';
   import type { SessionView } from '$lib/models.js';
   import { useAppearance, workspaceKey, type SignedIn, type WorkspaceContext } from '$lib/workspace.js';
 
@@ -11,6 +12,10 @@
   let session = $state<SignedIn>();
   let error = $state('');
   let busy = $state(false);
+  let drawer = $state<HTMLDialogElement>();
+  let menuOpen = $state(false);
+  const closeMenu = () => { if (drawer?.open) drawer.close(); };
+  afterNavigate(closeMenu);
 
   const refreshSession = async () => {
     try {
@@ -44,7 +49,13 @@
     }
   };
   setContext<WorkspaceContext>(workspaceKey, { current: () => session!, refreshSession });
-  onMount(() => { void refreshSession(); });
+  onMount(() => {
+    void refreshSession();
+    const mobile = window.matchMedia('(max-width: 800px)');
+    const resize = () => { if (!mobile.matches) closeMenu(); };
+    mobile.addEventListener('change',resize);
+    return () => mobile.removeEventListener('change',resize);
+  });
   onDestroy(() => appearance.setAccount({}));
   const links = [
     { href: '/dashboard', label: 'dashboard' },
@@ -55,23 +66,42 @@
   ];
 </script>
 
+{#snippet navigation()}
+  {#each links as item (item.href)}
+    <a class="button" href={item.href} onclick={closeMenu}
+      aria-current={page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/') ? 'page' : undefined}>{t(item.label)}</a>
+  {/each}
+{/snippet}
+
 <header class="mast">
   <div class="mast-inner">
+    {#if session}
+      <button class="icon-button mobile-menu-toggle" aria-label={t('open-menu')} title={t('open-menu')}
+        aria-haspopup="dialog" aria-controls="workspace-drawer" aria-expanded={menuOpen}
+        onclick={() => {drawer?.showModal(); menuOpen = true;}}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+    {/if}
     <strong class="brand">{t('title')}</strong>
     {#if session}
-      <nav class="row workspace-nav" aria-label={t('main-nav')}>
-        {#each links as item (item.href)}
-          <a class="button" href={item.href} aria-current={page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/') ? 'page' : undefined}>
-            {t(item.label)}
-          </a>
-        {/each}
-      </nav>
-      <span class="spacer"></span>
-      <span class="muted wrap">{session.user.label}</span>
-      <button disabled={busy} onclick={signOut}>{t('sign-out')}</button>
+      <nav class="row workspace-nav" aria-label={t('main-nav')}>{@render navigation()}</nav>
+      <div class="row mast-account"><span class="muted wrap">{session.user.label}</span><button disabled={busy} onclick={signOut}>{t('sign-out')}</button></div>
     {/if}
   </div>
 </header>
+{#if session}
+  <dialog id="workspace-drawer" class="workspace-drawer" bind:this={drawer} aria-labelledby="mobile-menu-title"
+    onclose={() => menuOpen = false} use:dismissOnBackdrop={closeMenu}>
+    <div class="row between panel-title">
+      <h2 id="mobile-menu-title">{t('main-menu')}</h2>
+      <button class="icon-button" aria-label={t('close-menu')} onclick={closeMenu}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <nav class="stack" aria-label={t('main-nav')}>{@render navigation()}</nav>
+    <div class="drawer-account stack"><span class="muted wrap">{session.user.label}</span><button disabled={busy} onclick={signOut}>{t('sign-out')}</button></div>
+  </dialog>
+{/if}
 
 <main class="shell stack">
   {#if error}<p class="error" role="alert">{error}</p>{/if}

@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { correlationPattern, segment } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
@@ -11,6 +11,18 @@ import type { Bridge } from './bridge.js';
 
 const object = z.strictObject;
 const safeKey = z.string().regex(segment);
+const cameraLogin = object({
+  operationId: uuid,
+  username: z.string().min(1).max(64).refine(name => name.trim().length > 0 && !/\p{Cc}/u.test(name)),
+  uid: z.string().regex(/^[a-zA-Z0-9]{8,40}$/).optional(),
+  confirmation: z.literal(true)
+});
+const cameraPassword = z.string().regex(/^[ -~]{8,31}$/);
+const changePassword = cameraLogin.extend({ password: cameraPassword });
+const manageAccount = z.discriminatedUnion('action', [
+  cameraLogin.extend({ action: z.literal('add'), role: z.enum(['user','administrator']), password: cameraPassword }),
+  cameraLogin.extend({ action: z.literal('remove') })
+]);
 const states = [
   'waiting', 'identity-mismatch', 'local-setup-required', 'recovery-required', 'verified', 'restart-required',
   'active', 'previous-credential-valid', 'not-started', 'in-progress'
@@ -18,6 +30,8 @@ const states = [
 const shape = ({ response, body }: { response: Response; body: unknown }) => {
   const raw = record(body);
   const status = typeof raw.status === 'string' && states.includes(raw.status) ? raw.status : undefined;
+  if (!response.ok && raw.errorKey === 'API_CAMERA_ACCOUNT_REJECTED') throw new Failure('CAMERA_ACCOUNT_REJECTED', 422);
+  if (response.status === 405) throw new Failure('UNSUPPORTED', 422);
   if (!status && !response.ok) throw new Failure(
     response.status === 404 ? 'ENROLLMENT_MISSING' : (response.status === 422 ? 'UNSUPPORTED' : 'OUTCOME_UNKNOWN'),
     response.status === 404 ? 404 : (response.status === 422 ? 422 : 502),
@@ -139,28 +153,33 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     const response = await bridge.api({ stableId: row.remote_id, path: '/cameras/' + row.routeId + '/users', correlation: request.id, signal: AbortSignal.timeout(22_000) });
     const data = record(await jsonResponse({ response }));
     if (!response.ok || !Array.isArray(data.users)) throw new Failure('BRIDGE_UNAVAILABLE', 502);
-    return { writable: data.writable === true, requiresUid: data.requiresUid === true, users: data.users.slice(0,32).flatMap(raw => {
+    return { writable: data.writable === true, manageAccounts: data.writable === true && data.manageAccounts === true, requiresUid: data.requiresUid === true, users: data.users.slice(0,32).flatMap(raw => {
       const user = record(raw);
       return typeof user.username === 'string' && user.username.length > 0 && user.username.length <= 64
         ? [{ username: user.username, administrator: user.administrator === true, bridgeLogin: user.bridge_login === true }] : [];
     }) };
   });
-  api.post<{ Params: { id: string } }>(users + '/password', async (request, reply) => {
+  type UserRequest = FastifyRequest<{ Params: { id: string } }>;
+  const writeAccount = async (request: UserRequest, reply: FastifyReply, change: boolean) => {
     const { bridge, row, session } = await runtime.camera({ request, id: request.params.id, permission: 'device.rotate', mutate: true });
     if (!bridge.hasUsers(row.routeId) || !bridge.config.http) throw new Failure('UNSUPPORTED', 422);
-    const data = input({ schema: object({ operationId: uuid, username: z.string().min(1).max(64),
-      password: z.string().regex(/^[ -~]{8,31}$/), uid: z.string().regex(/^[a-zA-Z0-9]{8,40}$/).optional(), confirmation: z.literal(true) }), value: request.body });
-    const fingerprint = createHmac('sha256', bridge.config.http.token).update(JSON.stringify([data.operationId, data.username, data.uid, data.password])).digest('hex');
+    const data = change ? input({ schema: changePassword, value: request.body }) : input({ schema: manageAccount, value: request.body });
+    const { operationId, ...intent } = data;
+    const action = 'action' in data ? data.action : 'password';
+    const fingerprintInput = 'action' in data ? data : [operationId, data.username, data.uid, data.password];
+    const fingerprint = createHmac('sha256', bridge.config.http.token).update(JSON.stringify(fingerprintInput)).digest('hex');
     const value = await runtime.ops.run({
-      id: data.operationId, actor: session.account.id, resource: row.id, action: 'camera.user.password', correlation: request.id, input: fingerprint,
+      id: operationId, actor: session.account.id, resource: row.id, action: 'camera.user.' + action, correlation: request.id, input: fingerprint,
       execute: async () => {
-        const result = await progress({ bridge, stableId: row.remote_id, endpoint: '/cameras/' + row.routeId + '/users/password',
-          data: { id: data.operationId, username: data.username, password: data.password, uid: data.uid, confirmation: true }, correlation: request.id });
+        const result = await progress({ bridge, stableId: row.remote_id, endpoint: '/cameras/' + row.routeId + (change ? '/users/password' : '/users'),
+          data: { id: operationId, ...intent }, correlation: request.id });
         return { outcome: result.status === 'previous-credential-valid' ? 'rejected' : outcome(result.status), data: result, bridgeCorrelationId: result.bridgeCorrelationId };
       }
     });
     return sendOutcome({ reply, value });
-  });
+  };
+  api.post<{ Params: { id: string } }>(users, (request, reply) => writeAccount(request, reply, false));
+  api.post<{ Params: { id: string } }>(users + '/password', (request, reply) => writeAccount(request, reply, true));
 
   const cameras = path + '/cameras/:id/rotation';
   api.get<{ Params: { id: string } }>(cameras, async request => {

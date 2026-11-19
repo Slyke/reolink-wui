@@ -22,27 +22,29 @@
   let enrollments = $state<{ id: string; bridge_id: string }[]>([]);
   let status = $state('');
   const verified = $derived(validIdentifiers({ uid, serial }));
+  const uidSuffix = (value: string) => value && validIdentifiers({uid:value,serial:''}) ? value.slice(-4) : '';
+  const setUid = (value: string) => { uid = value; code = uidSuffix(value); };
 
-  const wipeWifi = () => {
+  const closeWifi = () => {
     clearTimeout(renew);
+    wifiDialog?.close();
+  };
+  const wipeWifi = () => {
     ssid = '';
     password = '';
     code = '';
-    wifiDialog?.close();
+    closeWifi();
   };
   const generateWifi = async () => {
     failure = '';
     try {
       const payload = wifiBytes({ ssid, password, code });
-      ssid = '';
-      password = '';
-      code = '';
       if (await wifiDialog.show({ code: payload })) {
         clearTimeout(renew);
-        renew = setTimeout(wipeWifi, 120_000);
+        renew = setTimeout(closeWifi, 120_000);
       }
     } catch {
-      wipeWifi();
+      closeWifi();
       failure = t('wifi-invalid');
     }
   };
@@ -72,7 +74,7 @@
       const controls = await reader.decodeFromVideoDevice(undefined, video, (result, _, controls) => {
         if (!result || generation !== scanGeneration) return;
         const parsed = parseDeviceLabel({ value: result.getText() });
-        if (parsed) { uid = parsed.uid; serial = parsed.serial; stopScan(); controls.stop(); }
+        if (parsed) { setUid(parsed.uid); serial = parsed.serial; stopScan(); controls.stop(); }
       });
       if (generation !== scanGeneration) controls.stop();
       else scanner = controls;
@@ -140,7 +142,7 @@
   <div class="grid">
     <div class="stack">
       <div class="form-grid">
-        <label>{t('uid')}<input bind:value={uid} maxlength="40" autocomplete="off" /></label>
+        <label>{t('uid')}<input value={uid} oninput={event => setUid(event.currentTarget.value)} maxlength="40" autocomplete="off" /></label>
         <label>{t('serial')}<input bind:value={serial} maxlength="64" autocomplete="off" /></label>
       </div>
       <div class="row">
@@ -150,7 +152,7 @@
       <div class="scan" hidden={!scanOn}><video muted playsinline bind:this={video} aria-label={t('scan')}></video></div>
 
     </div>
-    <details class="panel" ontoggle={event => { if (!event.currentTarget.open) wipeWifi(); }}>
+    <details class="panel" ontoggle={event => { if (!event.currentTarget.open) closeWifi(); else if (!code) code = uidSuffix(uid); }}>
       <summary>{t('wifi')}</summary>
       <form class="stack" autocomplete="off" onsubmit={event => { event.preventDefault(); void generateWifi(); }}>
         <small>{t('wifi-verified')}</small>
@@ -198,4 +200,4 @@
 </section>
 
 <QrDialog bind:this={identityDialog} title={t('enrollment-qr-alt')} description={t('enrollment-qr-copy')} imageLabel={t('enrollment-qr-alt')} />
-<QrDialog bind:this={wifiDialog} title={t('wifi')} description={t('wifi-copy')} imageLabel={t('wifi-alt')} onclose={wipeWifi} />
+<QrDialog bind:this={wifiDialog} title={t('wifi')} description={t('wifi-copy')} imageLabel={t('wifi-alt')} onclose={() => clearTimeout(renew)} />

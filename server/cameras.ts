@@ -209,6 +209,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     events: grant.has('events'),
     recordings: grant.has('recordings.view') && bridge.hasStorage(remote),
     recordingExport: grant.has('recordings.export') && grant.has('recordings.view') && bridge.hasRecordings(remote),
+    timeLapsePhotoExport: grant.has('recordings.export') && grant.has('recordings.view') && bridge.hasTimeLapsePhotos(remote),
     recordingMetadata: grant.has('recordings.view') && bridge.hasRecordingMetadata(remote),
     recordingPreview: grant.has('recordings.view') && bridge.hasRecordingPreview(remote),
     recordingPlayback: grant.has('recordings.view') && bridge.hasRecordings(remote),

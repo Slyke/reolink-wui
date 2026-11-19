@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { recordingGaps } from '../dist/shared/recording-groups.js';
 import { test } from 'node:test';
 import { createServer as tcp } from 'node:net';
 import { once } from 'node:events';
@@ -782,6 +784,32 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   const search=await incoming({path:root+'/recordings?date=2026-11-17&stream=sub',headers:privileged});
   assert.equal(search.statusCode,200,search.body);
   const recording=search.json().recordings[0];
+  const exportPath=root+'/recordings/export?date=2026-11-17&kind=';
+  assert.equal((await incoming({path:exportPath+'photos',headers:restricted})).statusCode,403);
+  assert.equal((await incoming({path:exportPath+'photos&from=20:00:00&to=01:00:00',headers:privileged})).statusCode,400);
+  assert.equal((await incoming({path:exportPath+'photos&from=00:00:00&to=01:00:00',headers:privileged})).json().count,0);
+  const archive=async (kind,types) => {
+    const answer=await incoming({path:exportPath+kind+'&download=1',headers:privileged});
+    assert.equal(answer.statusCode,200,answer.statusCode===200?'':answer.body);
+    assert.equal(answer.headers['content-type'],'application/zip');
+    const check=spawnSync('python3',['-c',[
+      'import zipfile,io,sys,json',
+      'z=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))',
+      'assert z.testzip() is None',
+      'print(json.dumps([[n,z.read(n)[:8].hex()] for n in z.namelist()]))'
+    ].join('\n')],{input:answer.rawPayload,encoding:'utf8'});
+    assert.equal(check.status,0,check.stderr);
+    const entries=JSON.parse(check.stdout);
+    assert.equal(entries.length,types.length);
+    for(const [i,[name,signature]] of entries.entries()){
+      assert.match(name,types[i]);
+      if(name.endsWith('.png'))assert.equal(signature,'89504e470d0a1a0a');
+      else assert.match(signature,/66747970$/);
+    }
+  };
+  await archive('photos',[/09-15-00.*\.png$/,/12-45-00.*\.png$/]);
+  await archive('photos&from=09:00:00&to=09:30:00',[/09-15-00.*\.png$/]);
+  await archive('videos',[/^main\/.*\.mp4$/,/^sub\/.*\.mp4$/]);
   const path=root+'/recordings/'+recording.id+'/video';
   const previewPath=root+'/recordings/'+recording.id+'/preview';
   await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','recordings.view']),viewer,camera.id);
@@ -838,6 +866,26 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal(listed.users[0].username,'admin');
   assert.equal(listed.users[0].bridgeLogin,true);
   assert.ok(!JSON.stringify(listed).includes('redacted-fixture'));
+  assert.equal(listed.manageAccounts, true);
+  const add = {operationId:uuid(),action:'add',role:'user',username:'new-user',password:'private-fixture-32',uid:'FIXTUREUID',confirmation:true};
+  const remove = {operationId:uuid(),action:'remove',username:add.username,uid:add.uid,confirmation:true};
+  const manage = (body, headers=privileged) => incoming({path:root+'/users',method:'POST',headers,payload:body});
+  for (const attempt of [add,remove]) assert.equal((await manage(attempt,restricted)).statusCode,403);
+  assert.equal((await manage({...remove,password:add.password})).statusCode,400);
+  assert.equal((await manage({...add,confirmation:false})).statusCode,400);
+  const created = await manage(add);
+  assert.equal(created.json().data.status,'verified',created.body);
+  assert.ok(!created.body.includes(add.password));
+  assert.equal((await manage(add)).json().outcome,'confirmed');
+  assert.equal((await manage({...add,password:'changed-fixture-99'})).statusCode,409);
+  const after = (await incoming({path:root+'/users',headers:privileged})).json().users;
+  assert.deepEqual(after.find(u=>u.username===add.username),{username:add.username,administrator:false,bridgeLogin:false});
+  const rejected=await manage({...remove,operationId:uuid(),username:'admin'});
+  assert.equal(rejected.json().reason,'CAMERA_ACCOUNT_REJECTED');
+  assert.equal((await manage(remove)).json().data.status,'verified');
+  assert.deepEqual((await incoming({path:root+'/users',headers:privileged})).json().users,listed.users);
+  const operations=await runtime.sql.query('SELECT * FROM operations WHERE id=$1',add.operationId);
+  assert.equal(operations.length,1); assert.ok(!JSON.stringify(operations).includes(add.password));
   const payload = {operationId:uuid(),username:'admin',password:'fixture-password-99',uid:'FIXTUREUID',confirmation:true};
   assert.equal((await incoming({path:root+'/users/password',headers:restricted,method:'POST',payload})).statusCode,403);
   const changed = await incoming({path:root+'/users/password',headers:privileged,method:'POST',payload});
@@ -1019,4 +1067,11 @@ test('recording playback is gated independently from card details and recording 
   assert.equal((await incoming({path:root+'/recordings/'+'a'.repeat(64)+'/video',headers})).statusCode,422);
   fixture.setPlaybackAvailable(true);await runtime.ready();
   assert.equal((await incoming({path:'/cameras',headers})).json().cameras.find(item=>item.id===camera).capabilities.recordingPlayback,true);
+});
+
+test('PNG gap choices merge overlapping streams and keep camera-local day boundaries',()=>{
+  const date='2026-11-17', at=time=>date+'T'+time;
+  assert.deepEqual(recordingGaps(date,[{start:at('09:00:03'),end:at('10:00:00')},{start:at('08:59:59'),end:at('09:59:58')},{start:at('23:59:58'),end:'2026-11-18T00:00:04'}]),[
+    {from:'00:00:00',to:'08:59:58'},{from:'10:00:01',to:'23:59:57'}
+  ]);
 });

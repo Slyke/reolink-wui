@@ -13,6 +13,7 @@
   } = $props();
   let info = $state<CameraDetail>();
   const liveTitle = $props.id();
+  const showPtz = $derived(camera.capabilities.ptz?.supported && (camera.capabilities.ptz.read || camera.capabilities.ptz.write));
   let capture = $state('');
   let busy = $state(false);
   let disposed = false;
@@ -62,7 +63,7 @@
     {#if error}<p role="alert" class="error">{error}</p>{/if}
     {#if message}<p role="status">{message}</p>{/if}
   </section>
-  <div class="monitor-columns" class:with-events={camera.capabilities.events}>
+  <div class="monitor-columns" class:with-ptz={showPtz}>
     <section class="panel stack" aria-labelledby={liveTitle}>
       <CameraLiveView {previewTag} {pushConnected} headingId={liveTitle} {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
         {#snippet actions()}
@@ -79,7 +80,7 @@
         </div>
       {/if}
     </section>
-    {#if camera.capabilities.events}<EventFeed coordinateStream={info?.coordinateStream} {events} {historyError} />{/if}
+    {#if showPtz}<CameraPtz {camera} {csrf} reportedPosition={info?.position} />{/if}
   </div>
   {#if info?.detections?.length}
     <section class="panel stack">
@@ -94,5 +95,5 @@
       </div>
     </section>
   {/if}
-  <CameraPtz {camera} {csrf} reportedPosition={info?.position} />
+  {#if camera.capabilities.events}<EventFeed coordinateStream={info?.coordinateStream} {events} {historyError} />{/if}
 </div>

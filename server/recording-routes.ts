@@ -9,6 +9,7 @@ import { jsonResponse, responseBytes } from './net.js';
 import { audit } from './db.js';
 import { correlationPattern } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
+import { recordingExportRoute } from './recording-export.js';
 import { RecordingPreviewCache } from '../shared/recording-preview-cache.js';
 import { recordingStages, recordingMetadataResponse, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
 
@@ -47,6 +48,7 @@ const mediaFailure = async ({ response }: { response: Response }) => {
 };
 
 export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
+  recordingExportRoute(api, path, runtime);
   const root = path + '/cameras/:id';
   const previews = new RecordingPreviewCache<Buffer>();
   const stopWatching = runtime.observeBridgeChanges(() => previews.clear());

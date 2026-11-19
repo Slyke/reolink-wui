@@ -69,6 +69,7 @@ export class Bridge {
   private readonly mediaStreams = new Map<string, string[]>();
   private readonly previewTags = new Map<string,string>();
   private previewCameras = new Set<string>();
+  private timeLapsePhotoCameras = new Set<string>();
   private recordingCameras = new Set<string>();
   private recordingMetadataCameras = new Set<string>();
   private recordingPreviewCameras = new Set<string>();
@@ -396,6 +397,8 @@ export class Bridge {
 
   hasStorage(camera: string) { return this.has("v1") && this.storageCameras.has(camera); }
 
+  hasTimeLapsePhotos(camera: string) { return this.has('v1') && this.timeLapsePhotoCameras.has(camera); }
+
   hasRecordingMetadata(camera: string) { return this.hasRecordings(camera) && this.recordingMetadataCameras.has(camera); }
 
   hasRecordingPreview(camera: string) { return this.has('v1') && this.recordingPreviewCameras.has(camera); }
@@ -549,7 +552,7 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.userCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras]]);
     const ok = contract.version === 1;
     const reportedSettings = contract.settings;
     this.bridgeVersion.settings = ok ? settingsGroups.filter(group => Array.isArray(reportedSettings) && reportedSettings.includes(group)) : undefined;
@@ -569,6 +572,8 @@ export class Bridge {
     }
     this.recordingMetadataCameras = new Set(ok && Array.isArray(contract.recordingMetadataCameras)
       ? contract.recordingMetadataCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
+    this.timeLapsePhotoCameras = new Set(ok && Array.isArray(contract.timeLapsePhotoCameras)
+      ? contract.timeLapsePhotoCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingPreviewCameras = new Set(ok && Array.isArray(contract.recordingPreviewCameras)
       ? contract.recordingPreviewCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingCameras = new Set(ok && Array.isArray(contract.recordingsCameras)
@@ -580,7 +585,7 @@ export class Bridge {
       ? storage.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.userCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 

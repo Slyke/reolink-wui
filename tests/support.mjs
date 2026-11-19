@@ -136,7 +136,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], capture = false, websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, fixedCameras = [], enrollmentTargets } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], capture = false, websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, manageAccounts = true, fixedCameras = [], enrollmentTargets } = {}) => {
   const previewRequests = [], recordingRequests = [];
   let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
@@ -145,6 +145,14 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let brightness = 5;
   const schedule = {enabled:true,schedules:{continuous:'0'.repeat(168),motion:'1'.repeat(168)}};
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
+  const accountLists = new Map(), rotationStates = new Map();
+  const accountsFor = (id) => {
+    if (!accountLists.has(id)) accountLists.set(id, [
+      {username:'admin',administrator:true,bridge_login:true,hidden:'redacted-fixture'},
+      {username:'frontdesk',administrator:false,bridge_login:false}
+    ]);
+    return accountLists.get(id);
+  };
   const orientation = {hflip:false,vflip:false,rotation:0};
   let inventory = ['alpha','beta'];
   let identities = {}, physical = {};
@@ -295,7 +303,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.url === '/api/enrollment-targets' && enrollmentTargets) return res.end(JSON.stringify({targets:enrollmentTargets}));
     if (req.url === '/api/contract') return res.end(JSON.stringify({
       version:1, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
-      previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
+      previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
@@ -308,12 +316,26 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       if (req.method === 'DELETE') callbacks.splice(callbacks.findIndex(entry => entry.id === id), 1);
       return res.end(JSON.stringify({ ok:true, correlation_id:req.headers['x-correlation-id'], callbacks }));
     }
-    if (req.url.endsWith('/users') && req.method === 'GET') return res.end(JSON.stringify({writable:true,requiresUid:true,
-      users:[{username:'admin',administrator:true,bridge_login:true,hidden:'redacted-fixture'},{username:'frontdesk',administrator:false,bridge_login:false}]}));
+    const cameraId = req.url.split('/')[3];
+    if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
+    if (req.url.endsWith('/users') && req.method === 'GET') return res.end(JSON.stringify({writable:true,manageAccounts,requiresUid:true,users:accountsFor(cameraId)}));
+    if (req.url.endsWith('/users') && req.method === 'POST') {
+      const data = await read(req), users = accountsFor(cameraId);
+      const index = users.findIndex(u=>u.username.toLowerCase() === data.username.toLowerCase());
+      if (!manageAccounts || !data.confirmation || data.uid !== 'FIXTUREUID' ||
+        (data.action === 'add' ? index >= 0 : index < 0 || users[index].bridge_login || data.action !== 'remove')) {
+        res.statusCode=422; return res.end(JSON.stringify({errorKey:'API_CAMERA_ACCOUNT_REJECTED'}));
+      }
+      if (data.action === 'add') users.push({username:data.username,administrator:data.role==='administrator',bridge_login:false});
+      else users.splice(index,1);
+      writes++;
+      return res.end(JSON.stringify({status:'verified',correlation_id:req.headers['x-correlation-id']}));
+    }
     if (req.url.endsWith('/users/password') && req.method === 'POST') {
       const data = await read(req);
       if (data.uid !== 'FIXTUREUID' || !data.confirmation) { res.statusCode=422; return res.end('{}'); }
       writes++;
+      if (data.username === 'admin') rotationStates.set(cameraId,'restart-required');
       return res.end(JSON.stringify({status:data.username === 'admin' ? 'restart-required' : 'verified', correlation_id:req.headers['x-correlation-id']}));
     }
     if (req.url.endsWith('/settings/recording_schedule')) return res.end(JSON.stringify({values:{recording_schedule:schedule}}));
@@ -322,6 +344,18 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (storageFailure && recordings && req.url.endsWith('/storage')) {
       res.writeHead(storageFailure.status, {'content-type':'application/json'});
       return res.end(JSON.stringify({errorKey:storageFailure.key, correlation_id:req.headers['x-correlation-id'], secret:token}));
+    }
+    const gallery=new URL(req.url,'http://127.0.0.1');
+    if (recordings && gallery.pathname.endsWith('/time-lapse/photos')) {
+      const q=gallery.searchParams;
+      const photos=['09:15:00','12:45:00'].map((time,index)=>({time,id:String(index+1).repeat(64)}))
+        .filter(photo=>q.get('date')==='2026-11-17' && photo.time >= (q.get('from')??'00:00:00') && photo.time <= (q.get('to')??'23:59:59'))
+        .map(photo=>({id:photo.id,capturedAt:q.get('date')+'T'+photo.time}));
+      return res.end(JSON.stringify({photos}));
+    }
+    if (recordings && /\/time-lapse\/photos\/(?:1{64}|2{64})$/.test(gallery.pathname)) {
+      const data=png();
+      res.writeHead(200,{'content-type':'image/png','content-length':data.length}); return res.end(data);
     }
     if (recordings && req.url.endsWith('/storage')) return res.end(JSON.stringify({
       cards:[{number:0,kind:'sd',mounted:true,formatted:true,totalBytes:64000000000,usedBytes:16000000000,freeBytes:48000000000}],

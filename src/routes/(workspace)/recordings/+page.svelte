@@ -4,6 +4,7 @@
   import { api, errorText, t, url } from '$lib/api.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import type { Camera } from '$lib/models.js';
+  import RecordingExport from '$lib/RecordingExport.svelte';
   import RecordingPlayer from '$lib/RecordingPlayer.svelte';
   import RecordingPreview from '$lib/RecordingPreview.svelte';
   import RecordingTimeline from '$lib/RecordingTimeline.svelte';
@@ -280,6 +281,13 @@
       <button disabled={loading || !date}>{t('recordings-search')}</button>
       {#if clockComparison}<span class="muted">{t('recording-clock-comparison', clockComparison)}</span>{/if}
     </form>
+    {#if date && !loading}
+      {#key camera.id + '/' + date}
+        <RecordingExport camera={camera.id} {date} recordings={listing?.date === date ? listing.recordings : []}
+          complete={Boolean(listing?.date === date && !listing.partial && !listing.truncated)}
+          photos={camera.capabilities.timeLapsePhotoExport} videos={camera.capabilities.recordingExport && playbackAvailable} />
+      {/key}
+    {/if}
     {#if searchError}<p role="alert" class="error">{searchError}</p>{/if}
     {#if listing?.partial && !loading}<p class="notice">{t('recording-search-partial')}</p>{/if}
     {#if !playbackAvailable}<p class="notice">{t('recording-workspace-unavailable')}</p>{/if}

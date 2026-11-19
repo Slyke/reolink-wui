@@ -28,8 +28,7 @@
       <a class="button" {href} aria-current={page.url.pathname === href ? 'page' : undefined}>{t(section.label)}</a>
     {/each}
     {#if workspace.current().user.admin}
-      <div class="nav-divider"></div>
-      <p class="muted">{t('administration')}</p>
+      <h2 class="administration-heading">{t('administration')}</h2>
       {#each administration as section (section.path)}
         {@const href = '/settings/' + section.path}
         <a class="button" {href} aria-current={page.url.pathname === href ? 'page' : undefined}>{t(section.label)}</a>
