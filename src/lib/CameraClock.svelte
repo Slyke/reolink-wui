@@ -64,6 +64,11 @@
     const now=Date.now(), effective=zoneMode==='device'?-new Date(now).getTimezoneOffset():selectedZone.utcOffsetMinutes;
     void save({cameraTime:wallAtOffset(now,effective),timeZone:selectedZone,ntpEnabled:!reading?.editableOptions && settings?.ntpEnabled!=null?legacyNtp:undefined});
   }
+  function transitionText(rule:NonNullable<ClockZone['daylightSaving']>['start']) {
+    const month=new Intl.DateTimeFormat(undefined,{month:'long',timeZone:'UTC'}).format(Date.UTC(2023,rule.month-1,1));
+    const day=new Intl.DateTimeFormat(undefined,{weekday:'long',timeZone:'UTC'}).format(Date.UTC(2023,0,1+rule.weekday));
+    return t('clock-seasonal-rule',{week:t('clock-week-'+rule.week),day,month,time:String(rule.hour).padStart(2,'0')+':'+String(rule.minute).padStart(2,'0')});
+  }
   const switchText=(value:boolean|null)=>t(value===null?'clock-not-reported':value?'on':'off');
 </script>
 
@@ -81,16 +86,22 @@
               {@const label=t(key==='daylightSavingEnabled'?'clock-dst':'clock-ntp')}
               {#if access.write && reading.editableOptions?.includes(key) && settings[key]!==null}
                 <dt><label for={fieldId+'-'+key}>{label}</label></dt>
-                <dd><select id={fieldId+'-'+key} value={(draft[key]??settings[key])?'on':'off'} disabled={busy}
-                  onchange={event=>{draft[key]=event.currentTarget.value==='on';}}>
-                  <option value="off">{t('off')}</option><option value="on">{t('on')}</option>
+                <dd><select id={fieldId+'-'+key} value={(draft[key]??settings[key])?(key==='daylightSavingEnabled'?'auto':'on'):'off'} disabled={busy}
+                  onchange={event=>{draft[key]=event.currentTarget.value!=='off';}}>
+                  <option value="off">{t('off')}</option><option value={key==='daylightSavingEnabled'?'auto':'on'}>{t(key==='daylightSavingEnabled'?'auto':'on')}</option>
                 </select></dd>
               {:else}
-                <dt>{label}</dt><dd>{switchText(settings[key])}</dd>
+                <dt>{label}</dt><dd>{key==='daylightSavingEnabled' && settings[key]===true?t('auto'):switchText(settings[key])}</dd>
               {/if}
             {/each}
           {/if}
         </dl>
+        {#if settings && (draft.daylightSavingEnabled ?? settings.daylightSavingEnabled)}
+          {#if settings.daylightSavingSchedule}
+            {@const rule=settings.daylightSavingSchedule}
+            <p class="muted">{t('clock-auto-schedule',{hours:String(rule.hours),start:transitionText(rule.start),end:transitionText(rule.end)})}</p>
+          {:else}<p class="muted">{t('clock-auto-explanation')}</p>{/if}
+        {/if}
         {#if access.write && reading.editableOptions?.length}
           <div class="row"><button disabled={busy || !Object.keys(changedOptions).length} onclick={()=>save(changedOptions)}>{t('clock-save-options')}</button></div>
         {:else if access.write && settings && !reading.editableOptions}

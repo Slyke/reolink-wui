@@ -61,7 +61,7 @@
     if (expanded && !accounts && !busy && !failure) void load();
   }
 </script>
-<SettingsDisclosure title={t('camera-users')} ontoggle={toggle}>
+<SettingsDisclosure title={t('camera-user-list')} ontoggle={toggle}>
   <div class="row between">
     <p class="muted">{t('camera-users-help')}</p>
     <div class="row">

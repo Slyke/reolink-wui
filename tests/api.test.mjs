@@ -1116,6 +1116,21 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.equal(result.cameraStatus,403);
     assert.equal(result.bridgeCorrelationId,deniedOverlay.bridgeCorrelationId);
   }
+  const optionPath=root+'/options/';
+  const saveOptions=(group,fields,headers=privileged,operationId=uuid())=>incoming({path:optionPath+group,method:'PUT',headers,payload:{operationId,fields}});
+  assert.equal((await incoming({path:optionPath+'picture',headers:restricted})).statusCode,403);
+  assert.equal((await saveOptions('sound',{speakerVolume:10},restricted)).statusCode,403);
+  assert.equal((await saveOptions('sound',{speakerVolume:101})).statusCode,400);
+  assert.equal((await saveOptions('sound',{emailEnabled:true})).statusCode,400);
+  assert.equal((await saveOptions('unknown',{foo:1})).statusCode,400);
+  const imageOp=uuid();
+  const imageChange=(await saveOptions('picture',{dayNight:'color'},privileged,imageOp)).json();
+  assert.equal(imageChange.outcome,'confirmed');
+  assert.equal(imageChange.data.fields.brightness.value,128);
+  assert.equal(imageChange.data.fields.dayNight.value,'color');
+  assert.deepEqual((await incoming({path:optionPath+'picture',headers:privileged})).json(),imageChange.data);
+  assert.equal((await saveOptions('picture',{dayNight:'auto'},privileged,imageOp)).statusCode,409);
+  assert.equal((await saveOptions('privacy',{maskEnabled:true})).json().outcome,'rejected');
   const encodingPath=root+'/encoding';
   assert.equal((await incoming({path:encodingPath,headers:restricted})).statusCode,403);
   const changeEncoder=(settings,headers=privileged)=>incoming({path:encodingPath,method:'PUT',headers,payload:{stream:'sub',settings,operationId:uuid()}});

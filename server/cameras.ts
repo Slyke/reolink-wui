@@ -1,3 +1,4 @@
+import { optionPermission,type OptionGroup } from '../shared/device-options.js';
 import { z } from 'zod';
 import { aiClasses, recordingKinds, settingsGroups, type Permission, type SettingsGroup } from '../shared/access.js';
 import { record, type Envelope } from './bridge-channels.js';
@@ -200,6 +201,13 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     const ai = record(ctrls['ai_' + name]);
     return [name, { sensitivity: bool(ai.sensitivity), delaySeconds: bool(ai.delay_seconds) }];
   })) });
+  const deviceOptionAccess = (group:OptionGroup) => {
+    if (!bridge.has('deviceOptions') || !bridge.hasDisplay(remote)) return;
+    if (group==='tracking' && !(raw.supported===true && (raw.pan===true || raw.tilt===true))) return;
+    const read=grant.has(optionPermission(group,'read')) && (group!=='tracking' || grant.has('ptz.read'));
+    const write=grant.has(optionPermission(group,'write')) && (group!=='tracking' || grant.has('ptz.write'));
+    return read || write ? {read,write} : undefined;
+  };
   const imageGrant = grant.has('settings.image.read') || grant.has('settings.image.write');
   const imageOrientation = imageGrant ? (Object.keys(orientation).length ? 'available'
     : bridge.supportsSetting('image') ? 'unsupported' : 'bridge-update-required') : undefined;
@@ -227,6 +235,10 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     alerts: { read: grant.has('alerts.read'), write: bridge.canCommand(remote) && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
     encoding: { read:grant.has('settings.encoding.read'), write:grant.has('settings.encoding.write'), available:bridge.hasEncoding(remote) },
     clock: { read:grant.has('settings.clock.read'), write:grant.has('settings.clock.write'), available:bridge.hasClock(remote) },
+    options: {
+      picture:deviceOptionAccess('picture'),privacy:deviceOptionAccess('privacy'), sound:deviceOptionAccess('sound'),
+      recordingAudio:deviceOptionAccess('recordingAudio'),tracking:deviceOptionAccess('tracking'),siren:deviceOptionAccess('siren'), delivery:deviceOptionAccess('push')
+    },
     display: { read: grant.has('settings.image.read'), write: grant.has('settings.image.write'), available: bridge.hasDisplay(remote) },
     network: { read:grant.has('settings.network.read'), write:grant.has('settings.network.write'), available:bridge.hasNetwork(remote), rtsp:bridge.hasNetwork(remote) && bridge.has('rtspSettings') },
     cameraUsers: grant.has('device.rotate') && bridge.hasUsers(remote),

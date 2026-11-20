@@ -7,7 +7,12 @@
   let data=$state<CameraEncoding>(), stream=$state<StreamId>('main'), draft=$state<EncoderValues>({});
   let busy=$state(false), expanded=$state(false), error=$state(''), message=$state('');
   const profile=$derived(data?.profiles.find(p=>p.stream===stream));
-  const option=$derived(profile?.options.find(o=>o.width===draft.width && o.height===draft.height));
+  const tables=$derived((profile?.options??[]).filter(o=>o.width===draft.width && o.height===draft.height));
+  const frameRates=$derived([...new Set(tables.flatMap(o=>o.fps))]);
+  function ratesFor(options:CameraEncoding['profiles'][number]['options'],fps:number|undefined){
+    return [...new Set(options.filter(o=>fps===undefined || !o.fps.length || o.fps.includes(fps)).flatMap(o=>o.bitrates))];
+  }
+  const bitrates=$derived(ratesFor(tables,draft.fps));
   const resolutions=$derived.by(()=>{
     const list=new Map<string,string>();
     for (const o of [profile?.current,...(profile?.options??[])]) if(o?.width && o.height) list.set(o.width+'x'+o.height,o.width+' × '+o.height);
@@ -27,12 +32,21 @@
     message='';
   }
   function resolution(value:string) {
-    const o=profile?.options.find(o=>o.width+'x'+o.height===value);
-    if(!o)return;
-    draft={...draft,width:o.width,height:o.height,
-      fps:o.fps.includes(draft.fps??0)?draft.fps:o.fps[0]??draft.fps,
-      bitrate:o.bitrates.includes(draft.bitrate??0)?draft.bitrate:o.bitrates[0]??draft.bitrate};
+    const options=(profile?.options??[]).filter(o=>o.width+'x'+o.height===value);
+    if(!options.length)return;
+    const {width,height}=options[0], fpsValues=options.flatMap(o=>o.fps);
+    const fps=fpsValues.length?Math.max(...fpsValues):draft.fps;
+    const rates=ratesFor(options,fps);
+    draft={...draft,width,height,fps,bitrate:rates.includes(draft.bitrate??0)?draft.bitrate:rates[0]??draft.bitrate};
   }
+  function changeRate(key:'fps'|'bitrate',value:number){
+    draft[key]=value;
+    if(key==='fps'){
+      const rates=ratesFor(tables,value);
+      if(rates.length && !rates.includes(draft.bitrate??0))draft.bitrate=rates[0];
+    }
+  }
+
   function accept(value:CameraEncoding) {
     data=value;
     selectProfile(value.profiles.some(p=>p.stream===stream)?stream:value.profiles[0]?.stream??'main');
@@ -73,11 +87,11 @@
         {/if}
         {#each ['fps','bitrate'] as key}
           {@const field=key==='fps'?'fps':'bitrate'}
-          {@const available=(field==='fps'?option?.fps:option?.bitrates)??[]}
+          {@const available=field==='fps'?frameRates:bitrates}
           {#if draft[field]!==undefined}
             <label>{t('encoding-'+field)}<select aria-label={t('encoding-'+field)} value={draft[field]}
-               disabled={!writable || !available.some(v=>v!==draft[field])} onchange={e=>{draft[field]=Number(e.currentTarget.value);}}>
-              {#each [...new Set([draft[field],...available])] as n}<option value={n}>{n}</option>{/each}
+               disabled={!writable || !available.some(v=>v!==draft[field])} onchange={e=>{changeRate(field,Number(e.currentTarget.value));}}>
+              {#each [...new Set([draft[field],...available])].sort((a,b)=>(b??0)-(a??0)) as n}<option value={n}>{n}</option>{/each}
             </select></label>
           {/if}
         {/each}

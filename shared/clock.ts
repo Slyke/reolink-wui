@@ -12,7 +12,7 @@ export const clockZone = z.strictObject({
   daylightSaving:z.strictObject({hours:z.union([z.literal(1),z.literal(2)]),start:transition,end:transition}).nullable()
 });
 export type ClockZone = z.infer<typeof clockZone>;
-export const clockSettings = z.object({utcOffsetMinutes:offset.nullable(),daylightSavingEnabled:z.boolean().nullable(),ntpEnabled:z.boolean().nullable()});
+export const clockSettings = z.object({utcOffsetMinutes:offset.nullable(),daylightSavingEnabled:z.boolean().nullable(),ntpEnabled:z.boolean().nullable(),daylightSavingSchedule:clockZone.shape.daylightSaving.optional()});
 export const clockOptionKeys = ['daylightSavingEnabled','ntpEnabled'] as const;
 export type ClockOption = typeof clockOptionKeys[number];
 export type ClockOptions = Partial<Record<ClockOption,boolean>>;

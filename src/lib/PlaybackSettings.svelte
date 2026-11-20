@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { onMount } from 'svelte';
   import InfoTip from './InfoTip.svelte';
   import { minPreviewIntervalMs, maxPreviewIntervalMs, previewAlerts, type PreviewAlert } from '../../shared/playback.js';
@@ -55,8 +56,7 @@
   onMount(() => { void load(); });
 </script>
 
-<section class="panel stack" aria-labelledby="playback-title">
-  <h2 id="playback-title" class="panel-title">{t('playback-settings')}</h2>
+<SettingsDisclosure title={t('playback-preferences')} managed>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
   {#if loaded}
@@ -94,4 +94,4 @@
   {:else}
     <div class="row"><button onclick={load}>{t('retry')}</button></div>
   {/if}
-</section>
+</SettingsDisclosure>

@@ -1,12 +1,11 @@
 <script lang="ts">
-  import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { onMount } from 'svelte';
-  import { aiClasses, settingsGroups, type AiClass, type SettingsGroup, type TimeLapse } from '../../shared/access.js';
+  import { aiClasses, type AiClass, type SettingsGroup, type TimeLapse } from '../../shared/access.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
   import TimeLapseEditor from './TimeLapseEditor.svelte';
   import type { Camera } from './models.js';
 
-  let { camera, base, csrf, online }: { camera: Camera; base: string; csrf: string; online: boolean } = $props();
+  let { camera, base, csrf, online, groups, showAlerts=false }: { camera: Camera; base: string; csrf: string; online: boolean; groups:readonly SettingsGroup[]; showAlerts?:boolean } = $props();
 
   type Values = {
     time_lapse?: TimeLapse;
@@ -20,7 +19,7 @@
   type ReadSettings = { group: SettingsGroup; fresh: boolean; alert?: boolean };
 
   const capabilities = $derived(camera.capabilities.settings);
-  const shown = $derived(settingsGroups.filter(group => group !== 'recording_schedule' && (capabilities[group]?.read || capabilities[group]?.write || capabilities[group]?.unavailable)));
+  const shown = $derived(groups.filter(group => capabilities[group]?.read || capabilities[group]?.write || capabilities[group]?.unavailable));
   const bounds = $derived(capabilities.spotlight?.range as { min: number; max: number } | undefined);
   const classes = $derived((capabilities.ai?.classes ?? {}) as Partial<Record<AiClass, { sensitivity?: boolean; delaySeconds?: boolean }>>);
   let preferredClass = $state<AiClass>('person');
@@ -84,21 +83,16 @@
     const reads = groups.map(group => read({
       group, fresh: fresh || (group === 'time_lapse' && online && camera.capabilities.freshSettings)
     }));
-    if (camera.capabilities.alerts.read) reads.push(read({ group: 'motion', alert: true, fresh: fresh && !groups.includes('motion') }));
+    if (showAlerts && camera.capabilities.alerts.read) reads.push(read({ group: 'motion', alert: true, fresh: fresh && !groups.includes('motion') }));
     const pending = Promise.allSettled(reads).then(results => {
-      if (!manual) {
-        const lapse = results[groups.indexOf('time_lapse')];
-        if (lapse?.status === 'rejected') {
-          messageGroup = 'time_lapse'; failed = true; message = errorText(lapse.reason);
-        }
-        return;
-      }
-      const failure = results.find(result => result.status === 'rejected');
+      const index = results.findIndex(result => result.status === 'rejected');
+      const failure = results[index];
+      if (!manual && index >= 0) messageGroup = groups[index];
       failed = !!failure;
-      message = failure ? errorText(failure.reason) : t('settings-refreshed');
+      message = failure?.status === 'rejected' ? errorText(failure.reason) : '';
     });
     inFlight = pending;
-    try { await pending; }
+    try { await pending; return !failed; }
     finally {
       if (inFlight === pending) {
         inFlight = undefined;
@@ -150,8 +144,8 @@
   };
 </script>
 
-{#if shown.length || camera.capabilities.imageOrientation || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
-  <SettingsDisclosure title={t('settings')} open>
+{#if shown.length || (groups.includes('image') && camera.capabilities.imageOrientation) || (showAlerts && (camera.capabilities.alerts.read || camera.capabilities.alerts.write))}
+  <div class="stack">
     {#if message && messageGroup !== 'time_lapse'}<p class:error={failed} role="status">{message}</p>{/if}
     <div class="grid">
       {#each shown as group (group)}
@@ -297,13 +291,13 @@
           {/if}
         </article>
       {/each}
-      {#if camera.capabilities.imageOrientation && camera.capabilities.imageOrientation !== 'available'}
+      {#if groups.includes('image') && camera.capabilities.imageOrientation && camera.capabilities.imageOrientation !== 'available'}
         <article class="panel stack">
           <h3>{t('image')}</h3>
           <p class="muted">{t('image-' + camera.capabilities.imageOrientation)}</p>
         </article>
       {/if}
-      {#if camera.capabilities.alerts.read || camera.capabilities.alerts.write}
+      {#if showAlerts && (camera.capabilities.alerts.read || camera.capabilities.alerts.write)}
         <article class="panel stack">
           <h3>{t('alerts')}</h3>
           {#if camera.capabilities.alerts.read}
@@ -326,5 +320,5 @@
         </article>
       {/if}
     </div>
-  </SettingsDisclosure>
+  </div>
 {/if}

@@ -64,7 +64,7 @@ export class Bridge {
   private apiChannel?: ApiChannel;
   private priority: EventSource[] = [];
   private readonly http?: Link;
-  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, rtspSettings: false, previewNotifications: false, settings: undefined as SettingsGroup[] | undefined };
+  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, rtspSettings: false, deviceOptions: false, previewNotifications: false, settings: undefined as SettingsGroup[] | undefined };
   private scanning?: Promise<boolean>;
   private inventoryFailed = false;
   private readonly mediaStreams = new Map<string, string[]>();
@@ -397,7 +397,7 @@ export class Bridge {
     throw new Failure('OUTCOME_UNKNOWN', 502, 'unknown');
   }
 
-  has(feature: 'v1' | 'media' | 'enrollment' | 'callbacks' | 'rtspSettings') {
+  has(feature: 'v1' | 'media' | 'enrollment' | 'callbacks' | 'rtspSettings' | 'deviceOptions') {
     return this.bridgeVersion[feature];
   }
 
@@ -597,6 +597,7 @@ export class Bridge {
     this.bridgeVersion.inventory = ok && contract.inventory === true;
     this.bridgeVersion.media = ok && this.config.http?.relay === true && contract.media === true;
     this.bridgeVersion.enrollment = ok && contract.enrollment === true;
+    this.bridgeVersion.deviceOptions = ok && contract.deviceOptions === true;
     this.bridgeVersion.rtspSettings = ok && contract.rtspSettings === true;
     this.bridgeVersion.callbacks = ok && contract.callbacks === true;
     this.mediaStreams.clear();

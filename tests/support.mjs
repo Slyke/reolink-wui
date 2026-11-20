@@ -153,6 +153,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let displayRejection, lapseRejection;
   let photoExpired = false;
   const encoders = new Map();
+  const deviceOptions = new Map();
   let legacyClock=false;
   const clocks = new Map(), radios = new Map();
   let delayNextPreset = false;
@@ -370,7 +371,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
+      version:1, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
       mediaFileCameras:inventory, previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -386,6 +387,29 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     const cameraId = req.url.split('/')[3];
     if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
+    if (req.url.startsWith('/api/cameras/'+cameraId+'/options/')) {
+      const group=req.url.split('/').at(-1);
+      const defaults={
+        picture:{brightness:{value:128,min:0,max:255},contrast:{value:120,min:0,max:255},dayNight:{value:'auto',choices:['auto','color','blackAndWhite']}},
+        threshold:{switchThreshold:{value:45,min:0,max:255}},
+        sound:{speakerVolume:{value:70,min:0,max:100}}, recordingAudio:{mainAudio:{value:true},subAudio:{value:true},thirdAudio:{value:false}},
+        privacy:{maskEnabled:{value:false}}, tracking:{autoTracking:{value:false}}, siren:{sirenOnEvent:{value:false}},
+        push:{pushEnabled:{value:false}},email:{emailEnabled:{value:false}},ftp:{ftpEnabled:{value:false}}
+      };
+      const fields=deviceOptions.get(req.url) ?? defaults[group];
+      if(!fields){res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_UNSUPPORTED'}));}
+      const view={fields,...(group==='privacy' && {privacyZones:0})};
+      if(req.method==='PUT'){
+        const {fields:changes}=await read(req);
+        if(Object.entries(changes).some(([key,value])=>!fields[key] || group==='privacy' && value)){
+          res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_INVALID'}));
+        }
+        for(const [key,value] of Object.entries(changes))fields[key].value=value;
+        deviceOptions.set(req.url,fields);
+        return res.end(JSON.stringify({...view,outcome:'confirmed',correlation_id:req.headers['x-correlation-id']}));
+      }
+      return res.end(JSON.stringify(view));
+    }
     if (req.url.endsWith('/display')) {
       const fields = displays.get(cameraId) ?? {deviceName:'Fixture camera',dateFormat:'DMY',name:'Camera1',nameVisible:true,
         nameX:65536,nameY:65536,timeVisible:true,timeX:65536,timeY:1,watermark:true,background:false};
@@ -405,7 +429,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.url.endsWith('/encoding')) {
       const profiles = encoders.get(cameraId) ?? [
         {stream:'main',current:{width:2560,height:1440,fps:20,bitrate:4096,gop:2},gopRange:[1,2],options:[
-          {width:2560,height:1440,fps:[25,20,15],bitrates:[2048,3072,4096]},
+          {width:2560,height:1440,fps:[20,25,15],bitrates:[2048,3072,4096]},
           {width:1920,height:1080,fps:[15,10],bitrates:[2048,3072]}]},
         {stream:'sub',current:{width:640,height:360,fps:4,bitrate:128},options:[{width:640,height:360,fps:[10,4],bitrates:[128,256]}]},
         {stream:'third',current:{width:896,height:512,fps:15,bitrate:1228},options:[]}
