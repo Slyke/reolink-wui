@@ -150,6 +150,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const networks = new Map();
   const displays = new Map();
+  let displayRejection;
   const encoders = new Map();
   const clocks = new Map(), radios = new Map();
   let delayNextPreset = false;
@@ -382,7 +383,14 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       const fields = displays.get(cameraId) ?? {deviceName:'Fixture camera',dateFormat:'DMY',name:'Camera1',nameVisible:true,
         nameX:65536,nameY:65536,timeVisible:true,timeX:65536,timeY:1,watermark:true,background:false};
       if (req.method === 'PUT') {
-        Object.assign(fields,(await read(req)).fields); displays.set(cameraId,fields);
+        const change = (await read(req)).fields;
+        if (displayRejection) {
+          const rejection = displayRejection;
+          displayRejection = undefined;
+          res.statusCode = 422;
+          return res.end(JSON.stringify({errorKey:'API_DISPLAY_REJECTED',correlation_id:req.headers['x-correlation-id'],...rejection}));
+        }
+        Object.assign(fields,change); displays.set(cameraId,fields);
         return res.end(JSON.stringify({outcome:'confirmed',fields,correlation_id:req.headers['x-correlation-id']}));
       }
       return res.end(JSON.stringify({fields}));
@@ -619,6 +627,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       broadcast(camera_id, {op:'snapshot',snapshot:{camera_id,topic,payload}});
       await broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic,JSON.stringify(payload),{qos:1,retain:true});
     },
+    rejectNextDisplay: cameraStatus => { displayRejection = {cameraStatus}; },
     setReportedLevels: levels => { brightness = levels.brightness; sensitivity = levels.sensitivity; },
     disconnect: broker.stop,
     disconnectWs: () => { socketOpen = false; wss?.clients.forEach(socket => socket.terminate()); },

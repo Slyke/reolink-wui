@@ -95,7 +95,8 @@ const migrations = [
   `CREATE TABLE account_camera_orders (
     account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
     camera_order TEXT NOT NULL
-  );`
+  );`,
+  `ALTER TABLE operations ADD COLUMN camera_status INTEGER CHECK (camera_status BETWEEN 0 AND 65535);`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {

@@ -3,11 +3,11 @@ import { audit, type Sql } from './db.js';
 import { Failure, recordError } from './errors.js';
 
 type Outcome = 'pending' | 'confirmed' | 'unverified' | 'rejected' | 'unknown';
-export type ActionResult<T = unknown> = { outcome: Outcome; reason?: string; bridgeCorrelationId?: string; data?: T };
+export type ActionResult<T = unknown> = { outcome: Outcome; reason?: string; bridgeCorrelationId?: string; cameraStatus?: number; data?: T };
 type Stored = {
   actor: string; resource: string; action: string; fingerprint: string;
   outcome: Outcome; reason: string | null; correlation: string;
-  bridge_correlation: string | null; started: number | string
+  bridge_correlation: string | null; camera_status: number | null; started: number | string
 };
 const stalledMs = 95_000;
 const uncertainMs = 28_000;
@@ -18,6 +18,7 @@ const publicResult = ({ row }: { row: Stored }) => {
     outcome: stalled ? 'unknown' : row.outcome,
     correlationId: row.correlation,
     bridgeCorrelationId: row.bridge_correlation ?? undefined,
+    cameraStatus: row.camera_status ?? undefined,
     reason: stalled ? 'OUTCOME_UNKNOWN' : row.reason ?? undefined
   };
 };
@@ -74,11 +75,11 @@ export class Operations {
     if (result.outcome === 'rejected' || result.outcome === 'unknown' || result.outcome === 'unverified') {
       const key = { rejected:'OPERATION_REJECTED', unknown:'OPERATION_UNKNOWN', unverified:'OPERATION_UNVERIFIED' } as const;
       recordError({ key:key[result.outcome],caller:'operations::execute',correlationId:correlation,
-        context:{ operation:id,action,resource,outcome:result.outcome,bridgeCorrelationId:result.bridgeCorrelationId } });
+        context:{ operation:id,action,resource,outcome:result.outcome,reason:result.reason,bridgeCorrelationId:result.bridgeCorrelationId,cameraStatus:result.cameraStatus } });
     }
     await this.sql.transaction(async query => {
-      await query('UPDATE operations SET outcome=$1,reason=$2,bridge_correlation=$3 WHERE id=$4',
-        result.outcome, result.reason ?? null, result.bridgeCorrelationId ?? null, id);
+      await query('UPDATE operations SET outcome=$1,reason=$2,bridge_correlation=$3,camera_status=$4 WHERE id=$5',
+        result.outcome, result.reason ?? null, result.bridgeCorrelationId ?? null, result.cameraStatus ?? null, id);
       await audit({ query, actor, resource, action, operation: id, correlation, outcome: result.outcome, bridgeCorrelation: result.bridgeCorrelationId });
     });
     return { id, correlationId: correlation, ...result };

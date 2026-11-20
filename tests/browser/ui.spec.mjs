@@ -763,6 +763,13 @@ for (const mode of ['browser','proxy']) {
       const display=page.getByRole('group',{name:'Camera name and on-screen display',exact:true});
       await display.locator('summary').click();
       await display.getByLabel('Show Reolink watermark').uncheck();
+      await display.getByLabel('Draw a background behind the text').check();
+      bridge.rejectNextDisplay(403);
+      await display.getByRole('button',{name:'Save overlay settings'}).click();
+      const rejection = display.getByRole('alert');
+      await expect(rejection).toContainText('Show Reolink watermark (Off)');
+      await expect(rejection).toContainText('Draw a background behind the text (On)');
+      await expect(rejection).toHaveText(/Camera status 403\. · Reference [a-f0-9-]{36}$/);
       await display.getByLabel('Camera name position',{exact:true}).selectOption('bottom-left');
       await display.getByRole('button',{name:'Save overlay settings'}).click();
       await expect(display.getByRole('status')).toContainText('Confirmed');

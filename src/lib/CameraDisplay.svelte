@@ -9,6 +9,12 @@
   let expanded = $state(false), busy = $state(false), error = $state(''), message = $state('');
   let saved = $state<DisplayFields>(), draft = $state<DisplayFields>({});
   let custom = $state({name:false,time:false});
+  const fieldLabels: Record<keyof DisplayFields, string> = {
+    deviceName:'osd-device-name', dateFormat:'osd-date-format', name:'osd-overlay-name',
+    nameVisible:'osd-show-name', nameX:'osd-name-position', nameY:'osd-name-position',
+    timeVisible:'osd-show-time', timeX:'osd-time-position', timeY:'osd-time-position',
+    watermark:'osd-watermark', background:'osd-background'
+  };
   const anchors = [
     [1,1,'top-left'],[32768,1,'top-center'],[65536,1,'top-right'],
     [1,32768,'middle-left'],[32768,32768,'center'],[65536,32768,'middle-right'],
@@ -44,6 +50,14 @@
         saved = {...saved,...result.data}; draft = {...draft,...result.data};
         if ('deviceName' in fields) onrename();
         message = outcomeText(result);
+      } else if (result.reason === 'CAMERA_DISPLAY_REJECTED') {
+        const labels = [...new Set(Object.entries(fields).map(([key, value]) => {
+          const label = t(fieldLabels[key as keyof DisplayFields]);
+          return typeof value === 'boolean' ? label + ' (' + t(value ? 'on' : 'off') + ')' : label;
+        }))];
+        const detail = t('osd-rejected-fields', {fields:labels.join(', ')});
+        const status = result.cameraStatus === undefined ? '' : ' ' + t('osd-camera-status', {status:result.cameraStatus});
+        error = outcomeText(result, detail + status);
       } else error = outcomeText(result);
     } catch (err) { error = errorText(err); }
     finally { busy = false; }

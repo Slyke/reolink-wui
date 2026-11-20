@@ -14,7 +14,7 @@ export class UiError extends Error {
   constructor(readonly reason: string, readonly correlation?: string) { super(reason); }
 }
 
-export type Outcome = { id?: string; outcome: string; data?: any; reason?: string; correlationId?: string; bridgeCorrelationId?: string };
+export type Outcome = { id?: string; outcome: string; data?: any; reason?: string; cameraStatus?: number; correlationId?: string; bridgeCorrelationId?: string };
 
 export const api = async <T>({ path, method = 'GET', body, csrf, image = false, keepalive, signal }: {
   path: string; method?: string; body?: unknown; csrf?: string; image?: boolean; keepalive?: boolean; signal?: AbortSignal
@@ -65,8 +65,8 @@ export const errorText = (error: unknown) => error instanceof UiError
   ? t('error-' + error.reason) + (error.correlation ? ' · ' + t('correlation') + ' ' + error.correlation : '')
   : t('error-INTERNAL');
 
-export const outcomeText = (value: Outcome) => (
-  (value.reason ? t('error-' + value.reason) : t(value.outcome))
+export const outcomeText = (value: Outcome, message = value.reason ? t('error-' + value.reason) : t(value.outcome)) => (
+  message
   + (value.bridgeCorrelationId ? ' · ' + t('correlation') + ' ' + value.bridgeCorrelationId : '')
 );
 

@@ -35,7 +35,12 @@ export function displayRoutes({api,path,runtime}: {api: FastifyInstance; path: s
         if (response.ok && body.outcome === 'confirmed' && after.success
           && Object.entries(fields).every(([key,value])=>after.data[key as keyof typeof fields]===value))
           return {outcome:'confirmed',bridgeCorrelationId,data:after.data};
-        const reasons = {API_DISPLAY_REJECTED:'COMMAND_REJECTED',API_DISPLAY_INVALID:'BAD_INPUT',API_DISPLAY_UNSUPPORTED:'UNSUPPORTED',
+        if (body.errorKey === 'API_DISPLAY_REJECTED') {
+          const status = z.number().int().min(0).max(65535).safeParse(body.cameraStatus);
+          return {outcome:'rejected', reason:'CAMERA_DISPLAY_REJECTED', bridgeCorrelationId,
+            ...(status.success ? {cameraStatus:status.data} : {})};
+        }
+        const reasons = {API_DISPLAY_INVALID:'BAD_INPUT',API_DISPLAY_UNSUPPORTED:'UNSUPPORTED',
           API_DISPLAY_BUSY:'COMMAND_BUSY',API_READ_BUSY:'COMMAND_BUSY',API_CAMERA_IDENTITY_CHANGED:'CAMERA_UNKNOWN',API_DISPLAY_READ_FAILED:'BRIDGE_UNAVAILABLE'} as const;
         const reason = typeof body.errorKey==='string' ? reasons[body.errorKey as keyof typeof reasons] : undefined;
         return reason && Object.hasOwn(reasons,body.errorKey as string) ? {outcome:'rejected',reason,bridgeCorrelationId}

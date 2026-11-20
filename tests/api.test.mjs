@@ -1027,6 +1027,27 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.equal(update.json().outcome,'confirmed');
   }
   assert.equal((await incoming({path:root+'/users',headers:restricted})).statusCode,403);
+  fixture.rejectNextDisplay();
+  const oldBridge = await incoming({path:root+'/display',headers:privileged,method:'PUT',payload:{
+    operationId:uuid(),fields:{watermark:false,background:true}
+  }});
+  assert.equal(oldBridge.statusCode,422);
+  assert.equal(oldBridge.json().reason,'CAMERA_DISPLAY_REJECTED');
+  assert.equal(oldBridge.json().cameraStatus,undefined);
+  assert.ok(oldBridge.json().bridgeCorrelationId);
+  const operationId = uuid();
+  const saveOverlay = () => incoming({path:root+'/display',headers:privileged,method:'PUT',payload:{
+    operationId,fields:{watermark:false,background:true}
+  }});
+  fixture.rejectNextDisplay(403);
+  const deniedOverlay = (await saveOverlay()).json();
+  const replayedOverlay = (await saveOverlay()).json();
+  const storedOverlay = (await incoming({path:'/operations/'+operationId,headers:privileged})).json();
+  for (const result of [deniedOverlay,replayedOverlay,storedOverlay]) {
+    assert.equal(result.reason,'CAMERA_DISPLAY_REJECTED');
+    assert.equal(result.cameraStatus,403);
+    assert.equal(result.bridgeCorrelationId,deniedOverlay.bridgeCorrelationId);
+  }
   const encodingPath=root+'/encoding';
   assert.equal((await incoming({path:encodingPath,headers:restricted})).statusCode,403);
   const changeEncoder=(settings,headers=privileged)=>incoming({path:encodingPath,method:'PUT',headers,payload:{stream:'sub',settings,operationId:uuid()}});
