@@ -1094,7 +1094,6 @@ for (const mode of ['browser','proxy']) {
       await expect(page.locator('video.recording-video')).toBeVisible();
       await page.getByRole('dialog',{name:/Recorded playback/}).getByRole('button',{name:'Close',exact:true}).click();
       await inputDate.fill('2026-11-16');
-      await page.getByRole('button',{name:'Search recordings'}).click();
       await expect(page.locator('.recording-card time').first()).toHaveAttribute('datetime',/^2026-11-16/);
       bridge.setStorageFailure(undefined);
       const clockCheck = await page.evaluate(() => new Date('2026-11-17T13:30:00').toISOString());
@@ -1131,7 +1130,6 @@ for (const mode of ['browser','proxy']) {
       await expect(sort).toHaveValue('asc');
       await expect(inputDate).toHaveValue('2026-11-16');
       await inputDate.fill('2026-11-17');
-      await page.getByRole('button',{name:'Search recordings'}).click();
       await expect(firstClip).toHaveAttribute('datetime',/^2026-11-17/);
       await expect(page.getByText('64 GB',{exact:true})).toBeVisible();
       await expect(page.getByText('16 GB',{exact:true})).toBeVisible();
@@ -1160,6 +1158,10 @@ for (const mode of ['browser','proxy']) {
       await expect(page.getByText('Recording preview',{exact:true})).toHaveCount(0);
       const scopeSelect=page.locator('.timeline-range'), timelineRail=page.locator('.timeline-rail');
       await scopeSelect.selectOption('day');
+      const future = timelineRail.locator('.timeline-future');
+      await expect(future).toBeVisible();
+      await expect.poll(() => future.evaluate(el => parseFloat(el.style.left))).toBeCloseTo(12.5/24*100, 1);
+      await expect(future).toHaveCSS('background-image', /repeating-linear-gradient/);
       const fullRail=await timelineRail.boundingBox();
       await timelineRail.hover({position:{x:fullRail.width * 9.25/24,y:fullRail.height/2}});
       const photoTip=page.locator('.timeline-hover');
@@ -1168,6 +1170,7 @@ for (const mode of ['browser','proxy']) {
       await expect(photoTip.locator('img')).toBeVisible();
       await expect(page.locator('.recording-card[data-highlighted="true"]')).toHaveCount(0);
       await scopeSelect.selectOption('fit');
+      await expect(future).toHaveCount(0);
       await segment.hover();
       if(mode==='browser') await page.screenshot({path:test.info().outputPath('recordings-timeline.png'),fullPage:true});
       await segment.click();
@@ -1413,6 +1416,7 @@ for (const mode of ['browser','proxy']) {
       await expect(rail.locator('.timeline-segment')).toHaveCount(0);
       await scopeSelect.selectOption('day');
       await rail.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
+      await expect(page.getByText('No video recordings for 2026-11-17. 2 time-lapse photos.')).toBeVisible();
       const photoRail=await rail.boundingBox();
       const pointAtHour=h=>({x:photoRail.x+photoRail.width*h/24,y:photoRail.y+photoRail.height/2});
       await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[pointAtHour(9.25)]});
@@ -1426,10 +1430,12 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('heading',{name:'Camera recordings'}).click();
       await expect(bubble).toHaveCount(0);
       await inputDate.fill('2026-11-18');
-      await page.getByRole('button',{name:'Search recordings'}).click();
       await expect(page).toHaveURL(/date=2026-11-18/);
       await expect(page.getByRole('heading',{name:'Recording timeline'})).toBeVisible();
       await rail.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
+      await expect(page.getByText('No video recordings for 2026-11-18. 1 time-lapse photo.')).toBeVisible();
+      await expect(scopeSelect).toHaveValue('day');
+      await expect(future).toHaveCount(0);
       const undatedRail=await rail.boundingBox();
       await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:undatedRail.x+undatedRail.width*10.5/24,y:undatedRail.y+undatedRail.height/2}]});
       await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
@@ -1438,7 +1444,6 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('heading',{name:'Camera recordings'}).click();
       bridge.setRecordingCount(3);
       await inputDate.fill('2026-11-17');
-      await page.getByRole('button',{name:'Search recordings'}).click();
       await expect(page).toHaveURL(/date=2026-11-17/);
       await cdp.send('Emulation.setTouchEmulationEnabled',{enabled:false});
       await cdp.detach();

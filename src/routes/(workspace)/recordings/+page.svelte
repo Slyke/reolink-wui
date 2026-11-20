@@ -58,6 +58,8 @@
   let highlighted = $state<string>();
   let date = $state('');
   let userSelectedDate = false;
+  let searchedDay = '';
+  let timelineRange = $state<'fit' | 'day'>('fit');
   let initial = $state(true);
   let loading = $state(false);
   let reading = $state(false);
@@ -129,10 +131,13 @@
       window.history.back();
     } else void navigate(base, true);
   };
-  const submitDate = () => {
-    const target = listUrl(selected, date);
-    if (page.url.href === target.href) void search();
-    else void navigate(target, true);
+  const selectDate = (value: string, reload = false) => {
+    if (!selected || !recordingDate.safeParse(value).success) return;
+    userSelectedDate = true;
+    date = value;
+    const target = listUrl(selected, value);
+    if (page.url.href !== target.href) void navigate(target, true);
+    else if (reload || searchedDay !== value) void search();
   };
   const hover = (id?: string) => {
     highlighted = id;
@@ -176,6 +181,7 @@
     listController = current;
     const combined = signal ? AbortSignal.any([signal, current.signal]) : current.signal;
     const id = selected, searchDate = date;
+    searchedDay = searchDate;
     highlighted = undefined;
     if (listing?.date !== searchDate) listing = undefined;
     if (gallery?.date !== searchDate) gallery = undefined;
@@ -243,11 +249,12 @@
         if (day && supported) {
           userSelectedDate = true;
           date = day;
-          if (listing?.date !== day) void search();
+          if (searchedDay !== day) void search();
         }
         return;
       }
       loadedCamera = id; loadedSupport = support;
+      searchedDay = '';
       controller?.abort();
       listController?.abort();
       storage = undefined;
@@ -364,8 +371,9 @@
         <button aria-pressed={layout === 'table'} onclick={() => chooseLayout('table')}>{t('recording-layout-table')}</button>
       </div>
     </div>
-    <form class="row recording-search" onsubmit={event => { event.preventDefault(); submitDate(); }}>
-      <label>{t('recording-date')}<input type="date" required bind:value={date} oninput={() => { userSelectedDate = true; }} /></label>
+    <form class="row recording-search" onsubmit={event => { event.preventDefault(); selectDate(date, true); }}>
+      <label>{t('recording-date')}<input type="date" required bind:value={date} oninput={() => { userSelectedDate = true; }}
+        onchange={event => selectDate(event.currentTarget.value)} /></label>
       <button disabled={loading || !date}>{t('recordings-search')}</button>
     </form>
     {#if date && !loading}
@@ -379,9 +387,9 @@
     {#if listing?.partial && !loading}<p class="notice">{t('recording-search-partial')}</p>{/if}
     {#if !playbackAvailable && timelineVideos.length}<p class="notice">{t('recording-workspace-unavailable')}</p>{/if}
     {#if photoError}<p role="alert" class="error">{t('timeline-photos-failed')} {photoError}</p>{/if}
-    {#if listedDate && (timelineVideos.length || timelinePhotos.length || undatedCount)}
+    {#if listedDate}
       {#key selected + '/' + listedDate}
-        <RecordingTimeline {previews} clockHint={clockComparison ? t('recording-clock-comparison',clockComparison) : undefined}
+        <RecordingTimeline {previews} clock={storage} bind:range={timelineRange} clockHint={clockComparison ? t('recording-clock-comparison',clockComparison) : undefined}
           warming={!recording} recordings={timelineVideos} photos={timelinePhotos} {undatedCount} date={listedDate} available={Boolean(camera.capabilities.recordingPreview)}
           playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
       {/key}
@@ -448,8 +456,13 @@
         <span>{t('recording-page-count', { page: pageNumber + 1, count: pageCount, total: listing.recordings.length })}</span>
         <button disabled={pageNumber + 1 >= pageCount} onclick={() => { pageNumber++; }}>{t('recording-page-next')}</button>
       </div>
-    {:else if !timelinePhotos.length && !undatedCount && (listing || gallery)}
-      <p class="muted">{t(camera.capabilities.timeLapsePhotos && !photoError ? 'timeline-empty' : 'recordings-empty')}</p>
+    {:else if !searchError && !listing?.partial && (listing || !camera.capabilities.recordings)}
+      {@const count = timelinePhotos.length + undatedCount}
+      {#if count && listing}
+        <p class="muted" role="status">{t(count === 1 ? 'timeline-photo-only-one' : 'timeline-photo-only', { date: listedDate, count })}</p>
+      {:else if !count && !photosLoading && (listing || gallery) && (!photoError || listing)}
+        <p class="muted">{t(camera.capabilities.timeLapsePhotos && !photoError ? 'timeline-empty' : 'recordings-empty')}</p>
+      {/if}
     {/if}
     {#if listing?.truncated}<p class="notice">{t('recordings-truncated')}</p>{/if}
   </section>

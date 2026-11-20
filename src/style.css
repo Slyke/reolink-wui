@@ -371,6 +371,8 @@ button.info-button { border-radius: 50%; width: 1.35rem; height: 1.35rem; min-he
 .timeline-legend { gap: .4rem; font-size: .85rem; color: var(--color-text-muted); }
 .timeline-key { display: inline-block; width: .8rem; height: .8rem; border: 1px solid var(--color-border); background: var(--color-panel); }
 .timeline-key.busy { background: var(--color-start); }
+.timeline-future { position: absolute; inset: 0 0 0 auto; pointer-events: none; }
+.future-pattern { background: repeating-linear-gradient(135deg, transparent 0 6px, var(--color-danger-ink) 6px 8px); }
 .timeline-rail { touch-action: pan-y pinch-zoom; user-select: none; position: relative; height: 2.5rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-panel); }
 .timeline-rail:has(.timeline-scrubber:focus-visible) { outline: 2px solid var(--color-focus, var(--color-warning)); outline-offset: 2px; }
 button.timeline-segment { position: absolute; top: 0; height: 100%; min-height: 0; min-width: 3px; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: var(--color-start); }
