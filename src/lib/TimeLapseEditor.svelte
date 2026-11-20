@@ -6,13 +6,14 @@
   let { value, writable, disabled, save }: { value: TimeLapse; writable: boolean; disabled: boolean; save: (fields: Record<string, unknown>) => Promise<void> } = $props();
   let enabled = $state(untrack(() => value.enabled));
   let interval = $state(untrack(() => value.interval_seconds ?? 10));
-  let format = $state(untrack(() => value.format ?? 'jpeg'));
+  const initialFormat = $derived(value.configured && value.format ? value.format : 'jpeg');
+  let format = $state(untrack(() => initialFormat));
   let stream = $state(untrack(() => value.stream ?? 'main'));
   let overwrite = $state(untrack(() => value.configured ? value.overwrite === true : true));
   const fields = $derived({
     ...(enabled !== value.enabled && { enabled }),
     ...(interval !== (value.interval_seconds ?? 10) && { interval_seconds: interval }),
-    ...(format !== (value.format ?? 'jpeg') && { format }),
+    ...((format !== initialFormat || (!value.configured && enabled)) && { format }),
     ...(stream !== (value.stream ?? 'main') && { stream }),
     ...(value.overwrite !== undefined && (value.configured ? overwrite !== value.overwrite : enabled) && { overwrite })
   });

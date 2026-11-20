@@ -757,6 +757,8 @@ for (const mode of ['browser','proxy']) {
       await expect(schedule.getByRole('button',{name:'Save changes'})).toBeDisabled();
       const lapse = page.locator('article').filter({has:page.getByRole('heading',{name:'Time lapse'})});
       const lapseEnabled = lapse.getByLabel('Enable time lapse');
+      const output = lapse.getByLabel('Save as'), stream = lapse.locator('select').last();
+      await expect(output).toHaveValue('jpeg');
       const overwrite = lapse.getByRole('checkbox',{name:'Overwrite oldest time lapse when full'});
       const saveLapse = lapse.getByRole('button',{name:'Save changes'});
       await expect(overwrite).toBeChecked();
@@ -769,8 +771,6 @@ for (const mode of ['browser','proxy']) {
       await expect(lapseEnabled).not.toBeChecked();
       await lapseEnabled.check();
       await lapse.getByLabel('Capture interval (seconds)').fill('30');
-      const output = lapse.locator('select').first(), stream = lapse.locator('select').last();
-      await output.selectOption('jpeg');
       await stream.selectOption('sub');
       await saveLapse.click();
       await expect.poll(() => bridge.requests.at(-1)).toEqual({setting:'time_lapse',enabled:true,interval_seconds:30,format:'jpeg',stream:'sub',overwrite:true});
@@ -787,6 +787,12 @@ for (const mode of ['browser','proxy']) {
       await page.reload();
       await expect(lapseEnabled).toBeChecked();
       await expect(overwrite).not.toBeChecked();
+      await output.selectOption('mp4');
+      await saveLapse.click();
+      await expect(lapse.getByRole('status')).toContainText('Confirmed');
+      await page.reload();
+      await expect(output).toHaveValue('mp4');
+      await expect(saveLapse).toBeDisabled();
       const display=page.getByRole('group',{name:'Camera name and on-screen display',exact:true});
       await display.locator('summary').click();
       await display.getByLabel('Show Reolink watermark').uncheck();
