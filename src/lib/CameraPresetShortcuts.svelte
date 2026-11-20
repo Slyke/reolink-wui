@@ -8,6 +8,7 @@
     camera: Camera; csrf: string; onframe: (frame: Blob) => void; onnotice: (text: string, failed: boolean) => void
   } = $props();
   let slots = $state<Preset[]>([]), active = $state<number>(), revision = $state(0), disposed = false;
+  const maxShortcuts = 8;
   const online = $derived(camera.availability.online === true && !camera.availability.stale);
 
   $effect(() => {
@@ -20,7 +21,7 @@
         body:{operationId:operationId(),action:{op:'list_presets'}}}).then(result=>{
         if (controller.signal.aborted) return;
         if (result.outcome === 'confirmed') {
-          slots = orderedPresets(result.data?.presets ?? [],result.data?.preferences?.order ?? []).slice(0,8);
+          slots = orderedPresets(result.data?.presets ?? [],result.data?.preferences?.order ?? []).slice(0,maxShortcuts);
         } else { onnotice(outcomeText(result), true); }
       }).catch(err=>{ if (!controller.signal.aborted) { onnotice(errorText(err), true); } });
     });
@@ -48,7 +49,7 @@
 </script>
 
 {#if slots.length}
-  <div class="preset-keys" role="group" aria-label={t('preset-shortcuts')}>
+  <div class="preset-keys" class:full={slots.length === maxShortcuts} role="group" aria-label={t('preset-shortcuts')}>
     {#each slots as slot (slot.id)}
       {@const label = t('preset-photo-at',{id:slot.id,name:slot.name ?? String(slot.id)})}
       <button type="button" disabled={!online || active !== undefined} aria-label={label} title={label} onclick={()=>capture(slot.id)}>{slot.id}</button>

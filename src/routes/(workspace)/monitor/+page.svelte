@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { MediaQuery } from 'svelte/reactivity';
   import { page } from '$app/state';
   import { api, errorText, t, UiError, url } from '$lib/api.js';
   import { cameraStatus, type Camera, type CameraEvent } from '$lib/models.js';
@@ -8,9 +9,12 @@
   import { useWorkspace } from '$lib/workspace.js';
   import type { InventoryState } from '../../../../shared/upstreams.js';
   import CameraPanel from '$lib/CameraPanel.svelte';
+  import SettingsDisclosure from '$lib/SettingsDisclosure.svelte';
   import FeedGapNotice from '$lib/FeedGapNotice.svelte';
 
   const workspace = useWorkspace();
+  const mobile = new MediaQuery('(max-width: 800px)', false);
+  let listExpanded = $state(true);
   let cameras = $state<Camera[]>([]);
   let inventory = $state<InventoryState>();
   let selected = $state('');
@@ -217,8 +221,7 @@
   </section>
 {:else}
   <div class="dashboard">
-    <aside class="panel stack">
-      <h2>{t('cameras')}</h2>
+    {#snippet cameraChoices()}
       <nav class="stack camera-list" aria-label={t('camera-access')}>
         {#each cameras as item, index (item.id)}
           {@const label = item.name ?? t('camera-generic', { index: index + 1 })}
@@ -244,6 +247,18 @@
         {/each}
       </nav>
       {#if orderError}<p class="error" role="alert">{orderError}</p>{/if}
+    {/snippet}
+    <aside>
+      {#if mobile.current}
+        <SettingsDisclosure title={t('cameras')} open={listExpanded} ontoggle={open => listExpanded = open}>
+          {@render cameraChoices()}
+        </SettingsDisclosure>
+      {:else}
+        <div class="panel stack">
+          <h2>{t('cameras')}</h2>
+          {@render cameraChoices()}
+        </div>
+      {/if}
     </aside>
     {#key camera.id}
       <CameraPanel {camera} {revision} previewTag={previewTags[camera.id]} pushConnected={feed} {events} {historyError} {alertFrameRequest}

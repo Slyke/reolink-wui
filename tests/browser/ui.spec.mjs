@@ -234,6 +234,15 @@ for (const mode of ['browser','proxy']) {
       await expect(expanded).toBeHidden();
       await page.setViewportSize({width:375,height:812});
       await assertMonitorLayout();
+      const cameraList = page.getByRole('group',{name:'Cameras',exact:true});
+      const listHeading = cameraList.locator('summary');
+      await expect(cameraList.getByRole('button',{name:/^Second camera/})).toBeVisible();
+      await listHeading.focus();
+      await page.keyboard.press('Enter');
+      await expect(cameraList.getByRole('navigation')).toBeHidden();
+      await expect(liveView).toBeVisible();
+      await listHeading.click();
+      await expect(cameraList.getByRole('button',{name:/^Second camera/})).toBeVisible();
       const phone = await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,storageState:await page.context().storageState()});
       try {
         const mobile = await phone.newPage();
@@ -255,6 +264,7 @@ for (const mode of ['browser','proxy']) {
         await player.getByRole('button',{name:'Close'}).tap();
       } finally { await phone.close(); }
       await page.setViewportSize({width:1280,height:720});
+      await expect(cameraList).toHaveCount(0);
       await expect(page.getByRole('button',{name:/^Second camera/})).toBeVisible();
       const previewBaseline = bridge.previewRequests.length;
       await page.getByRole('link',{name:'Dashboard',exact:true}).click();
@@ -922,13 +932,36 @@ for (const mode of ['browser','proxy']) {
       const presetTile = page.locator('article.camera-tile').filter({has:page.locator('a[href="/monitor?camera='+camera.id+'"]')});
       const presetKeys = presetTile.getByRole('group',{name:'Preset snapshots'});
       await expect(presetKeys.getByRole('button')).toHaveText(['2']);
-      bridge.setPresetList(Array.from({length:10},(_,i)=>[i+1,'Preset '+(i+1)]));
       const presetsChanged = () => page.evaluate(id=>window.dispatchEvent(new CustomEvent('camera-presets',{detail:id})),camera.id);
-      await presetsChanged();
-      await expect(presetKeys.getByRole('button')).toHaveCount(8);
-      const keys = await presetKeys.getByRole('button').evaluateAll(items => items.map(el=>el.getBoundingClientRect().y));
-      expect(new Set(keys).size).toBe(1);
-      expect(await presetKeys.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      const presetViewport=page.viewportSize();
+      const rowGeometry=()=>presetKeys.evaluate(group=>{
+        const buttons=[...group.querySelectorAll('button')];
+        const bounds=buttons.map(button=>button.getBoundingClientRect());
+        const row=group.getBoundingClientRect();
+        return {lines:new Set(bounds.map(rect=>rect.top)).size, left:Math.abs(bounds[0].left-row.left),
+          right:Math.abs(bounds.at(-1).right-row.right), equal:Math.max(...bounds.map(b=>b.width))-Math.min(...bounds.map(b=>b.width)),
+          gap:bounds[1].left-bounds[0].right, padding:parseFloat(getComputedStyle(buttons[0]).paddingInlineStart), fits:group.scrollWidth<=group.clientWidth};
+      });
+      for(const width of [presetViewport.width,375]){
+        await page.setViewportSize({width,height:presetViewport.height});
+        let normal;
+        for(const count of [5,10]){
+          bridge.setPresetList(Array.from({length:count},(_,i)=>[i+1,'Preset '+(i+1)]));
+          await presetsChanged();
+          await expect(presetKeys.getByRole('button')).toHaveCount(Math.min(count,8));
+          const geometry=await rowGeometry();
+          expect(geometry.lines).toBe(1); expect(geometry.fits).toBe(true);
+          expect(geometry.left+geometry.right).toBeLessThan(1); expect(geometry.equal).toBeLessThan(1);
+          expect(geometry.padding).toBeGreaterThan(0);
+          if(count===5) normal=geometry;
+          else {
+            expect(geometry.gap).toBeLessThan(normal.gap);
+            expect(geometry.padding).toBeLessThan(normal.padding);
+            await expect(presetKeys.getByText(/^(9|10)$/)).toHaveCount(0);
+          }
+        }
+      }
+      await page.setViewportSize(presetViewport);
       bridge.setPresetList([[2,'Default']]);
       await presetsChanged();
       await expect(presetKeys.getByRole('button')).toHaveText(['2']);
