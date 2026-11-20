@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { clockFields, clockReading, clockConfirmed } from '../shared/clock.js';
+import { clockFields, clockReading, clockConfirmed, clockOptionKeys, validClockChange } from '../shared/clock.js';
 import { correlationPattern } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
 import { sendOutcome } from './camera-routes.js';
@@ -22,8 +22,8 @@ export function clockRoutes({api,path,runtime}: {api: FastifyInstance; path: str
   api.put<{Params:{id:string}}>(endpoint,async (request,reply) => {
     const {row,bridge,session} = await runtime.camera({request,id:request.params.id,permission:'settings.clock.write',mutate:true});
     if (!bridge.hasClock(row.routeId)) throw new Failure('UNSUPPORTED',422);
-    const {operationId,...change} = input({schema:z.strictObject({operationId:uuid,...clockFields}),value:request.body});
-    const result = await runtime.ops.run({id:operationId,actor:session.account.id,resource:row.id,action:'settings.clock',correlation:request.id,input:Object.keys(change).length===1 ? change.cameraTime : change,serialized:true,
+    const {operationId,...change} = input({schema:z.strictObject({operationId:uuid,...clockFields}).refine(validClockChange),value:request.body});
+    const result = await runtime.ops.run({id:operationId,actor:session.account.id,resource:row.id,action:'settings.clock',correlation:request.id,input:change.cameraTime!==undefined && Object.keys(change).length===1 ? change.cameraTime : change,serialized:true,
       execute:async () => {
         const start=performance.now();
         const response=await bridge.api({path:'/cameras/'+row.routeId+'/clock',method:'PUT',stableId:row.remote_id,
@@ -34,9 +34,10 @@ export function clockRoutes({api,path,runtime}: {api: FastifyInstance; path: str
         const settings=after?.settings;
         const zone=change.timeZone;
         const zoneMatches=!zone || (settings?.utcOffsetMinutes===zone.utcOffsetMinutes && settings.daylightSavingEnabled===Boolean(zone.daylightSaving));
-        const ntpMatches=change.ntpEnabled===undefined || change.ntpEnabled===settings?.ntpEnabled;
-        if (response.ok && body.outcome==='confirmed' && after?.cameraTime && settings && zoneMatches && ntpMatches &&
-            clockConfirmed(change.cameraTime,after.cameraTime,performance.now()-start))
+        const optionsMatch=clockOptionKeys.every(key=>change[key]===undefined || (settings?.[key]===change[key] &&
+          (change.cameraTime!==undefined || after?.editableOptions?.includes(key))));
+        const timeMatches=change.cameraTime===undefined || (after?.cameraTime && clockConfirmed(change.cameraTime,after.cameraTime,performance.now()-start));
+        if (response.ok && body.outcome==='confirmed' && after?.cameraTime && settings && zoneMatches && optionsMatch && timeMatches)
           return {outcome:'confirmed',bridgeCorrelationId,data:after};
         const reasons={API_CLOCK_NTP_ACTIVE:'CAMERA_CLOCK_NTP_ACTIVE',API_CLOCK_INVALID:'BAD_INPUT',API_CLOCK_REJECTED:'COMMAND_REJECTED',API_CLOCK_UNSUPPORTED:'UNSUPPORTED',API_DISPLAY_BUSY:'COMMAND_BUSY',
           API_READ_BUSY:'COMMAND_BUSY',API_CAMERA_IDENTITY_CHANGED:'CAMERA_UNKNOWN',API_CLOCK_READ_FAILED:'BRIDGE_UNAVAILABLE'} as const;

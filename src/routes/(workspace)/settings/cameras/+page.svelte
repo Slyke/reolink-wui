@@ -12,6 +12,7 @@
   import CameraClock from '$lib/CameraClock.svelte';
   import CameraDisplay from '$lib/CameraDisplay.svelte';
   import CameraNetwork from '$lib/CameraNetwork.svelte';
+  import CameraRecordingSchedule from '$lib/CameraRecordingSchedule.svelte';
   import CameraUsers from '$lib/CameraUsers.svelte';
   import CredentialRotation from '$lib/CredentialRotation.svelte';
 
@@ -21,6 +22,7 @@
   let busy = $state(true);
   let error = $state('');
   let settings = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
+  let schedule = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let retention = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let playback = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let encoding = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
@@ -41,7 +43,7 @@
       error = '';
       if (manual) {
         await tick();
-        await Promise.all([settings?.refresh(), playback?.refresh(), retention?.refresh(), network?.refresh(), display?.refresh(), clock?.refresh(), encoding?.refresh()]);
+        await Promise.all([settings?.refresh(), schedule?.refresh(), playback?.refresh(), retention?.refresh(), network?.refresh(), display?.refresh(), clock?.refresh(), encoding?.refresh()]);
       }
     } catch (err) {
       cameras = [];
@@ -59,7 +61,7 @@
 <section class="panel stack" aria-labelledby="camera-settings">
   <div class="row between panel-title">
     <h2 id="camera-settings">{t('camera-settings')}</h2>
-    <button disabled={busy || settings?.working() || playback?.working() || retention?.working() || network?.working() || display?.working() || clock?.working() || encoding?.working()}
+    <button disabled={busy || settings?.working() || schedule?.working() || playback?.working() || retention?.working() || network?.working() || display?.working() || clock?.working() || encoding?.working()}
       onclick={() => refresh({ manual: true })}>{t('refresh-camera-settings')}</button>
   </div>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -79,6 +81,7 @@
 {#if camera}
   {@const online = cameraStatus(camera) === 'online'}
   {@const base = '/api/v1/cameras/' + camera.id}
+  {@const scheduleAccess = camera.capabilities.settings.recording_schedule}
   {#key camera.id}
     {#if workspace.current().user.admin}
       <PlaybackSettings bind:this={playback} {base} bridgePreview={camera.capabilities.bridgePreview} csrf={workspace.current().csrf} />
@@ -103,6 +106,10 @@
       <CameraNetwork bind:this={network} {base} csrf={workspace.current().csrf} access={camera.capabilities.network} />
     {/if}
     {#if camera.capabilities.cameraUsers}<CameraUsers onrotation={status => rotation?.setStatus(status)} {base} csrf={workspace.current().csrf} {online} />{/if}
+    {#if scheduleAccess && (scheduleAccess.read || scheduleAccess.write || scheduleAccess.unavailable)}
+      <CameraRecordingSchedule bind:this={schedule} {base} csrf={workspace.current().csrf} access={scheduleAccess}
+        {online} freshSettings={camera.capabilities.freshSettings}/>
+    {/if}
     {#if camera.capabilities.rotate}<CredentialRotation bind:this={rotation} {base} csrf={workspace.current().csrf} {online} />{/if}
   {/key}
 {/if}

@@ -13,9 +13,17 @@ export const clockZone = z.strictObject({
 });
 export type ClockZone = z.infer<typeof clockZone>;
 export const clockSettings = z.object({utcOffsetMinutes:offset.nullable(),daylightSavingEnabled:z.boolean().nullable(),ntpEnabled:z.boolean().nullable()});
-export const clockReading = z.object({cameraTime:cameraTime.nullable(),settings:clockSettings.optional()});
+export const clockOptionKeys = ['daylightSavingEnabled','ntpEnabled'] as const;
+export type ClockOption = typeof clockOptionKeys[number];
+export type ClockOptions = Partial<Record<ClockOption,boolean>>;
+export const clockReading = z.object({cameraTime:cameraTime.nullable(),settings:clockSettings.optional(),editableOptions:z.array(z.enum(clockOptionKeys)).optional()});
 export type ClockReading = z.infer<typeof clockReading>;
-export const clockFields = { cameraTime, timeZone:clockZone.optional(), ntpEnabled:z.boolean().optional() };
+export const clockFields = { cameraTime:cameraTime.optional(), timeZone:clockZone.optional(), daylightSavingEnabled:z.boolean().optional(), ntpEnabled:z.boolean().optional() };
+export type ClockChange = ClockOptions & {cameraTime?:string;timeZone?:ClockZone};
+export function validClockChange(change:ClockChange) {
+  return change.cameraTime!==undefined ? change.daylightSavingEnabled===undefined
+    : change.timeZone===undefined && clockOptionKeys.some(key=>change[key]!==undefined);
+}
 export function clockConfirmed(requested: string, observed: string, elapsedMs: number) {
   const delta = Date.parse(observed + 'Z') - Date.parse(requested + 'Z');
   return delta >= -1000 && delta <= elapsedMs + 1000;

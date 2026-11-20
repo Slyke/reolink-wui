@@ -137,10 +137,6 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
   .event-row { grid-template-columns: minmax(0, 1fr); }
 }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: .85rem; }
-.camera-settings-grid { container: camera-settings / inline-size; }
-@container camera-settings (min-width: 35rem) {
-  .schedule-panel { grid-column: span 2; }
-}
 .camera-selector-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: var(--space-2); }
 .camera-list .camera-choice { display: grid; gap: .32rem; width: 100%; min-width: 0; text-align: left; overflow-wrap: anywhere; padding: .7rem; }
 .camera-order-controls { display: grid; align-content: center; gap: .25rem; }

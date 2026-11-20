@@ -1,23 +1,32 @@
 <script lang="ts">
   import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
-  import { cameraTime, clockReading, deviceClockZone, offsetLabel, readOffset, wallAtOffset, type ClockReading, type ClockZone } from '../../shared/clock.js';
+  import { cameraTime, clockReading, clockOptionKeys, deviceClockZone, offsetLabel, readOffset, wallAtOffset, type ClockReading, type ClockChange, type ClockOptions, type ClockZone } from '../../shared/clock.js';
 
   let {base,csrf,access}: {base:string; csrf:string; access:{read:boolean; write:boolean; available:boolean}}=$props();
   let expanded=$state(false), busy=$state(false), reading=$state<ClockReading>();
   let day=$state(''), time=$state(''), error=$state(''), message=$state('');
   let zoneMode=$state('device'), fixedOffset=$state(''), deviceName=$state(''), deviceZone=$state<ClockZone>();
-  let useNtp=$state(false);
+  const fieldId=$props.id();
+  let legacyNtp=$state(false), draft=$state<ClockOptions>({});
+  const changedOptions=$derived.by(()=>{
+    const changes:ClockOptions={};
+    for (const key of reading?.editableOptions??[]) {
+      if (draft[key]!==undefined && draft[key]!==reading?.settings?.[key]) changes[key]=draft[key];
+    }
+    return changes;
+  });
   const manual=$derived(day+'T'+time);
   const settings=$derived(reading?.settings);
   const canSyncZone=$derived(settings && settings.utcOffsetMinutes!==null && settings.daylightSavingEnabled!==null);
   const fixedMinutes=$derived(readOffset(fixedOffset));
   const selectedZone=$derived(zoneMode==='device' ? deviceZone : fixedMinutes===undefined ? undefined : {utcOffsetMinutes:fixedMinutes,daylightSaving:null});
 
-  function apply(value:ClockReading) {
+  function apply(value:ClockReading, clearDraft=true) {
+    if(clearDraft) draft={};
     reading=value;
     if (value.cameraTime) [day,time]=value.cameraTime.split('T');
-    if (typeof value.settings?.ntpEnabled==='boolean') useNtp=value.settings.ntpEnabled;
+    if (typeof value.settings?.ntpEnabled==='boolean') legacyNtp=value.settings.ntpEnabled;
   }
   function open(show:boolean) {
     expanded=show;
@@ -36,14 +45,14 @@
     catch (err) {error=errorText(err);}
     finally {busy=false;}
   }
-  async function save(change:{cameraTime:string;timeZone?:ClockZone;ntpEnabled?:boolean}) {
-    if (!access.write || !access.available || busy || !cameraTime.safeParse(change.cameraTime).success) return;
+  async function save(change:ClockChange) {
+    if (!access.write || !access.available || busy || (change.cameraTime!==undefined && !cameraTime.safeParse(change.cameraTime).success)) return;
     busy=true; error=''; message='';
     try {
       const result=await api<Outcome>({path:base+'/clock',method:'PUT',csrf,body:{operationId:operationId(),...change}});
       if (result.outcome==='confirmed') {
         const observed=clockReading.safeParse(result.data).data;
-        if(observed) apply(observed);
+        if(observed) apply(observed,change.cameraTime===undefined);
         else if(access.read) apply(await api<ClockReading>({path:base+'/clock'}));
         message=outcomeText(result);
       } else error=outcomeText(result);
@@ -53,7 +62,7 @@
   function sync() {
     if (!selectedZone || !canSyncZone) return;
     const now=Date.now(), effective=zoneMode==='device'?-new Date(now).getTimezoneOffset():selectedZone.utcOffsetMinutes;
-    void save({cameraTime:wallAtOffset(now,effective),timeZone:selectedZone,ntpEnabled:settings?.ntpEnabled==null?undefined:useNtp});
+    void save({cameraTime:wallAtOffset(now,effective),timeZone:selectedZone,ntpEnabled:!reading?.editableOptions && settings?.ntpEnabled!=null?legacyNtp:undefined});
   }
   const switchText=(value:boolean|null)=>t(value===null?'clock-not-reported':value?'on':'off');
 </script>
@@ -64,14 +73,29 @@
     {:else if reading?.cameraTime===null}<p class="muted">{t('clock-unsupported')}</p>
     {:else}
       {#if reading?.cameraTime}
-        <dl class="network-facts">
+        <dl class="network-facts clock-facts">
           <dt>{t('clock-last-read')}</dt><dd><time datetime={reading.cameraTime}>{reading.cameraTime.replace('T',' ')}</time></dd>
           {#if settings}
             <dt>{t('clock-standard-offset')}</dt><dd>{settings.utcOffsetMinutes===null?t('clock-not-reported'):'UTC'+offsetLabel(settings.utcOffsetMinutes)}</dd>
-            <dt>{t('clock-dst')}</dt><dd>{switchText(settings.daylightSavingEnabled)}</dd>
-            <dt>{t('clock-ntp')}</dt><dd>{switchText(settings.ntpEnabled)}</dd>
+            {#each clockOptionKeys as key}
+              {@const label=t(key==='daylightSavingEnabled'?'clock-dst':'clock-ntp')}
+              {#if access.write && reading.editableOptions?.includes(key) && settings[key]!==null}
+                <dt><label for={fieldId+'-'+key}>{label}</label></dt>
+                <dd><select id={fieldId+'-'+key} value={(draft[key]??settings[key])?'on':'off'} disabled={busy}
+                  onchange={event=>{draft[key]=event.currentTarget.value==='on';}}>
+                  <option value="off">{t('off')}</option><option value="on">{t('on')}</option>
+                </select></dd>
+              {:else}
+                <dt>{label}</dt><dd>{switchText(settings[key])}</dd>
+              {/if}
+            {/each}
           {/if}
         </dl>
+        {#if access.write && reading.editableOptions?.length}
+          <div class="row"><button disabled={busy || !Object.keys(changedOptions).length} onclick={()=>save(changedOptions)}>{t('clock-save-options')}</button></div>
+        {:else if access.write && settings && !reading.editableOptions}
+          <p class="muted">{t('clock-options-upgrade')}</p>
+        {/if}
       {/if}
       {#if access.write && reading?.cameraTime && !settings}
         <p class="muted">{t('clock-update-bridge')}</p>
@@ -88,7 +112,7 @@
           <button disabled={busy || !selectedZone} onclick={sync}>{t('clock-sync')}</button>
         </div>
         {#if zoneMode==='device' && !deviceZone}<p class="muted">{t('clock-fixed-required')}</p>{/if}
-        {#if settings?.ntpEnabled!=null}<label class="check"><input type="checkbox" bind:checked={useNtp} disabled={busy}/>{t('clock-sync-ntp')}</label>{/if}
+        {#if !reading?.editableOptions && settings?.ntpEnabled!=null}<label class="check"><input type="checkbox" bind:checked={legacyNtp} disabled={busy}/>{t('clock-sync-ntp')}</label>{/if}
       {/if}
       {#if access.write && ((reading?.cameraTime && settings) || !access.read)}
         {#if settings?.ntpEnabled}<p class="muted">{t('clock-manual-ntp')}</p>{/if}
@@ -104,3 +128,8 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
   {/if}
 </SettingsDisclosure>
+
+<style>
+  .clock-facts { grid-template-columns: fit-content(52%) minmax(0, 1fr); align-items: center; }
+  .clock-facts select { width: min(100%, 10rem); }
+</style>

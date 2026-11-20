@@ -420,17 +420,21 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     if (req.url.endsWith('/clock')) {
       const current=clocks.get(cameraId) ?? {cameraTime:'2026-11-19T07:05:02',settings:{utcOffsetMinutes:-480,daylightSavingEnabled:false,ntpEnabled:false}};
+      const output=reading=>({cameraTime:reading.cameraTime,...(legacyClock!==true && {settings:reading.settings}),
+        ...(!legacyClock && {editableOptions:['daylightSavingEnabled','ntpEnabled']})});
       if (req.method==='PUT') {
-        const {cameraTime,timeZone,ntpEnabled}=await read(req);
-        if(!timeZone && (ntpEnabled ?? current.settings.ntpEnabled) && cameraTime!==current.cameraTime) {
+        const {cameraTime,timeZone,daylightSavingEnabled,ntpEnabled}=await read(req);
+        if(cameraTime!==undefined && !timeZone && (ntpEnabled ?? current.settings.ntpEnabled) && cameraTime!==current.cameraTime) {
           res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_CLOCK_NTP_ACTIVE'}));
         }
         const settings={utcOffsetMinutes:timeZone?.utcOffsetMinutes ?? current.settings.utcOffsetMinutes,
-          daylightSavingEnabled:timeZone?Boolean(timeZone.daylightSaving):current.settings.daylightSavingEnabled,ntpEnabled:ntpEnabled ?? current.settings.ntpEnabled};
-        clocks.set(cameraId,{cameraTime,settings});
-        return res.end(JSON.stringify({outcome:'confirmed',cameraTime,...(!legacyClock && {settings})}));
+          daylightSavingEnabled:timeZone?Boolean(timeZone.daylightSaving):daylightSavingEnabled ?? current.settings.daylightSavingEnabled,
+          ntpEnabled:ntpEnabled ?? current.settings.ntpEnabled};
+        const saved={cameraTime:cameraTime ?? current.cameraTime,settings};
+        clocks.set(cameraId,saved);
+        return res.end(JSON.stringify({outcome:'confirmed',...output(saved)}));
       }
-      return res.end(JSON.stringify(legacyClock?{cameraTime:current.cameraTime}:current));
+      return res.end(JSON.stringify(output(current)));
     }
     if (req.url.endsWith('/network/wifi') && req.method==='PUT') {
       const {enabled,confirmation}=await read(req);

@@ -1,16 +1,14 @@
 <script lang="ts">
   import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { onMount } from 'svelte';
-  import { aiClasses, settingsGroups, type AiClass, type SettingsGroup, type RecordingSchedule, type TimeLapse } from '../../shared/access.js';
+  import { aiClasses, settingsGroups, type AiClass, type SettingsGroup, type TimeLapse } from '../../shared/access.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
-  import ScheduleEditor from './ScheduleEditor.svelte';
   import TimeLapseEditor from './TimeLapseEditor.svelte';
   import type { Camera } from './models.js';
 
   let { camera, base, csrf, online }: { camera: Camera; base: string; csrf: string; online: boolean } = $props();
 
   type Values = {
-    recording_schedule?: RecordingSchedule;
     time_lapse?: TimeLapse;
     image?: { hflip?: boolean; vflip?: boolean; rotation?: number };
     spotlight?: { enabled?: boolean; brightness?: number };
@@ -22,7 +20,7 @@
   type ReadSettings = { group: SettingsGroup; fresh: boolean; alert?: boolean };
 
   const capabilities = $derived(camera.capabilities.settings);
-  const shown = $derived(settingsGroups.filter(group => capabilities[group]?.read || capabilities[group]?.write || capabilities[group]?.unavailable));
+  const shown = $derived(settingsGroups.filter(group => group !== 'recording_schedule' && (capabilities[group]?.read || capabilities[group]?.write || capabilities[group]?.unavailable)));
   const bounds = $derived(capabilities.spotlight?.range as { min: number; max: number } | undefined);
   const classes = $derived((capabilities.ai?.classes ?? {}) as Partial<Record<AiClass, { sensitivity?: boolean; delaySeconds?: boolean }>>);
   let preferredClass = $state<AiClass>('person');
@@ -155,10 +153,10 @@
 {#if shown.length || camera.capabilities.imageOrientation || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
   <SettingsDisclosure title={t('settings')} open>
     {#if message && messageGroup !== 'time_lapse'}<p class:error={failed} role="status">{message}</p>{/if}
-    <div class="grid camera-settings-grid">
+    <div class="grid">
       {#each shown as group (group)}
         {@const caps = capabilities[group]}
-        <article class="panel stack" class:schedule-panel={group === 'recording_schedule'}>
+        <article class="panel stack">
           <h3>{t(group)}</h3>
           {#if caps?.unavailable}
             <p class="muted">{t('camera-setting-' + caps.unavailable)}</p>
@@ -246,11 +244,6 @@
                 {/each}
               </div>
             {/if}
-          {:else if group === 'recording_schedule'}
-            {#if values.recording_schedule?.recording_schedule}
-              <ScheduleEditor value={values.recording_schedule.recording_schedule} writable={!!caps?.write} {disabled}
-                save={fields => change({ group, fields })} />
-            {:else}<p class="muted">{t('settings-not-read')}</p>{/if}
           {:else if group === 'time_lapse'}
             {#if values.time_lapse?.time_lapse}
               {#key values.time_lapse.time_lapse}

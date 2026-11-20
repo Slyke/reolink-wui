@@ -693,8 +693,11 @@ for (const mode of ['browser','proxy']) {
       await page.goto(publicOrigin+'/settings/cameras?camera='+remoteCamera);
       await expect(page.getByRole('heading',{name:'Image orientation',exact:true})).toBeVisible();
       await expect(page.getByText('The connected bridge does not expose image orientation. Update reolink-bridge and refresh camera settings.')).toBeVisible();
-      for (const name of ['SD recording schedule','Time lapse']) {
-        const panel = page.locator('article').filter({has:page.getByRole('heading',{name,exact:true})});
+      const legacySchedule=page.getByRole('group',{name:'SD recording schedule',exact:true});
+      await expect(legacySchedule).not.toHaveAttribute('open','');
+      await legacySchedule.locator('summary').click();
+      const legacyLapse=page.locator('article').filter({has:page.getByRole('heading',{name:'Time lapse',exact:true})});
+      for (const panel of [legacySchedule,legacyLapse]) {
         await expect(panel).toContainText('Update reolink-bridge, then select Refresh settings');
         await expect(panel.getByRole('button')).toHaveCount(0);
       }
@@ -746,7 +749,10 @@ for (const mode of ['browser','proxy']) {
       await expect(brightness).toHaveValue('17');
       await expect(sensitivity).toHaveValue('22');
 
-      const schedule = page.locator('article').filter({has:page.getByRole('heading',{name:'SD recording schedule'})});
+      const schedule = page.getByRole('group',{name:'SD recording schedule',exact:true});
+      await expect(schedule).not.toHaveAttribute('open','');
+      expect(await schedule.evaluate(node=>node.previousElementSibling.querySelector('summary').textContent.trim())).toBe('Camera accounts');
+      await schedule.locator('summary').click();
       const weekday = schedule.getByLabel('Day of the week');
       await expect(schedule.getByRole('group',{name:'Recording hours (camera time) for Monday'})).toBeVisible();
       await weekday.selectOption({label:'Thursday'});
@@ -754,12 +760,16 @@ for (const mode of ['browser','proxy']) {
       const toggles = scheduleHours.getByRole('button',{name:/^\d{2}:00$/});
       await expect(toggles).toHaveCount(24);
       expect((await toggles.first().boundingBox()).height).toBeGreaterThanOrEqual(80);
-      const ordinary = page.locator('article').filter({has:page.getByRole('heading',{name:'Time lapse',exact:true})});
-      expect((await schedule.boundingBox()).width).toBeGreaterThan((await ordinary.boundingBox()).width * 1.9);
+      const accountSection=page.getByRole('group',{name:'Camera accounts',exact:true});
+      expect(Math.abs((await schedule.boundingBox()).width-(await accountSection.boundingBox()).width)).toBeLessThan(1);
       const hour = scheduleHours.getByRole('button',{name:'08:00',exact:true});
       await expect(hour).toHaveAttribute('aria-pressed','false');
       await hour.focus();
       await hour.press('Space');
+      await expect(hour).toHaveAttribute('aria-pressed','true');
+      await schedule.locator('summary').click();
+      await expect(hour).toBeHidden();
+      await schedule.locator('summary').click();
       await expect(hour).toHaveAttribute('aria-pressed','true');
       await weekday.selectOption({label:'Monday'});
       await expect(schedule.getByRole('button',{name:'08:00',exact:true})).toHaveAttribute('aria-pressed','false');
@@ -843,17 +853,32 @@ for (const mode of ['browser','proxy']) {
       const clock=page.getByRole('group',{name:'Camera clock',exact:true});
       await clock.locator('summary').click();
       await expect(clock.getByText('2026-11-19 07:05:02')).toBeVisible();
+      const dst=clock.getByRole('combobox',{name:'Daylight saving time',exact:true});
+      const ntp=clock.getByRole('combobox',{name:'Automatic network time (NTP)',exact:true});
+      const saveClockOptions=clock.getByRole('button',{name:'Save clock options',exact:true});
+      await expect(dst).toHaveValue('off');await expect(ntp).toHaveValue('off');
+      await expect(saveClockOptions).toBeDisabled();
+      await dst.selectOption('on');
+      await saveClockOptions.click();
+      await expect(clock.getByRole('status')).toHaveText(/Confirmed/);
+      await clock.getByRole('button',{name:'Read camera time'}).click();
+      await expect(dst).toHaveValue('on');await expect(ntp).toHaveValue('off');
+      await expect(clock.getByText('2026-11-19 07:05:02')).toBeVisible();
+      await expect(clock.getByText('UTC-08:00',{exact:true})).toBeVisible();
       await clock.getByLabel('Camera time (24-hour)').fill('19:20:09');
       await clock.getByRole('button',{name:'Set camera time'}).click();
       await expect(clock.getByText('2026-11-19 19:20:09')).toBeVisible();
       await clock.getByLabel('Time zone for sync').selectOption('fixed');
       await clock.getByLabel('UTC offset (±HH:MM)').fill('-07:00');
-      await clock.getByLabel('Use automatic network time after sync').check();
+      await ntp.selectOption('on');
+      await saveClockOptions.click();
+      await expect(saveClockOptions).toBeDisabled();
       await clock.getByRole('button',{name:'Sync to this device'}).click();
       await expect(clock.getByText('2026-11-19 19:20:09')).toBeHidden();
       await clock.getByRole('button',{name:'Read camera time'}).click();
       await expect(clock.getByText('UTC-07:00',{exact:true})).toBeVisible();
-      await expect(clock.getByLabel('Use automatic network time after sync')).toBeChecked();
+      await expect(ntp).toHaveValue('on');
+      await expect(dst).toHaveValue('off');
       const network=page.getByRole('group',{name:'Network and Wi-Fi',exact:true});
       await expect(network).not.toHaveAttribute('open', '');
       await expect(network.getByText('192.0.2.3')).toBeAttached();
@@ -903,7 +928,9 @@ for (const mode of ['browser','proxy']) {
       await expectHover(page,memberRow);
       const desktop = page.viewportSize();
       await page.setViewportSize({width:375,height:812});
-      expect(Math.abs((await schedule.boundingBox()).width - (await ordinary.boundingBox()).width)).toBeLessThan(1);
+      const mobileSchedule=await schedule.boundingBox(), mobileAccounts=await users.boundingBox();
+      expect(Math.abs(mobileSchedule.width-mobileAccounts.width)).toBeLessThan(1);
+      expect(Math.abs(mobileSchedule.x-mobileAccounts.x)).toBeLessThan(1);
       const tableSurface = users.getByRole('region',{name:'Camera accounts'});
       expect(await tableSurface.evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

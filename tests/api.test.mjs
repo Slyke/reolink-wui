@@ -1147,6 +1147,23 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   fixture.setLegacyClock(true);
   assert.equal((await changeZone(-420)).json().outcome,'unverified');
   fixture.setLegacyClock(false);
+  const clockOptions=(options,headers=privileged,id=uuid())=>incoming({path:clockPath,headers,method:'PUT',payload:{operationId:id,...options}});
+  assert.equal((await clockOptions({ntpEnabled:false},restricted)).statusCode,403);
+  for (const bad of [{},{ntpEnabled:'on'},{unknown:true},{timeZone:{utcOffsetMinutes:0,daylightSaving:null}},{cameraTime:'2026-11-19T07:05:09',daylightSavingEnabled:true}])
+    assert.equal((await clockOptions(bad)).statusCode,400);
+  const optionId=uuid();
+  const seasonal=(await clockOptions({daylightSavingEnabled:true},privileged,optionId)).json();
+  assert.equal(seasonal.outcome,'confirmed');
+  assert.deepEqual(seasonal.data.settings,{utcOffsetMinutes:-420,daylightSavingEnabled:true,ntpEnabled:true});
+  assert.equal((await clockOptions({ntpEnabled:false},privileged,optionId)).statusCode,409);
+  const ntpOff=(await clockOptions({ntpEnabled:false})).json();
+  assert.equal(ntpOff.outcome,'confirmed');
+  assert.equal(ntpOff.data.cameraTime,sync.data.cameraTime);
+  assert.deepEqual(ntpOff.data.settings,{utcOffsetMinutes:-420,daylightSavingEnabled:true,ntpEnabled:false});
+  assert.deepEqual((await incoming({path:clockPath,headers:privileged})).json(),ntpOff.data);
+  fixture.setLegacyClock('timeZoneOnly');
+  assert.equal((await clockOptions({ntpEnabled:true})).json().outcome,'unverified');
+  fixture.setLegacyClock(false);
   const networkPath=root+'/network';
   const rtspPath=networkPath+'/rtsp';
   assert.equal((await incoming({path:rtspPath,headers:restricted})).statusCode,403);
