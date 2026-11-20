@@ -9,6 +9,7 @@ import { forwardProofHeader, samePeer, sameSecret } from './trusted-proxy.js';
 import { csrfToken } from './auth.js';
 import { buildInfo, configureLogging, Failure, report } from './errors.js';
 import { Runtime, input, username, uuid } from './runtime.js';
+import { retentionRoutes } from './retention-routes.js';
 import { recordingRoutes } from './recording-routes.js';
 import { liveRoutes } from './live.js';
 import { encodingRoutes } from './encoding-routes.js';
@@ -115,6 +116,7 @@ export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions
   enrollmentRoutes({ api: app, path, runtime });
   liveRoutes({ api: app, path, runtime });
   recordingRoutes({ api: app, path, runtime });
+  retentionRoutes({ api: app, path, runtime });
 
   return { app, runtime };
 };

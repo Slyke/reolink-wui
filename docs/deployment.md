@@ -184,6 +184,12 @@ Once the selected video has loaded, the player warms the next and previous recor
 
 Live coordinate events require the bridge camera's coordinates.allowVideoStream option. When disabled, WUI says so in Event details, alongside always-available normalized event JSON. Enabling this bridge option reads the camera's metadata stream; it does not alter camera settings. ONVIF boolean alerts alone cannot supply bounding boxes.
 
+## Per-camera SD media retention
+
+An administrator can open **Settings → Camera settings**, select a camera, and expand **SD media retention**. Enter independent ages in days for ordinary SD videos and time-lapse files (JPEG or completed MP4). Leaving a field blank disables that rule. Both fields start blank for every camera. Explicit camera support is required for each kind.
+
+The WUI database stores the rules and the hourly check results for each camera. The worker uses the camera’s local clock and submits exact file IDs for media strictly older than the configured age. Files with ambiguous IDs or unknown completion times and running time-lapse movies are skipped. The first check starts within a minute. For videos, each check processes newly expired dates and backfills up to twelve additional months of camera calendars. The settings show the last check, its counts and any error reference. Files removed by retention are permanently deleted from the camera’s card.
+
 ## Keyed error logging
 
 All WUI API failures, including 4xx responses, generate structured errors with correlation IDs. Configure the style-guide logger using a top-level logging block in the WUI configuration. Sinks and per-error gates control output; an error is generated even when all of its sinks are disabled.

@@ -370,7 +370,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
       version:1, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
-      previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
+      mediaFileCameras:inventory, previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
       inventoryReads++;
@@ -480,6 +480,10 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       res.writeHead(storageFailure.status, {'content-type':'application/json'});
       return res.end(JSON.stringify({errorKey:storageFailure.key, correlation_id:req.headers['x-correlation-id'], secret:token}));
     }
+    if (req.url.endsWith('/media/capabilities')) {
+      return res.end(JSON.stringify({source:(cameraId==='alpha'?'a':'b').repeat(64),video:cameraId==='alpha',timeLapse:true,cameraTime:'2026-11-20T12:00:00'}));
+    }
+    if (req.url.includes('/media/days?')) return res.end(JSON.stringify({days:[]}));
     const gallery=new URL(req.url,'http://127.0.0.1');
     if (recordings && gallery.pathname.endsWith('/time-lapse/photos')) {
       const q=gallery.searchParams;

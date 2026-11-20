@@ -89,6 +89,20 @@ for (const database of dbs) test('authorization, operations and live revocation:
   assert.equal(inventory.inventory, 'discovered');
   assert.deepEqual(new Set(inventory.cameras.map(item => item.id)), new Set([camera, other]));
   assert.equal((await incoming({ path:'/cameras/'+camera+'/preview?refresh=true', headers:denied })).statusCode, 403);
+  const retention=id=>'/cameras/'+id+'/media-retention';
+  const rules=(id,payload,headers=allowed)=>incoming({path:retention(id),method:'PUT',headers,payload});
+  assert.equal((await incoming({path:retention(camera),headers:denied})).statusCode,403);
+  assert.equal((await rules(camera,{video:7,timeLapse:null},denied)).statusCode,403);
+  assert.equal((await rules(camera,{video:7,timeLapse:null},{cookie:allowed.cookie})).statusCode,403);
+  assert.deepEqual((await incoming({path:retention(camera),headers:allowed})).json(),{rules:[],support:{video:true,timeLapse:true}});
+  assert.equal((await rules(camera,{video:0,timeLapse:null})).statusCode,400);
+  assert.equal((await rules(camera,{video:7,timeLapse:2})).statusCode,200);
+  assert.equal((await rules(other,{video:7,timeLapse:null})).statusCode,422);
+  assert.deepEqual((await incoming({path:retention(other),headers:allowed})).json().rules,[]);
+  assert.equal((await rules(other,{video:null,timeLapse:30})).statusCode,200);
+  assert.deepEqual((await rules(camera,{video:null,timeLapse:2})).json().rules.map(rule=>[rule.kind,rule.days]),[['timeLapse',2]]);
+  assert.deepEqual((await incoming({path:retention(other),headers:allowed})).json().rules.map(rule=>[rule.kind,rule.days]),[['timeLapse',30]]);
+  for(const id of [camera,other]) assert.deepEqual((await rules(id,{video:null,timeLapse:null})).json().rules,[]);
   const profileUrl = '/cameras/' + other + '/playback';
   const setProfile = fields => incoming({
     path:profileUrl, method:'PUT', headers:allowed, payload:{operationId:uuid(),source:'direct',...fields}

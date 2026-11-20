@@ -96,7 +96,14 @@ const migrations = [
     account_id TEXT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
     camera_order TEXT NOT NULL
   );`,
-  `ALTER TABLE operations ADD COLUMN camera_status INTEGER CHECK (camera_status BETWEEN 0 AND 65535);`
+  `ALTER TABLE operations ADD COLUMN camera_status INTEGER CHECK (camera_status BETWEEN 0 AND 65535);`,
+  `CREATE TABLE media_retention (
+    camera TEXT NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('video','timeLapse')), days INTEGER NOT NULL CHECK(days BETWEEN 1 AND 36500),
+    source TEXT NOT NULL, next_check BIGINT NOT NULL DEFAULT 0, lease TEXT, lease_until BIGINT NOT NULL DEFAULT 0,
+    last_checked TEXT, last_deleted INTEGER NOT NULL DEFAULT 0, last_skipped INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT, last_reference TEXT, last_cutoff TEXT, history_month TEXT, PRIMARY KEY(camera,kind)
+  );`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {

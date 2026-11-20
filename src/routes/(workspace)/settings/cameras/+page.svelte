@@ -6,6 +6,7 @@
   import { useWorkspace } from '$lib/workspace.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
+  import MediaRetention from '$lib/MediaRetention.svelte';
   import PlaybackSettings from '$lib/PlaybackSettings.svelte';
   import CameraEncoding from '$lib/CameraEncoding.svelte';
   import CameraClock from '$lib/CameraClock.svelte';
@@ -20,6 +21,7 @@
   let busy = $state(true);
   let error = $state('');
   let settings = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
+  let retention = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let playback = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let encoding = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let clock = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
@@ -39,7 +41,7 @@
       error = '';
       if (manual) {
         await tick();
-        await Promise.all([settings?.refresh(), playback?.refresh(), network?.refresh(), display?.refresh(), clock?.refresh(), encoding?.refresh()]);
+        await Promise.all([settings?.refresh(), playback?.refresh(), retention?.refresh(), network?.refresh(), display?.refresh(), clock?.refresh(), encoding?.refresh()]);
       }
     } catch (err) {
       cameras = [];
@@ -57,7 +59,7 @@
 <section class="panel stack" aria-labelledby="camera-settings">
   <div class="row between panel-title">
     <h2 id="camera-settings">{t('camera-settings')}</h2>
-    <button disabled={busy || settings?.working() || playback?.working() || network?.working() || display?.working() || clock?.working() || encoding?.working()}
+    <button disabled={busy || settings?.working() || playback?.working() || retention?.working() || network?.working() || display?.working() || clock?.working() || encoding?.working()}
       onclick={() => refresh({ manual: true })}>{t('refresh-camera-settings')}</button>
   </div>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -82,6 +84,9 @@
       <PlaybackSettings bind:this={playback} {base} bridgePreview={camera.capabilities.bridgePreview} csrf={workspace.current().csrf} />
     {:else if !Object.keys(camera.capabilities.settings).length && !camera.capabilities.alerts.read && !camera.capabilities.alerts.write && !camera.capabilities.rotate && !camera.capabilities.network.read && !camera.capabilities.network.write && !camera.capabilities.clock.read && !camera.capabilities.clock.write && !camera.capabilities.display.read && !camera.capabilities.encoding.read && !camera.capabilities.encoding.write}
       <p class="panel muted">{t('settings-empty')}</p>
+    {/if}
+    {#if workspace.current().user.admin}
+      <MediaRetention bind:this={retention} {base} csrf={workspace.current().csrf} />
     {/if}
     <SettingsPanel bind:this={settings} {camera} csrf={workspace.current().csrf} {online} {base} />
     {#if camera.capabilities.encoding.read || camera.capabilities.encoding.write}

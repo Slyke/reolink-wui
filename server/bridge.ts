@@ -70,6 +70,7 @@ export class Bridge {
   private readonly mediaStreams = new Map<string, string[]>();
   private readonly previewTags = new Map<string,string>();
   private previewCameras = new Set<string>();
+  private mediaFileCameras = new Set<string>();
   private timeLapsePhotoCameras = new Set<string>();
   private recordingCameras = new Set<string>();
   private recordingMetadataCameras = new Set<string>();
@@ -423,6 +424,7 @@ export class Bridge {
 
   hasStorage(camera: string) { return this.has("v1") && this.storageCameras.has(camera); }
 
+  hasMediaFiles(camera:string) { return this.has('v1') && this.mediaFileCameras.has(camera); }
   hasTimeLapsePhotos(camera: string) { return this.has('v1') && this.timeLapsePhotoCameras.has(camera); }
 
   hasRecordingMetadata(camera: string) { return this.hasRecordings(camera) && this.recordingMetadataCameras.has(camera); }
@@ -586,7 +588,7 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras], [...this.networkCameras], [...this.displayCameras], [...this.clockCameras], [...this.encodingCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.mediaFileCameras], [...this.userCameras], [...this.networkCameras], [...this.displayCameras], [...this.clockCameras], [...this.encodingCameras]]);
     const ok = contract.version === 1;
     const reportedSettings = contract.settings;
     this.bridgeVersion.settings = ok ? settingsGroups.filter(group => Array.isArray(reportedSettings) && reportedSettings.includes(group)) : undefined;
@@ -607,6 +609,8 @@ export class Bridge {
     }
     this.recordingMetadataCameras = new Set(ok && Array.isArray(contract.recordingMetadataCameras)
       ? contract.recordingMetadataCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
+    this.mediaFileCameras = new Set(ok && Array.isArray(contract.mediaFileCameras)
+      ? contract.mediaFileCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.timeLapsePhotoCameras = new Set(ok && Array.isArray(contract.timeLapsePhotoCameras)
       ? contract.timeLapsePhotoCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingPreviewCameras = new Set(ok && Array.isArray(contract.recordingPreviewCameras)
@@ -628,7 +632,7 @@ export class Bridge {
       ? storage.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras], [...this.networkCameras], [...this.displayCameras], [...this.clockCameras], [...this.encodingCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.mediaFileCameras], [...this.userCameras], [...this.networkCameras], [...this.displayCameras], [...this.clockCameras], [...this.encodingCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 

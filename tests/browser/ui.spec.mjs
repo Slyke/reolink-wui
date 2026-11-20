@@ -713,6 +713,20 @@ for (const mode of ['browser','proxy']) {
       await expect(rotate).toBeHidden();
 
       await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
+      const retentionSummary=page.locator('summary').filter({has:page.getByRole('heading',{name:'SD media retention',exact:true})});
+      await retentionSummary.click();
+      const retentionDays=page.getByRole('spinbutton',{name:'Delete time-lapse files after (days)'});
+      await expect(retentionDays).toHaveValue('');
+      await retentionDays.fill('8');
+      await page.getByRole('button',{name:'Save retention settings'}).click();
+      await expect(page.getByText('Retention settings saved.')).toBeVisible();
+      await page.reload();
+      await retentionSummary.click();
+      await expect(retentionDays).toHaveValue('8');
+      await retentionDays.fill('');
+      await page.getByRole('button',{name:'Save retention settings'}).click();
+      await expect(page.getByText('Retention settings saved.')).toBeVisible();
+      await retentionSummary.click();
       const settingsRefresh = page.getByRole('button',{name:/^Refresh/});
       await expect(settingsRefresh).toHaveCount(1);
       const brightness = page.getByRole('spinbutton',{name:'Brightness',exact:true});
