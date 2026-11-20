@@ -12,7 +12,7 @@ export const permissions = [
   'ptz.read', 'ptz.write', 'settings.spotlight.read', 'settings.spotlight.write',
   'settings.leds.read', 'settings.leds.write', 'settings.motion.read', 'settings.motion.write',
   'settings.ai.read', 'settings.ai.write', 'settings.image.read', 'settings.image.write',
-  'settings.recording_schedule.read', 'settings.recording_schedule.write', 'settings.time_lapse.read', 'settings.time_lapse.write', 'settings.network.read', 'settings.network.write', 'alerts.read', 'alerts.write', 'device.rotate'
+  'settings.recording_schedule.read', 'settings.recording_schedule.write', 'settings.time_lapse.read', 'settings.time_lapse.write', 'settings.network.read', 'settings.network.write', 'settings.clock.read', 'settings.clock.write', 'settings.encoding.read', 'settings.encoding.write', 'alerts.read', 'alerts.write', 'device.rotate'
 ] as const;
 export type Permission = typeof permissions[number];
 

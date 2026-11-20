@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/state';
+  import { afterNavigate, goto } from '$app/navigation';
   import { api, errorText, t, UiError, url } from '$lib/api.js';
   import { cameraStatus, type Camera } from '$lib/models.js';
   import { useWorkspace } from '$lib/workspace.js';
@@ -17,6 +19,26 @@
   let previewTags = $state<Record<string,string>>({});
   let frameRequests = $state<Record<string, number>>({});
   let reconnect = $state(0);
+  const linkedCamera = $derived(page.url.searchParams.get('camera'));
+  const linkedStream = $derived(page.url.searchParams.get('stream'));
+  afterNavigate(({from,to}) => {
+    if (from?.url.pathname !== to?.url.pathname || to?.url.searchParams.has('camera')) return;
+    const previous=from?.url.searchParams.get('camera');
+    if (previous) document.getElementById('dashboard-expand-'+previous)?.focus({preventScroll:true});
+  });
+  function cameraLink(id:string, open:boolean, stream?: 'main'|'sub') {
+    const target = new URL(page.url);
+    const fromList = 'dashboardCameraFromList' in page.state && page.state.dashboardCameraFromList === true;
+    if (!open && linkedCamera !== id) return;
+    if (!open && fromList) { history.back(); return; }
+    if (open) target.searchParams.set('camera', id);
+    else target.searchParams.delete('camera');
+    if (open && stream) target.searchParams.set('stream', stream);
+    else target.searchParams.delete('stream');
+    if (target.href === page.url.href) return;
+    void goto(target, { replaceState: !!linkedCamera, keepFocus: true, noScroll: true,
+      state: {...page.state, dashboardCameraFromList: open && (!linkedCamera || fromList)} });
+  }
   const watchAlerts = $derived(cameras.some(camera => camera.capabilities.preview));
 
   const refresh = async () => {
@@ -78,6 +100,9 @@
   <h1>{t('dashboard')}</h1>
   <button disabled={busy} onclick={refresh}>{t('refresh')}</button>
 </div>
+{#if !loading && !error && linkedCamera && !cameras.some(camera => camera.id === linkedCamera && camera.capabilities.mediaAllowed && (camera.capabilities.preview || camera.capabilities.media.length))}
+  <p class="notice" role="status">{t('live-link-unavailable')}</p>
+{/if}
 {#if error}
   <p class="error" role="alert">{error}</p>
 {:else if loading}
@@ -91,7 +116,8 @@
           <h2 id={'dashboard-camera-' + camera.id} class="wrap"><a href={'/monitor?camera=' + camera.id}>{name}</a></h2>
           <span class="pill" data-status={cameraStatus(camera)}>{t(cameraStatus(camera))}</span>
         </div>
-        <CameraLiveView {camera} {name} compact csrf={workspace.current().csrf} administer={workspace.current().user.admin}
+        <CameraLiveView {camera} {name} compact linked={linkedCamera === camera.id} {linkedStream}
+          setLink={(open,stream) => cameraLink(camera.id,open,stream)} csrf={workspace.current().csrf} administer={workspace.current().user.admin}
           previewTag={previewTags[camera.id]} {pushConnected} refreshRequest={frameRequests[camera.id] ?? 0} />
       </article>
     {/each}

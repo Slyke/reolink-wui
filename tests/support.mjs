@@ -149,6 +149,10 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const schedule = {enabled:true,schedules:{continuous:'0'.repeat(168),motion:'1'.repeat(168)}};
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const networks = new Map();
+  const displays = new Map();
+  const encoders = new Map();
+  const clocks = new Map(), radios = new Map();
+  let delayNextPreset = false;
   const rtspSwitches = new Map();
   const accountLists = new Map(), rotationStates = new Map();
   const enrolled = new Set();
@@ -256,6 +260,13 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (command.setting === 'ptz' && command.action.op === 'save_preset') {
       const {preset_id,name,replace} = command.action;
       if (presets.has(preset_id) && !replace) return {id,ok:false,errorKey:'PTZ_PRESET_OCCUPIED'};
+      if (delayNextPreset) {
+        delayNextPreset = false;
+        void setTimeout(400).then(()=>presets.set(preset_id,name));
+        presetPans.set(preset_id,presetPan);
+        writes++;
+        return {id,ok:true,verified:false,result:{presets:Array.from(presets,([id,name])=>({id,name}))}};
+      }
       presets.set(preset_id,name);
       presetPans.set(preset_id,presetPan);
       writes++;
@@ -351,7 +362,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      version:1, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
       previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -367,6 +378,43 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     const cameraId = req.url.split('/')[3];
     if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
+    if (req.url.endsWith('/display')) {
+      const fields = displays.get(cameraId) ?? {deviceName:'Fixture camera',dateFormat:'DMY',name:'Camera1',nameVisible:true,
+        nameX:65536,nameY:65536,timeVisible:true,timeX:65536,timeY:1,watermark:true,background:false};
+      if (req.method === 'PUT') {
+        Object.assign(fields,(await read(req)).fields); displays.set(cameraId,fields);
+        return res.end(JSON.stringify({outcome:'confirmed',fields,correlation_id:req.headers['x-correlation-id']}));
+      }
+      return res.end(JSON.stringify({fields}));
+    }
+    if (req.url.endsWith('/encoding')) {
+      const profiles = encoders.get(cameraId) ?? [
+        {stream:'main',current:{width:2560,height:1440,fps:20,bitrate:4096,gop:2},gopRange:[1,2],options:[
+          {width:2560,height:1440,fps:[25,20,15],bitrates:[2048,3072,4096]},
+          {width:1920,height:1080,fps:[15,10],bitrates:[2048,3072]}]},
+        {stream:'sub',current:{width:640,height:360,fps:4,bitrate:128},options:[{width:640,height:360,fps:[10,4],bitrates:[128,256]}]}
+      ];
+      if(req.method==='PUT'){
+        const {stream,settings}=await read(req); const p=profiles.find(p=>p.stream===stream);
+        if(!p || settings.fps===999){res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_ENCODING_INVALID'}));}
+        p.current={...p.current,...settings};encoders.set(cameraId,profiles);
+        return res.end(JSON.stringify({outcome:'confirmed',profiles,correlation_id:req.headers['x-correlation-id']}));
+      }
+      return res.end(JSON.stringify({profiles}));
+    }
+    if (req.url.endsWith('/clock')) {
+      if (req.method==='PUT') {
+        const {cameraTime}=await read(req);clocks.set(cameraId,cameraTime);
+        return res.end(JSON.stringify({outcome:'confirmed',cameraTime}));
+      }
+      return res.end(JSON.stringify({cameraTime:clocks.get(cameraId) ?? '2026-11-19T07:05:02'}));
+    }
+    if (req.url.endsWith('/network/wifi') && req.method==='PUT') {
+      const {enabled,confirmation}=await read(req);
+      if (!confirmation || cameraId!=='alpha') {res.statusCode=409;return res.end(JSON.stringify({errorKey:'API_NETWORK_WIRED_REQUIRED'}));}
+      radios.set(cameraId,enabled);
+      return res.end(JSON.stringify({outcome:'confirmed',enabled}));
+    }
     if (req.url.endsWith('/network/rtsp')) {
       if (req.method === 'PUT') {
         const {enabled} = await read(req);
@@ -377,6 +425,9 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     if (req.url.endsWith('/network')) {
       if (req.method === 'GET') return res.end(JSON.stringify({
+        interfaces:{ethernet:cameraId==='alpha'?{addresses:['192.0.2.3'],active:true,enabled:true,dhcp:true}:null,
+          wifi:{addresses:['192.0.2.4'],active:cameraId!=='alpha',enabled:radios.get(cameraId) ?? true,dhcp:true}},
+        wifiSignal:-47,wifiSwitchAvailable:cameraId==='alpha',
         wifi:{ssid:networks.get(cameraId) ?? 'Fixture LAN',nearby:['Fixture LAN','Office wireless'],configurable:true,key:'should-never-leave-the-bridge'},
         link:{address:'192.0.2.3',gateway:'192.0.2.1',netmask:'255.255.255.0',dhcp:true}
       }));
@@ -538,6 +589,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     },
     correlations, requests, previewRequests, recordingRequests,
     holdMediaUntil: gate => { mediaStartGate = gate; },
+    delayNextPreset: () => {delayNextPreset = true;},
     setPresetList: entries => { presets.clear(); for (const [id,name] of entries) presets.set(id,name); },
     setPlaybackAvailable: value => { playbackAvailable = value; },
     setRecordingCount: value => { recordingCount = value; },

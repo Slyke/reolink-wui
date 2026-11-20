@@ -13,6 +13,7 @@
   } = $props();
   let info = $state<CameraDetail>();
   const liveTitle = $props.id();
+  let liveView: { refreshAfterPtz: () => void };
   const showPtz = $derived(camera.capabilities.ptz?.supported && (camera.capabilities.ptz.read || camera.capabilities.ptz.write));
   let capture = $state('');
   let busy = $state(false);
@@ -65,7 +66,7 @@
   </section>
   <div class="monitor-columns" class:with-ptz={showPtz}>
     <section class="panel stack" aria-labelledby={liveTitle}>
-      <CameraLiveView {previewTag} {pushConnected} headingId={liveTitle} {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
+      <CameraLiveView bind:this={liveView} {previewTag} {pushConnected} headingId={liveTitle} {camera} name={camera.name ?? t('camera-noun')} {csrf} {administer} refreshRequest={alertFrameRequest}>
         {#snippet actions()}
           {#if camera.capabilities.capture}
             <button bind:this={snapshotButton} disabled={!online || busy} onclick={snapshot}>{t(busy ? 'pending' : 'snapshot')}</button>
@@ -80,7 +81,7 @@
         </div>
       {/if}
     </section>
-    {#if showPtz}<CameraPtz {camera} {csrf} reportedPosition={info?.position} />{/if}
+    {#if showPtz}<CameraPtz {camera} {csrf} reportedPosition={info?.position} onmovement={() => liveView?.refreshAfterPtz()} />{/if}
   </div>
   {#if info?.detections?.length}
     <section class="panel stack">

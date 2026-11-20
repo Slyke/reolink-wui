@@ -4,12 +4,12 @@
   import type { Camera } from './models.js';
   import { orderedPresets, type Preset } from '../../shared/presets.js';
 
-  let { camera, csrf }: { camera: Camera; csrf: string } = $props();
-  let slots = $state<Preset[]>([]), active = $state<number>(), photo = $state(''), error = $state('');
-  let jpeg = $state(false);
-  let photoSlot = $state<number>(), revision = $state(0), disposed = false;
+  let { camera, csrf, onframe, onnotice }: {
+    camera: Camera; csrf: string; onframe: (frame: Blob) => void; onnotice: (text: string, failed: boolean) => void
+  } = $props();
+  let slots = $state<Preset[]>([]), active = $state<number>(), revision = $state(0), disposed = false;
   const online = $derived(camera.availability.online === true && !camera.availability.stale);
-  const clear = () => { if (photo) URL.revokeObjectURL(photo); photo = ''; photoSlot = undefined; };
+
   $effect(() => {
     const id = camera.id, allowed = online;
     void revision;
@@ -21,9 +21,8 @@
         if (controller.signal.aborted) return;
         if (result.outcome === 'confirmed') {
           slots = orderedPresets(result.data?.presets ?? [],result.data?.preferences?.order ?? []).slice(0,8);
-          error = '';
-        } else { slots = []; error = outcomeText(result); }
-      }).catch(err=>{ if (!controller.signal.aborted) { slots = []; error = errorText(err); } });
+        } else { onnotice(outcomeText(result), true); }
+      }).catch(err=>{ if (!controller.signal.aborted) { onnotice(errorText(err), true); } });
     });
     return () => controller.abort();
   });
@@ -34,17 +33,18 @@
   });
   const capture = async (id: number) => {
     if (active !== undefined) return;
-    active = id; error = '';
+    active = id;
+    onnotice(t('preset-photo-wait', { id }), false);
     try {
       const result = await api<Blob | Outcome>({path:'/api/v1/cameras/'+camera.id+'/ptz/preset-snapshot',
         method:'POST',image:true,csrf,body:{operationId:operationId(),presetId:id}});
       if (disposed) return;
-      if (result instanceof Blob) { clear(); jpeg = result.type === 'image/jpeg'; photo = URL.createObjectURL(result); photoSlot = id; }
-      else error = outcomeText(result);
-    } catch (err) { if (!disposed) error = errorText(err); }
+      if (result instanceof Blob) { onframe(result); onnotice('', false); }
+      else onnotice(outcomeText(result), true);
+    } catch (err) { if (!disposed) onnotice(errorText(err), true); }
     finally { if (!disposed) active = undefined; }
   };
-  onDestroy(()=>{disposed = true; clear();});
+  onDestroy(()=>{disposed = true; onnotice('', false);});
 </script>
 
 {#if slots.length}
@@ -54,11 +54,4 @@
       <button type="button" disabled={!online || active !== undefined} aria-label={label} title={label} onclick={()=>capture(slot.id)}>{slot.id}</button>
     {/each}
   </div>
-{/if}
-{#if active !== undefined}<p role="status">{t('preset-photo-wait',{id:active})}</p>{/if}
-{#if error}<p class="error" role="alert">{error}</p>{/if}
-{#if photo}
-  <img class="snapshot" src={photo} alt={t('snapshot-alt')} />
-  <div class="row"><a href={photo} download={'preset-'+photoSlot+(jpeg ? '.jpg' : '.png')}>{t(jpeg ? 'download-jpeg' : 'download')}</a>
-    <button type="button" aria-label={t('close-snapshot')} onclick={clear}>{t('close')}</button></div>
 {/if}

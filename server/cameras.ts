@@ -68,7 +68,7 @@ export const information = ({ state }: { state: Map<string, Envelope> }) => {
   const native = record(info?.baichuan);
   const onvif = record(info?.onvif);
   return {
-    name: displayText(native.name ?? onvif.name),
+    name: displayText(record(info?.display).name) ?? displayText(native.name ?? onvif.name),
     model: displayText(native.model ?? onvif.model),
     hardware: displayText(native.hardware ?? onvif.hardware_id),
     firmware: displayText(native.firmware ?? onvif.firmware)
@@ -224,6 +224,9 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     viaProxy: proxy && grant.has('media.live'),
     media,
     alerts: { read: grant.has('alerts.read'), write: bridge.canCommand(remote) && grant.has('alerts.write') && (motion.enabled === true || motion.sensitivity === true) },
+    encoding: { read:grant.has('settings.encoding.read'), write:grant.has('settings.encoding.write'), available:bridge.hasEncoding(remote) },
+    clock: { read:grant.has('settings.clock.read'), write:grant.has('settings.clock.write'), available:bridge.hasClock(remote) },
+    display: { read: grant.has('settings.image.read'), write: grant.has('settings.image.write'), available: bridge.hasDisplay(remote) },
     network: { read:grant.has('settings.network.read'), write:grant.has('settings.network.write'), available:bridge.hasNetwork(remote), rtsp:bridge.hasNetwork(remote) && bridge.has('rtspSettings') },
     cameraUsers: grant.has('device.rotate') && bridge.hasUsers(remote),
     rotate: grant.has('device.rotate') && bridge.has('enrollment'),

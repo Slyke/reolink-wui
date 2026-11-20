@@ -1,0 +1,44 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { cameraTime, clockConfirmed } from '../shared/clock.js';
+import { correlationPattern } from '../shared/urls.js';
+import { record } from './bridge-channels.js';
+import { sendOutcome } from './camera-routes.js';
+import { Failure } from './errors.js';
+import { jsonResponse } from './net.js';
+import { input, uuid, type Runtime } from './runtime.js';
+
+export function clockRoutes({api,path,runtime}: {api: FastifyInstance; path: string; runtime: Runtime}) {
+  const endpoint = path + '/cameras/:id/clock';
+  api.get<{Params:{id:string}}>(endpoint,async request => {
+    const {row,bridge} = await runtime.camera({request,id:request.params.id,permission:'settings.clock.read'});
+    if (!bridge.hasClock(row.routeId)) throw new Failure('UNSUPPORTED',422);
+    const response = await bridge.api({path:'/cameras/'+row.routeId+'/clock',stableId:row.remote_id,correlation:request.id,signal:AbortSignal.timeout(21_000)});
+    if (!response.ok) throw new Failure(response.status===409 ? 'CAMERA_UNKNOWN' : 'BRIDGE_UNAVAILABLE',502);
+    const result = z.object({cameraTime:cameraTime.nullable()}).safeParse(await jsonResponse({response}));
+    if (!result.success) throw new Failure('BRIDGE_UNAVAILABLE',502);
+    return result.data;
+  });
+  api.put<{Params:{id:string}}>(endpoint,async (request,reply) => {
+    const {row,bridge,session} = await runtime.camera({request,id:request.params.id,permission:'settings.clock.write',mutate:true});
+    if (!bridge.hasClock(row.routeId)) throw new Failure('UNSUPPORTED',422);
+    const intent = input({schema:z.strictObject({operationId:uuid,cameraTime}),value:request.body});
+    const result = await runtime.ops.run({id:intent.operationId,actor:session.account.id,resource:row.id,action:'settings.clock',correlation:request.id,input:intent.cameraTime,serialized:true,
+      execute:async () => {
+        const start=performance.now();
+        const response=await bridge.api({path:'/cameras/'+row.routeId+'/clock',method:'PUT',stableId:row.remote_id,
+          data:{cameraTime:intent.cameraTime},correlation:request.id,signal:AbortSignal.timeout(28_000)});
+        const body=record(await jsonResponse({response}));
+        const bridgeCorrelationId=typeof body.correlation_id==='string' && correlationPattern.test(body.correlation_id) ? body.correlation_id : undefined;
+        const after=cameraTime.safeParse(body.cameraTime);
+        if (response.ok && body.outcome==='confirmed' && after.success && clockConfirmed(intent.cameraTime,after.data,performance.now()-start))
+          return {outcome:'confirmed',bridgeCorrelationId,data:{cameraTime:after.data}};
+        const reasons={API_CLOCK_INVALID:'BAD_INPUT',API_CLOCK_REJECTED:'COMMAND_REJECTED',API_CLOCK_UNSUPPORTED:'UNSUPPORTED',API_DISPLAY_BUSY:'COMMAND_BUSY',
+          API_READ_BUSY:'COMMAND_BUSY',API_CAMERA_IDENTITY_CHANGED:'CAMERA_UNKNOWN',API_CLOCK_READ_FAILED:'BRIDGE_UNAVAILABLE'} as const;
+        const key=typeof body.errorKey==='string' && Object.hasOwn(reasons,body.errorKey) ? body.errorKey as keyof typeof reasons : undefined;
+        return key ? {outcome:'rejected',reason:reasons[key],bridgeCorrelationId} : {outcome:'unverified',reason:'OUTCOME_UNKNOWN',bridgeCorrelationId};
+      }
+    });
+    return sendOutcome({reply,value:result});
+  });
+}

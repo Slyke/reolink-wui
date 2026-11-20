@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { record } from './bridge-channels.js';
@@ -99,7 +101,31 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
           retryAfterMs = await runtime.ops.ptzRecoveryDelay(row.id) || undefined;
         }
         if (response.ok === true) {
-          const status = statusPtz({ raw: record(response.result) });
+          let status = statusPtz({ raw: record(response.result) });
+          if ((action.op === 'save_preset' || action.op === 'delete_preset') && outcome.outcome === 'unverified') {
+            // Some cameras acknowledge the write before their preset list reflects it.
+            const readPtz = (op: 'list_presets' | 'status') => bridge.command({
+              camera: row.routeId, stableId: row.remote_id, id: randomUUID(), correlation: request.id,
+              command: { setting: 'ptz', action: { op } }
+            });
+            for (const ms of [250, 500, 1000, 1500]) {
+              await delay(ms);
+              const listing = await readPtz('list_presets');
+              if (listing.ok !== true || listing.verified === false) continue;
+              const updated = statusPtz({raw:record(listing.result)});
+              if (!updated.presets) continue;
+              status.presets = updated.presets;
+              const current = updated.presets.find(item => item.id === action.preset_id);
+              if (action.op === 'save_preset' ? current?.name !== action.name : current !== undefined) continue;
+              outcome.outcome = 'confirmed';
+              if (action.op === 'save_preset') {
+                const reported = await readPtz('status');
+                if (reported.ok === true && reported.verified !== false) status = {...status, position:statusPtz({raw:record(reported.result)}).position};
+              }
+              break;
+            }
+          }
+          if (action.op === 'status' && !status.receivedAt) status.receivedAt = new Date().toISOString();
           if (action.op === 'save_preset' && outcome.outcome === 'confirmed') {
             await rememberPresetPosition(runtime.sql,row.id,action.preset_id,action.name,status.position);
           }

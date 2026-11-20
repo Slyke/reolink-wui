@@ -5,15 +5,20 @@
   import CameraPresetShortcuts from './CameraPresetShortcuts.svelte';
   import { dismissOnBackdrop } from './dialog.js';
   import type { Camera } from './models.js';
+  import { useWorkspace } from './workspace.js';
 
-  let { previewTag, pushConnected = false, camera, name, csrf, administer, compact = false, refreshRequest = 0, headingId, actions }: {
+  type Quality = 'main' | 'sub';
+  const workspace = useWorkspace();
+
+  let { previewTag, pushConnected = false, camera, name, csrf, administer, compact = false, refreshRequest = 0, headingId, actions, linked, linkedStream, setLink }: {
     previewTag?: string; pushConnected?: boolean; camera: Camera; name: string; csrf: string; administer: boolean;
     compact?: boolean; refreshRequest?: number; headingId?: string; actions?: Snippet;
+    linked?: boolean; linkedStream?: string | null; setLink?: (open: boolean, quality?: Quality) => void;
   } = $props();
   const id = $props.id();
   const base = $derived('/api/v1/cameras/' + camera.id);
   const enabled = $derived(camera.capabilities.preview);
-  const previewPending = $derived(camera.capabilities.mediaAllowed && camera.capabilities.previewState === 'unknown');
+  const previewPending = $derived(camera.capabilities.mediaAllowed && (camera.capabilities.previewState === 'unknown' || camera.capabilities.previewState === 'offline'));
   const canStream = $derived(camera.capabilities.media.length > 0);
   const showPtz = $derived(camera.capabilities.ptz?.supported && (camera.capabilities.ptz.read || camera.capabilities.ptz.write));
   let panel: HTMLDivElement;
@@ -22,13 +27,34 @@
   let image = $state('');
   let failed = $state(false);
   let previewLoaded = $state(false);
+  const presetAllowed = $derived(compact && (camera.capabilities.presetSnapshot ?? camera.capabilities.capture)
+    && camera.capabilities.ptz?.read && camera.capabilities.ptz.write && camera.capabilities.ptz.presets);
+  let presetFrame = $state(false);
+  let tileNotice = $state({ text: '', failed: false });
+  const showNotice = (text: string, failed: boolean) => { tileNotice = { text, failed }; };
+  let setPresetFrame: ((frame: Blob) => void) | undefined;
   let manualFrameRequest = $state(0);
   let previousRequest: number | undefined;
-  let enqueue: (() => void) | undefined;
+  let enqueue: ((discardPending?: boolean) => void) | undefined;
+  export function refreshAfterPtz() { if (enabled && !playback && !liveBusy) enqueue?.(true); }
   let notifyPreview: ((tag: string) => void) | undefined;
   let resumePreview: (() => void) | undefined;
 
-  let stream = $state<'main' | 'sub'>('main');
+  let stream = $state<Quality>('main');
+  const preference = () => 'reolink-wui-live-stream-' + workspace.current().user.id + '-' + camera.id;
+  function quality(requested?: string | null): Quality | undefined {
+    let saved: string | null = null;
+    try { saved = localStorage.getItem(preference()); } catch { /* Browser storage is optional. */ }
+    const available = camera.capabilities.media;
+    return [requested,saved,'main','sub'].find((q): q is Quality => (q==='main' || q==='sub') && available.includes(q));
+  }
+  function selectQuality(value: Quality) {
+    if (value === stream || !camera.capabilities.media.includes(value)) return;
+    stream = value;
+    try { localStorage.setItem(preference(), value); } catch { /* The URL still carries the selection. */ }
+    if (linked) setLink?.(true,value);
+    if (playback) void startLive();
+  }
   let playback = $state('');
   let playing = $state(false);
   let liveBusy = $state(false);
@@ -53,7 +79,7 @@
     liveMessage = t(receivedFrame ? 'live-ended' : 'live-display');
   };
   const startLive = async () => {
-    if (!expanded || !canStream || liveBusy) return;
+    if (!expanded || !canStream) return;
     const closing = stopLive();
     const sequence = playbackSequence;
     liveBusy = true;
@@ -80,7 +106,7 @@
       if (sequence === playbackSequence) liveBusy = false;
     }
   };
-  const show = async () => {
+  const openDialog = async () => {
     if (expanded || !camera.capabilities.mediaAllowed || (!enabled && !canStream)) return;
     expanded = true;
     liveMessage = '';
@@ -89,6 +115,32 @@
     if (!dialog.open) dialog.showModal();
     if (canStream) await startLive();
   };
+  function show() {
+    const selected = quality();
+    if (setLink) setLink(true,selected);
+    else { if (selected) stream = selected; void openDialog(); }
+  }
+  $effect(() => {
+    const open = linked;
+    const requested = linkedStream;
+    const available = camera.capabilities.media;
+    const allowed = camera.capabilities.mediaAllowed && (enabled || available.length > 0);
+    if (open === undefined) return;
+    untrack(() => {
+      if (!open || !allowed) {
+        if (dialog?.open) { routeClosures++; dialog.close(); }
+        if (expanded) finishClose();
+        return;
+      }
+      const selected = quality(requested);
+      if (selected && selected !== stream) {
+        stream = selected;
+        if (expanded && (playback || liveBusy)) void startLive();
+      }
+      if (available.length && requested !== selected) setLink?.(true,selected);
+      if (!expanded) void openDialog();
+    });
+  });
   function expandOnDoublePress(node: HTMLElement) {
     let first: { x: number; y: number; time: number } | undefined;
     let down: { x: number; y: number; time: number } | undefined;
@@ -143,11 +195,19 @@
     return { destroy() { cancelAnimationFrame(animation); } };
   }
 
-  const close = () => {
+  let routeClosures = 0;
+  function finishClose() {
     expanded = false;
     liveMessage = '';
     void stopLive();
-  };
+  }
+  function close() {
+    // A native close event can arrive after Forward has already reopened the dialog.
+    if (routeClosures) { routeClosures--; return; }
+    if (dialog.open) return;
+    finishClose();
+    if (linked) setLink?.(false);
+  }
 
   $effect(() => {
     const next = refreshRequest + manualFrameRequest;
@@ -156,7 +216,7 @@
   });
   $effect(() => {
     // Resume when the selected surface or playback changes.
-    void [enabled, previewPending, expanded, playback, camera.previewIntervalMs, camera.previewPush, pushConnected];
+    void [enabled, previewPending, expanded, playback, liveBusy, camera.previewIntervalMs, camera.previewPush, pushConnected];
     untrack(() => resumePreview?.());
   });
   $effect(() => {
@@ -179,12 +239,24 @@
     let timer: ReturnType<typeof setTimeout> | undefined;
     let request: AbortController | undefined;
     let etag: string | undefined;
-    const canFetch = () => enabled && !stopped && (visible || expanded) && !playback && !document.hidden;
+    const canFetch = () => enabled && !stopped && (visible || expanded) && !playback && !liveBusy && !document.hidden;
     const clear = () => {
       if (image) URL.revokeObjectURL(image);
       image = '';
+      presetFrame = false;
       previewLoaded = false;
       etag = undefined;
+    };
+    setPresetFrame = frame => {
+      if (stopped || !presetAllowed) return;
+      request?.abort();
+      const previous = image;
+      image = URL.createObjectURL(frame);
+      if (previous) URL.revokeObjectURL(previous);
+      failed = false;
+      presetFrame = true;
+      finishedAt = performance.now();
+      schedule();
     };
     const schedule = () => {
       clearTimeout(timer);
@@ -202,16 +274,17 @@
       request = new AbortController();
       try {
         const next = await fetchPreview({ path: base + '/preview' + query, etag, signal: request.signal });
-        if (!stopped && enabled) {
+        if (!stopped && enabled && !request.signal.aborted) {
           if (next.image) {
             const candidate = URL.createObjectURL(next.image);
             try {
               const decoded = new Image(); decoded.src = candidate;
               await decoded.decode();
-              if (stopped || !enabled) { URL.revokeObjectURL(candidate); return; }
+              if (stopped || !enabled || request.signal.aborted) { URL.revokeObjectURL(candidate); return; }
             } catch (error) { URL.revokeObjectURL(candidate); throw error; }
             const previous = image;
             image = candidate;
+            presetFrame = false;
             if (previous) URL.revokeObjectURL(previous);
           }
           etag = next.etag;
@@ -219,7 +292,7 @@
           failed = false;
         }
       } catch (error) {
-        if (!stopped && enabled) {
+        if (!stopped && enabled && !request.signal.aborted) {
           failed = true;
           pending = true;
           if (error instanceof UiError && ['ACCESS_DENIED', 'NOT_AUTHENTICATED', 'CAMERA_UNKNOWN'].includes(error.reason)) clear();
@@ -240,12 +313,13 @@
       if (!enabled) {
         request?.abort();
         if (previewPending) failed = true;
-        else clear();
+        else if (!(presetFrame && presetAllowed)) clear();
         finishedAt = undefined;
       }
       resume();
     };
-    enqueue = () => {
+    enqueue = discardPending => {
+      if (discardPending) request?.abort();
       urgent = true;
       void update();
     };
@@ -264,6 +338,7 @@
     resume();
     return () => {
       stopped = true;
+      setPresetFrame = undefined;
       enqueue = undefined;
       resumePreview = undefined;
       notifyPreview = undefined;
@@ -279,7 +354,7 @@
 
 {#snippet preview()}
   <div class="viewport preview-viewport">
-    {#if image && (enabled || previewPending)}
+    {#if image && (enabled || previewPending || (presetFrame && presetAllowed))}
       <img src={image} alt={t('preview-alt', { camera: name })}
         onload={() => { previewLoaded = true; }}
         onerror={() => { failed = true; previewLoaded = false; }} />
@@ -288,6 +363,8 @@
       <p>{t(enabled ? (failed ? 'preview-offline' : 'preview-waiting') :
         camera.capabilities.previewState === 'unconfigured' ? 'preview-unconfigured' :
         camera.capabilities.previewState === 'denied' ? 'preview-denied' :
+        camera.capabilities.previewState === 'offline' ? 'preview-bridge-offline' :
+        camera.capabilities.previewState === 'unsupported' ? 'preview-unsupported' :
         camera.capabilities.previewState === 'unavailable' ? 'preview-no-api' : 'preview-connecting')}</p>
     {/if}
   </div>
@@ -328,7 +405,7 @@
         </button>
       {/if}
       {#if !large}
-        <button class="icon-button" type="button" title={t('live-enlarge')} aria-label={t('live-enlarge')}
+        <button class="icon-button" type="button" id={compact ? 'dashboard-expand-'+camera.id : undefined} title={t('live-enlarge')} aria-label={t('live-enlarge')}
           aria-haspopup="dialog" disabled={!enabled && !canStream} onclick={show}>
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
             <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" />
@@ -344,18 +421,26 @@
     <h2 id={headingId ?? id + '-inline'}>{t('live')}</h2>
     {@render toolbar(false)}
   </div>
-  <div class="live-preview-target" bind:this={panel} use:expandOnDoublePress>{@render preview()}</div>
-  {#if camera.capabilities.mediaAllowed || actions}
+  <div class="tile-preview">
+    <div class="live-preview-target" bind:this={panel} use:expandOnDoublePress>{@render preview()}</div>
+    {#if presetAllowed && tileNotice.text}
+      <div class="tile-notice">
+        <span class:error={tileNotice.failed} role={tileNotice.failed ? 'alert' : 'status'}>{tileNotice.text}</span>
+        {#if tileNotice.failed}<button type="button" aria-label={t('close')} onclick={() => showNotice('', false)}>×</button>{/if}
+      </div>
+    {/if}
+  </div>
+  {#if actions || (!compact && camera.capabilities.mediaAllowed)}
     <div class="row live-primary-actions">
-      {#if camera.capabilities.mediaAllowed}
+      {#if !compact && camera.capabilities.mediaAllowed}
         <button class="primary mobile-live-start" type="button" aria-haspopup="dialog" disabled={!canStream}
           onclick={show}>{t('live-start')}</button>
       {/if}
       {@render actions?.()}
     </div>
   {/if}
-  {#if compact && (camera.capabilities.presetSnapshot ?? camera.capabilities.capture) && camera.capabilities.ptz?.read && camera.capabilities.ptz.write && camera.capabilities.ptz.presets}
-    <CameraPresetShortcuts {camera} {csrf} />
+  {#if presetAllowed}
+    <CameraPresetShortcuts {camera} {csrf} onframe={frame => setPresetFrame?.(frame)} onnotice={showNotice} />
   {/if}
   {#if !compact && !expanded}{@render guidance()}{/if}
 </div>
@@ -396,8 +481,8 @@
           </div>
           <div class="row">
             {#if canStream}
-              <select class="stream-quality" aria-label={t('live-quality')} bind:value={stream} disabled={liveBusy}
-                  onchange={() => { if (playback) void startLive(); }}>
+              <select class="stream-quality" aria-label={t('live-quality')} value={stream} disabled={liveBusy}
+                  onchange={event => selectQuality(event.currentTarget.value as Quality)}>
                   {#if camera.capabilities.media.includes('main')}
                     <option value="main">{t(camera.capabilities.viaProxy ? 'live-proxy-quality' : 'primary')}</option>
                   {/if}
@@ -413,7 +498,7 @@
           {#if liveMessage}<p role="status" class="notice">{liveMessage}</p>{/if}
           {@render guidance()}
         </div>
-        {#if showPtz}<CameraPtz {camera} {csrf} />{/if}
+        {#if showPtz}<CameraPtz {camera} {csrf} onmovement={refreshAfterPtz} />{/if}
       </div>
     </div>
   {/if}

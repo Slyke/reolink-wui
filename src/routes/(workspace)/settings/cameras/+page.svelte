@@ -7,6 +7,9 @@
   import SearchSelect from '$lib/SearchSelect.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import PlaybackSettings from '$lib/PlaybackSettings.svelte';
+  import CameraEncoding from '$lib/CameraEncoding.svelte';
+  import CameraClock from '$lib/CameraClock.svelte';
+  import CameraDisplay from '$lib/CameraDisplay.svelte';
   import CameraNetwork from '$lib/CameraNetwork.svelte';
   import CameraUsers from '$lib/CameraUsers.svelte';
   import CredentialRotation from '$lib/CredentialRotation.svelte';
@@ -18,6 +21,9 @@
   let error = $state('');
   let settings = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let playback = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
+  let encoding = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
+  let clock = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
+  let display = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let network = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let rotation = $state<{ setStatus: (status: string) => void }>();
   const camera = $derived(cameras.find(item => item.id === selected));
@@ -33,7 +39,7 @@
       error = '';
       if (manual) {
         await tick();
-        await Promise.all([settings?.refresh(), playback?.refresh(), network?.refresh()]);
+        await Promise.all([settings?.refresh(), playback?.refresh(), network?.refresh(), display?.refresh(), clock?.refresh(), encoding?.refresh()]);
       }
     } catch (err) {
       cameras = [];
@@ -51,7 +57,7 @@
 <section class="panel stack" aria-labelledby="camera-settings">
   <div class="row between panel-title">
     <h2 id="camera-settings">{t('camera-settings')}</h2>
-    <button disabled={busy || settings?.working() || playback?.working() || network?.working()}
+    <button disabled={busy || settings?.working() || playback?.working() || network?.working() || display?.working() || clock?.working() || encoding?.working()}
       onclick={() => refresh({ manual: true })}>{t('refresh-camera-settings')}</button>
   </div>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -74,10 +80,20 @@
   {#key camera.id}
     {#if workspace.current().user.admin}
       <PlaybackSettings bind:this={playback} {base} bridgePreview={camera.capabilities.bridgePreview} csrf={workspace.current().csrf} />
-    {:else if !Object.keys(camera.capabilities.settings).length && !camera.capabilities.alerts.read && !camera.capabilities.alerts.write && !camera.capabilities.rotate && !camera.capabilities.network.read && !camera.capabilities.network.write}
+    {:else if !Object.keys(camera.capabilities.settings).length && !camera.capabilities.alerts.read && !camera.capabilities.alerts.write && !camera.capabilities.rotate && !camera.capabilities.network.read && !camera.capabilities.network.write && !camera.capabilities.clock.read && !camera.capabilities.clock.write && !camera.capabilities.display.read && !camera.capabilities.encoding.read && !camera.capabilities.encoding.write}
       <p class="panel muted">{t('settings-empty')}</p>
     {/if}
     <SettingsPanel bind:this={settings} {camera} csrf={workspace.current().csrf} {online} {base} />
+    {#if camera.capabilities.encoding.read || camera.capabilities.encoding.write}
+      <CameraEncoding bind:this={encoding} {base} csrf={workspace.current().csrf} access={camera.capabilities.encoding}/>
+    {/if}
+    {#if camera.capabilities.clock.read || camera.capabilities.clock.write}
+      <CameraClock bind:this={clock} {base} csrf={workspace.current().csrf} access={camera.capabilities.clock} />
+    {/if}
+    {#if camera.capabilities.display.read}
+      <CameraDisplay bind:this={display} {base} csrf={workspace.current().csrf} available={camera.capabilities.display.available}
+        writable={camera.capabilities.display.write && online} onrename={() => void refresh()} />
+    {/if}
     {#if camera.capabilities.network.read || camera.capabilities.network.write}
       <CameraNetwork bind:this={network} {base} csrf={workspace.current().csrf} access={camera.capabilities.network} />
     {/if}

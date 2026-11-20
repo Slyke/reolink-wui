@@ -1,6 +1,7 @@
-import { Redis } from 'ioredis';
+import type { Redis } from 'ioredis';
+import { testValkey, valkeyClient } from './valkey.js';
 import type { CameraEvent } from './cameras.js';
-import { historyStorageSchema, type HistoryConfig, type HistoryStorage, type HistoryStorageInput, type HistorySettings, type Valkey } from '../shared/history.js';
+import { historyStorageSchema, type HistoryConnectionInput, type HistoryConfig, type HistoryStorage, type HistoryStorageInput, type HistorySettings, type Valkey } from '../shared/history.js';
 import type { Sql } from './db.js';
 import { Failure, recordError } from './errors.js';
 import { maxEventRetention } from '../shared/events.js';
@@ -78,12 +79,7 @@ class HistoryCache {
     this.limit = config.retention;
     this.prefix = config.backend === 'valkey' ? config.keyPrefix + ':events:' : '';
     if (config.backend === 'valkey') {
-      this.client = new Redis(config.url.href, {
-        ...(config.url.protocol === 'rediss:' ? { tls: { ca: config.ca, rejectUnauthorized: config.rejectUnauthorized } } : {}),
-        lazyConnect: true, connectTimeout: 2000, commandTimeout: 2000, enableReadyCheck: false,
-        enableOfflineQueue: false, autoResendUnfulfilledCommands: false, maxRetriesPerRequest: 0,
-        retryStrategy: () => 1500
-      });
+      this.client = valkeyClient(config, true);
       this.client.on('error', () => {
         recordError({ key:'EVENT_HISTORY_CONNECTION_FAILED',caller:'history::valkey' });
       });
@@ -251,6 +247,24 @@ export class EventHistory {
     });
   }
 
+  private valkeyUrl({ url: endpoint, password }: { url: URL; password?: string }, saved: HistoryStorage) {
+    const url = new URL(endpoint);
+    const previous = saved.valkey ?? (this.defaults.backend === 'valkey' ? this.defaults : undefined);
+    if (password !== undefined) url.password = encodeURIComponent(password);
+    else if (!url.password && previous && publicValkey(previous).url === url.href) url.password = previous.url.password;
+    return url;
+  }
+
+  async testConnection(draft: HistoryConnectionInput, correlationId: string) {
+    if (draft.mode === 'defaults') {
+      if (this.defaults.backend !== 'valkey') throw new Failure('BAD_INPUT', 400);
+      return testValkey(this.defaults, correlationId);
+    }
+    const [row] = await this.sql.query<{ storage: string }>('SELECT storage FROM event_history_settings WHERE id=1');
+    const saved = historyStorageSchema.parse(JSON.parse(row.storage));
+    return testValkey({ ...draft.valkey, url: this.valkeyUrl(draft.valkey, saved) }, correlationId);
+  }
+
   setOptions({ limit, storage }: { limit: number; storage?: HistoryStorageInput }) {
     return this.serialize(async () => {
       const selected = await this.sql.transaction(async query => {
@@ -258,12 +272,8 @@ export class EventHistory {
         const saved = historyStorageSchema.parse(JSON.parse(row.storage));
         let selected: HistoryStorage = saved;
         if (storage?.mode === 'valkey') {
-          const {password,...fields} = storage.valkey;
-          const url = new URL(fields.url);
-          const previous = saved.valkey ?? (this.defaults.backend === 'valkey' ? this.defaults : undefined);
-          if (password !== undefined) url.password = encodeURIComponent(password);
-          else if (!url.password && previous && publicValkey(previous).url === url.href) url.password = previous.url.password;
-          selected = {mode:'valkey',valkey:{...fields,url}};
+          const { password, ...fields } = storage.valkey;
+          selected = { mode: 'valkey', valkey: { ...fields, url: this.valkeyUrl({ ...fields, password }, saved) } };
         } else if (storage) selected = {...storage,...(saved.valkey ? {valkey:saved.valkey} : {})};
         await query('UPDATE event_history_settings SET retention=$1,storage=$2 WHERE id=1',limit,JSON.stringify(selected));
         return selected;

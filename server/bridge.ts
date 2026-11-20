@@ -74,6 +74,9 @@ export class Bridge {
   private recordingMetadataCameras = new Set<string>();
   private recordingPreviewCameras = new Set<string>();
   private networkCameras = new Set<string>();
+  private encodingCameras = new Set<string>();
+  private clockCameras = new Set<string>();
+  private displayCameras = new Set<string>();
   private userCameras = new Set<string>();
   private storageCameras = new Set<string>();
   private httpState?: boolean;
@@ -409,6 +412,9 @@ export class Bridge {
     return this.has('media') ? this.mediaStreams.get(camera) ?? [] : [];
   }
 
+  hasEncoding(camera: string) { return this.has('v1') && this.encodingCameras.has(camera); }
+  hasClock(camera: string) { return this.has('v1') && this.clockCameras.has(camera); }
+  hasDisplay(camera: string) { return this.has('v1') && this.displayCameras.has(camera); }
   hasNetwork(camera: string) { return this.has('v1') && this.networkCameras.has(camera); }
   hasUsers(camera: string) { return this.has('v1') && this.userCameras.has(camera); }
 
@@ -433,7 +439,10 @@ export class Bridge {
 
   previewState(camera: string) {
     if (!this.http) return 'unavailable';
-    if (!this.has('v1')) return 'unknown';
+    if (!this.has('v1')) {
+      if (this.httpState === undefined) return 'unknown';
+      return this.httpState ? 'unsupported' : 'offline';
+    }
     return this.previewCameras.has(camera) ? 'configured' : 'unconfigured';
   }
   hasPreview(camera: string) {
@@ -576,7 +585,7 @@ export class Bridge {
   }
 
   private updateContract(contract: Envelope) {
-    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras], [...this.networkCameras]]);
+    const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras], [...this.networkCameras], [...this.displayCameras], [...this.clockCameras], [...this.encodingCameras]]);
     const ok = contract.version === 1;
     const reportedSettings = contract.settings;
     this.bridgeVersion.settings = ok ? settingsGroups.filter(group => Array.isArray(reportedSettings) && reportedSettings.includes(group)) : undefined;
@@ -603,6 +612,12 @@ export class Bridge {
       ? contract.recordingPreviewCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.recordingCameras = new Set(ok && Array.isArray(contract.recordingsCameras)
       ? contract.recordingsCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
+    this.encodingCameras = new Set(ok && Array.isArray(contract.encodingCameras)
+      ? contract.encodingCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
+    this.clockCameras = new Set(ok && Array.isArray(contract.clockCameras)
+      ? contract.clockCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
+    this.displayCameras = new Set(ok && Array.isArray(contract.displayCameras)
+      ? contract.displayCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.networkCameras = new Set(ok && Array.isArray(contract.networkCameras)
       ? contract.networkCameras.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.userCameras = new Set(ok && Array.isArray(contract.userCameras)
@@ -612,7 +627,7 @@ export class Bridge {
       ? storage.slice(0,128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
     this.previewCameras = new Set(ok && Array.isArray(contract.previewCameras) ? contract.previewCameras
       .slice(0, 128).filter((camera): camera is string => typeof camera === 'string' && this.inScope(camera)) : []);
-    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras], [...this.networkCameras]])) this.channel.emit('update', { kind: 'feed' });
+    if (previous !== JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.userCameras], [...this.networkCameras], [...this.displayCameras], [...this.clockCameras], [...this.encodingCameras]])) this.channel.emit('update', { kind: 'feed' });
     return ok;
   }
 
@@ -637,7 +652,10 @@ export class Bridge {
     if (this.http) {
       const ready = await this.checkHttp(this.http);
       if (!ready && this.httpState !== false) recordError({ key:'BRIDGE_HTTP_CHECK_FAILED',caller:'bridge::check',context:{ bridge:this.config.id } });
-      this.httpState = ready;
+      if (this.httpState !== ready) {
+        this.httpState = ready;
+        this.channel.emit('update', { kind: 'feed' });
+      }
     }
     const knownInventory = this.inventoryIds !== undefined || this.ids().length > 0 || this.socket?.ready;
     return this.httpState !== false && !!knownInventory && this.feedReady && (this.config.commands !== 'mqtt' || this.broker?.ready === true);

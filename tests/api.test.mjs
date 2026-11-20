@@ -393,7 +393,10 @@ test('preset shortcuts take a fresh photo after reported arrival and newer motio
   const savePrefs = () => incoming({path:base+'/preferences',method:'PUT',headers,
     payload:{order:[3,2],returnPreset:3,returnSeconds:1}});
   const shoot = presetId=>incoming({path:base+'/preset-snapshot',method:'POST',headers,payload:{operationId:uuid(),presetId}});
-  assert.equal((await ptz({op:'save_preset',preset_id:3,name:'Desk'})).json().outcome,'confirmed');
+  bridge.delayNextPreset();
+  const savedPreset = (await ptz({op:'save_preset',preset_id:3,name:'Desk'})).json();
+  assert.equal(savedPreset.outcome,'confirmed');
+  assert.ok(savedPreset.data.presets.some(item=>item.id===3 && item.name==='Desk'));
   assert.equal((await savePrefs()).statusCode,200);
   assert.deepEqual((await ptz({op:'list_presets'})).json().data.preferences.order,[3,2]);
   assert.equal((await shoot(99)).json().reason,'PTZ_PRESET_MISSING');
@@ -1024,6 +1027,24 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.equal(update.json().outcome,'confirmed');
   }
   assert.equal((await incoming({path:root+'/users',headers:restricted})).statusCode,403);
+  const encodingPath=root+'/encoding';
+  assert.equal((await incoming({path:encodingPath,headers:restricted})).statusCode,403);
+  const changeEncoder=(settings,headers=privileged)=>incoming({path:encodingPath,method:'PUT',headers,payload:{stream:'sub',settings,operationId:uuid()}});
+  assert.equal((await changeEncoder({fps:10},restricted)).statusCode,403);
+  assert.equal((await changeEncoder({width:640})).statusCode,400);
+  assert.equal((await changeEncoder({fps:999})).json().outcome,'rejected');
+  const updatedEncoder=(await changeEncoder({fps:10})).json();
+  assert.equal(updatedEncoder.outcome,'confirmed');
+  const {profiles}= (await incoming({path:encodingPath,headers:privileged})).json();
+  assert.deepEqual(profiles.map(p=>p.current.fps),[20,10]);
+  const clockPath=root+'/clock';
+  assert.equal((await incoming({path:clockPath,headers:restricted})).statusCode,403);
+  assert.equal((await incoming({path:clockPath,headers:privileged})).json().cameraTime,'2026-11-19T07:05:02');
+  const adjust=(value,headers=privileged)=>incoming({path:clockPath,headers,method:'PUT',payload:{operationId:uuid(),cameraTime:value}});
+  assert.equal((await adjust('2026-02-30T06:05:09')).statusCode,400);
+  assert.equal((await adjust('2026-11-19T06:05:09',restricted)).statusCode,403);
+  assert.equal((await adjust('2026-11-19T06:05:09')).json().outcome,'confirmed');
+  assert.equal((await incoming({path:clockPath,headers:privileged})).json().cameraTime,'2026-11-19T06:05:09');
   const networkPath=root+'/network';
   const rtspPath=networkPath+'/rtsp';
   assert.equal((await incoming({path:rtspPath,headers:restricted})).statusCode,403);
@@ -1037,6 +1058,14 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   const networkRead=await incoming({path:networkPath,headers:privileged});
   assert.equal(networkRead.json().wifi.ssid,'Fixture LAN',networkRead.body);
   assert.ok(!networkRead.body.includes('should-never-leave-the-bridge'));
+  assert.deepEqual(networkRead.json().interfaces.ethernet.addresses,['192.0.2.3']);
+  assert.deepEqual(networkRead.json().interfaces.wifi.addresses,['192.0.2.4']);
+  assert.equal(networkRead.json().wifiSignal,-47);
+  const toggle=(enabled,headers=privileged)=>incoming({path:networkPath+'/wifi',headers,method:'PUT',payload:{operationId:uuid(),confirmation:true,enabled}});
+  assert.equal((await toggle(false,restricted)).statusCode,403);
+  assert.equal((await toggle(false)).json().outcome,'confirmed');
+  assert.equal((await incoming({path:networkPath,headers:privileged})).json().interfaces.wifi.enabled,false);
+  assert.equal((await toggle(true)).json().outcome,'confirmed');
   const wifi={operationId:uuid(),ssid:'New Wi-Fi & Lab',password:'fixture-only-wpa',open:false,confirmation:true};
   const setWifi=(payload,headers=privileged)=>incoming({path:networkPath,headers,method:'PUT',payload});
   assert.equal((await setWifi(wifi,restricted)).statusCode,403);
@@ -1200,6 +1229,22 @@ if(process.env.WUI_TEST_VALKEY) test('event storage overrides defaults, keeps pa
   const privateUrl=new URL(process.env.WUI_TEST_VALKEY), publicUrl=new URL(privateUrl);
   const password=decodeURIComponent(privateUrl.password);publicUrl.password='';
   const valkey={url:publicUrl.href,password,keyPrefix:'settings-test-'+uuid()};
+  const probe=(payload,auth=headers)=>active.incoming({method:'POST',path:'/admin/event-history/test',headers:auth,payload});
+  const candidate={mode:'valkey',valkey:{url:publicUrl.href,password}};
+  assert.equal((await probe(candidate,denied)).statusCode,403);
+  const {['x-csrf-token']:csrf,...withoutCsrf}=headers;
+  assert.equal((await probe(candidate,withoutCsrf)).statusCode,403);
+  assert.equal((await probe({mode:'defaults'})).statusCode,400);
+  const ping=await probe(candidate);
+  assert.equal(ping.json().connected,true,ping.body);assert.ok(ping.json().elapsedMs>=0);
+  if(password) {
+    assert.ok(!ping.body.includes(password));
+    assert.deepEqual((await probe({mode:'valkey',valkey:{url:publicUrl.href,password:'invalid-password'}})).json(),
+      {connected:false,failure:'authorization'});
+  }
+  assert.deepEqual((await probe({mode:'valkey',valkey:{url:new URL('/999999',publicUrl).href,password}})).json(),
+    {connected:false,failure:'database'});
+  assert.equal((await get()).storage.mode,'defaults');
   assert.equal((await set({mode:'valkey',valkey},4,denied)).statusCode,403);
   const configured=await set({mode:'valkey',valkey});
   assert.equal(configured.json().outcome,'confirmed',configured.body);
@@ -1219,6 +1264,8 @@ if(process.env.WUI_TEST_VALKEY) test('event storage overrides defaults, keeps pa
   active=await launch({...boot,eventHistory:fileDefaults});apps.push(active);
   headers=await active.signIn('cache-admin');
   settings=await get();
+  assert.equal((await probe({mode:'defaults'})).json().connected,true);
+  assert.equal((await probe({mode:'valkey',valkey:{url:publicUrl.href}})).json().connected,true);
   assert.equal(settings.backend,'memory');assert.equal(settings.defaults.backend,'valkey');
   assert.equal(settings.limit,5);assert.equal(settings.storage.mode,'memory');
   assert.equal((await set({mode:'valkey',valkey:keepPassword},5)).json().outcome,'confirmed');
@@ -1231,6 +1278,8 @@ if(process.env.WUI_TEST_VALKEY) test('event storage overrides defaults, keeps pa
   const lease=tcp().listen(0,'127.0.0.1');await once(lease,'listening');
   const closedPort=lease.address().port;await new Promise(resolve=>lease.close(resolve));
   const unavailable={url:'redis://127.0.0.1:'+closedPort+'/0',keyPrefix:'offline-settings-'+uuid()};
+  assert.deepEqual((await probe({mode:'valkey',valkey:{url:unavailable.url}})).json(),{connected:false,failure:'transport'});
+  assert.equal((await get()).backend,'valkey');assert.equal((await get()).connected,true);
   assert.equal((await set({mode:'valkey',valkey:unavailable},5)).json().outcome,'confirmed');
   settings=await get();assert.equal(settings.connected,false);assert.equal(settings.storage.mode,'valkey');
   assert.equal((await set({mode:'memory'},5)).json().outcome,'confirmed');

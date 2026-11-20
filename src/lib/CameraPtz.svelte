@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
   import { api, errorText, operationId, outcomeText, t, UiError, type Outcome } from './api.js';
+  import { formatLocalTime } from './dates.js';
   import type { Camera, CameraDetail } from './models.js';
   import { defaultPresetPreferences, orderedPresets, type Preset, type PresetPreferences } from '../../shared/presets.js';
 
-  let { camera, csrf, reportedPosition }: { camera: Camera; csrf: string; reportedPosition?: CameraDetail['position'] } = $props();
+  let { camera, csrf, reportedPosition, onmovement }: { camera: Camera; csrf: string; reportedPosition?: CameraDetail['position']; onmovement?: () => void } = $props();
   const base = $derived('/api/v1/cameras/' + camera.id);
   const online = $derived(camera.availability.online === true && !camera.availability.stale);
   const ptz = $derived(camera.capabilities.ptz);
@@ -120,6 +121,7 @@
     try {
       const result = await ptzAction(command);
       message = command.op === 'save_preset' && result.outcome === 'confirmed' ? t('preset-saved',{id:String(command.preset_id)}) : outcomeText(result);
+      if (result.outcome === 'unverified' && (command.op === 'save_preset' || command.op === 'delete_preset')) presetChanged();
       if (result.outcome === 'confirmed' && (command.op === 'save_preset' || command.op === 'delete_preset')) {
         if (command.op === 'save_preset') preset = Number(command.preset_id);
         else { preset = undefined; message = t('preset-deleted',{id:Number(command.preset_id)}); }
@@ -128,7 +130,10 @@
     } catch (err) { report(err); }
     finally {
       if (command.op !== 'status') await observePosition();
-      if (command.op === 'goto_preset' && ptz?.read && watch === positionWatch) void observeRecall(watch).catch(report);
+      if (command.op === 'goto_preset' || command.op === 'set_zoom') {
+        const settled = ptz?.read ? observeRecall(watch) : Promise.resolve();
+        void settled.catch(report).finally(() => { if (!destroyed && watch === positionWatch) onmovement?.(); });
+      }
       busy = false;
     }
   };
@@ -168,7 +173,11 @@
         }
         if (result.outcome !== 'confirmed' && result.outcome !== 'unverified') { message = outcomeText(result); break; }
         message = outcomeText(result);
-        if (!hold || press !== hold || destroyed || !online) break;
+        if (!hold) {
+          if (!result.data?.stopped) await wait(Math.max(0,ms - (performance.now()-start)));
+          break;
+        }
+        if (press !== hold || destroyed || !online) break;
         // Some bridges acknowledge before the requested move duration has elapsed.
         let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([hold.released,new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0,ms - (performance.now()-start))); })]);
@@ -179,6 +188,7 @@
       await stopping;
       movement = undefined;
       await observePosition();
+      if (!destroyed) onmovement?.();
       busy = false;
     }
   };
@@ -206,7 +216,7 @@
     positionWatch++;
     end(undefined,true);
     await stopMotor(true);
-    if (!busy) await observePosition();
+    if (!busy) { await observePosition(); if (!destroyed) onmovement?.(); }
   };
   const canSave = $derived(slot !== undefined && Number.isInteger(slot) && slot >= 0 && slot <= 255 && name.trim().length > 0 && new TextEncoder().encode(name.trim()).length <= 32);
   onDestroy(() => { destroyed = true; clearTimeout(recoveryTimer); cancel(); });
@@ -311,8 +321,8 @@
       {/if}
       {@const pos = reportedPosition?.receivedAt && position?.receivedAt && reportedPosition.receivedAt > position.receivedAt ? reportedPosition : position ?? reportedPosition}
       {#if ptz.read}
-        <p class="muted ptz-position">{t('position')} · {pos?.position.pan ?? t('empty-value')} / {pos?.position.tilt ?? t('empty-value')} / {pos?.position.zoom.position ?? t('empty-value')}
-          {#if pos?.receivedAt} · {new Date(pos.receivedAt).toLocaleTimeString()}{/if}
+        <p class="muted ptz-position">{t('position')} · {pos?.position.pan ?? t('empty-value')}, {pos?.position.tilt ?? t('empty-value')}, {pos?.position.zoom.position ?? t('empty-value')}
+          {#if pos?.receivedAt} · {formatLocalTime(new Date(pos.receivedAt))}{/if}
         </p>
       {/if}
     {/if}

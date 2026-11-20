@@ -14,7 +14,7 @@ import { Failure } from './errors.js';
 import { information } from './cameras.js';
 import { result } from './bridge.js';
 import { eventSourcesSchema } from './config.js';
-import { historyStorageInput } from '../shared/history.js';
+import { historyConnectionInput, historyStorageInput } from '../shared/history.js';
 import { bridgeConnections } from './bridge-configuration.js';
 import { record } from './bridge-channels.js';
 import { sendOutcome } from './camera-routes.js';
@@ -91,6 +91,11 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
   api.get(root + '/event-history', async request => {
     await runtime.admin({ request });
     return runtime.history.settings();
+  });
+  api.post(root + '/event-history/test', { bodyLimit: 131072 }, async request => {
+    await runtime.admin({ request, mutate: true });
+    const draft = input({ schema: historyConnectionInput, value: request.body });
+    return runtime.history.testConnection(draft, request.id);
   });
   api.put(root + '/appearance-defaults', async (request, reply) => {
     const { account } = await runtime.admin({ request, mutate: true });

@@ -1,3 +1,4 @@
+import { recordError } from './errors.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { FastifyInstance } from 'fastify';
@@ -138,6 +139,8 @@ export function presetRoutes({ api, cameras, runtime, sendOutcome }: {
             }
           }
         }
+        recordError({key:'PTZ_ARRIVAL_UNVERIFIED',caller:'presets::arrival',correlationId:correlation,
+          context:{camera:row.id,preset:presetId,knownTarget:!!saved,moved,stableSamples:stable,origin,last,target:saved?.position}});
         return {outcome:'unverified',reason:'PTZ_ARRIVAL_UNVERIFIED',bridgeCorrelationId:result({reply:move,write:true}).bridgeCorrelationId};
       }});
     if (!operation.data) return sendOutcome({reply,value:operation});

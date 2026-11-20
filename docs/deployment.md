@@ -151,6 +151,10 @@ The bridge checks `api.recordings.temporaryDirectory` before advertising playbac
 
 The bridge downloads and prepares a private temporary MP4 on first playback. Subsequent range reads use that cached clip. Camera credentials and native recording file names remain in the bridge. The player refreshes an expired recording reference once before retrying. Preparation failures show the bridge's safe failure stage and correlation references. Browser media loading begins only after the bridge has prepared a valid MP4 range. [Bridge recordings API](https://github.com/Slyke/reolink-bridge/blob/master/docs/api.md#sd-card-recordings)
 
+**Settings → Camera settings → Bandwidth and stream quality** reads each camera’s encoder profiles. Pick a stream to see its resolution, frame rate, video bitrate and any keyframe interval it supports. The camera supplies the available combinations for each resolution. Saving updates that camera profile for all clients. Access uses `settings.encoding.read` and `settings.encoding.write`.
+
+Dashboard live-view links include the WUI camera ID and stream. Opening a link requires the recipient’s own camera access. Changing quality updates the link and the signed-in user’s browser preference for that camera.
+
 **Settings → Camera settings → Image orientation** shows supported camera-side horizontal/vertical flip and clockwise/counterclockwise rotation controls. They require `settings.image.write` and use fresh camera reads followed by verified readback. Camera-admin grants include the image-setting permissions. Quarter-turn rotation requires an advertised camera range.
 
 In **Settings → Camera settings**, **SD recording schedule** edits hourly blocks for each recording type the device reports. Select a weekday in camera local time. **Time lapse** saves an MP4 or JPEG series with the capture interval and camera stream you select. New captures run daily until stopped. Both settings use native camera storage.

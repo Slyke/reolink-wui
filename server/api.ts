@@ -11,6 +11,9 @@ import { buildInfo, configureLogging, Failure, report } from './errors.js';
 import { Runtime, input, username, uuid } from './runtime.js';
 import { recordingRoutes } from './recording-routes.js';
 import { liveRoutes } from './live.js';
+import { encodingRoutes } from './encoding-routes.js';
+import { clockRoutes } from './clock-routes.js';
+import { displayRoutes } from './display-routes.js';
 import { networkRoutes } from './network-routes.js';
 import { cameraRoutes } from './camera-routes.js';
 import { adminRoutes } from './admin-routes.js';
@@ -104,6 +107,9 @@ export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions
 
   cameraRoutes({ api: app, path, runtime });
   networkRoutes({ api: app, path, runtime });
+  displayRoutes({ api: app, path, runtime });
+  encodingRoutes({ api: app, path, runtime });
+  clockRoutes({ api: app, path, runtime });
   adminRoutes({ api: app, path, runtime });
   bridgeSettingsRoutes({ api: app, path, runtime });
   enrollmentRoutes({ api: app, path, runtime });

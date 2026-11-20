@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { CameraNetwork, RtspSettings } from '../../shared/network.js';
+  import type { CameraNetwork, NetworkInterface, RtspSettings } from '../../shared/network.js';
   import { validWifiName, validWifiPassword } from '../../shared/network.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
   import SettingsDisclosure from './SettingsDisclosure.svelte';
@@ -48,6 +48,17 @@
     } catch (err) {rtspError=errorText(err);rtsp=undefined;choice=undefined;}
     finally {rtspBusy=false;}
   }
+  async function switchWifi(enabled:boolean) {
+    if (!access.write || !network?.wifiSwitchAvailable || busy || rtspBusy || !confirm(t(enabled?'network-reconnect-confirm':'network-disconnect-confirm'))) return;
+    busy=true;error='';message='';
+    try {
+      const result=await api<Outcome>({path:base+'/network/wifi',method:'PUT',csrf,body:{operationId:operationId(),enabled,confirmation:true}});
+      if(result.outcome==='confirmed') message=outcomeText(result); else error=outcomeText(result);
+      const fresh=await api<CameraNetwork>({path:base+'/network'});
+      network=fresh;
+    } catch(err){error=errorText(err);}
+    finally{busy=false;}
+  }
   export function working() { return busy || rtspBusy; }
   function toggle(show: boolean) {
     expanded = show;
@@ -66,6 +77,16 @@
     finally {password='';busy=false;}
   }
 </script>
+
+{#snippet facts(info:NetworkInterface)}
+  <dl class="network-facts">
+    <dt>{t('network-interface-status')}</dt><dd>{info.active ? t('network-active-link') : info.enabled===false ? t('network-disabled') : info.enabled ? t('network-enabled') : info.active===false ? t('network-standby') : '—'}</dd>
+    <dt>{t('network-ip')}</dt><dd>{info.addresses.join(', ') || t('network-ip-unreported')}</dd>
+    {#if info.dhcp!==null}<dt>{t('network-addressing')}</dt><dd>{info.dhcp ? 'DHCP' : t('network-static')}</dd>{/if}
+    {#if info.active && network?.link?.netmask}<dt>{t('network-netmask')}</dt><dd>{network.link.netmask}</dd>{/if}
+    {#if info.active && network?.link?.gateway}<dt>{t('network-gateway')}</dt><dd>{network.link.gateway}</dd>{/if}
+  </dl>
+{/snippet}
 
 <SettingsDisclosure title={t('camera-network')} ontoggle={toggle}>
   {#if !access.available}
@@ -90,15 +111,31 @@
         {#if rtspMessage}<p role="status">{rtspMessage}</p>{/if}
       </fieldset>
     {/if}
-    {#if network?.link}
-      <dl class="network-facts">
-        {#if network.link.address}<dt>{t('network-wired-address')}</dt><dd>{network.link.address}</dd>{/if}
-        {#if network.link.netmask}<dt>{t('network-netmask')}</dt><dd>{network.link.netmask}</dd>{/if}
-        {#if network.link.gateway}<dt>{t('network-gateway')}</dt><dd>{network.link.gateway}</dd>{/if}
-        {#if network.link.dhcp != null}<dt>{t('network-addressing')}</dt><dd>{network.link.dhcp ? 'DHCP' : t('network-static')}</dd>{/if}
-      </dl>
+    {#if network?.link?.address && !network.interfaces?.wifi?.active && !network.interfaces?.ethernet?.active}
+      <dl class="network-facts"><dt>{t('network-camera-ip')}</dt><dd>{network.link.address}</dd></dl>
     {/if}
-    <fieldset class="stack"><legend>{t('network-wifi')}</legend>
+    {#if network?.interfaces?.ethernet}
+      <SettingsDisclosure title={t('network-ethernet')} open>
+        {@render facts(network.interfaces.ethernet)}
+      </SettingsDisclosure>
+    {/if}
+    {#if network?.interfaces?.wifi || network?.wifi || !access.read && canEdit}
+      <SettingsDisclosure title={t('network-wifi')} open>
+      {#if network?.interfaces?.wifi}
+        {@render facts(network.interfaces.wifi)}
+        {#if network.interfaces.wifi.enabled !== false}
+          <dl class="network-facts">
+            {#if network.wifiStatus?.associated!=null}
+              <dt>{t('network-wifi-association')}</dt><dd>{network.wifiStatus.associated ? network.wifiStatus.ssid || t('network-associated') : t('network-disassociated')}</dd>
+            {/if}
+            {#if network.wifiSignal!=null}
+              <dt>{t('network-signal')}</dt><dd>{network.wifiSignal<0 ? network.wifiSignal+' dBm' : t('network-signal-raw',{value:network.wifiSignal})}</dd>
+            {:else if network.wifiStatus?.signal}
+              <dt>{t('network-signal')}</dt><dd>{network.wifiStatus.signal}</dd>
+            {/if}
+          </dl>
+        {/if}
+      {/if}
       {#if network?.wifi?.ssid}<p>{t('network-current-ssid', {name:network.wifi.ssid})}</p>{/if}
       {#if canEdit}
         <form class="stack" onsubmit={event=>{event.preventDefault();void save();}}>
@@ -114,9 +151,16 @@
       {:else if network && !network.wifi?.configurable}
         <p class="muted">{t('network-no-wifi')}</p>
       {/if}
-      {#if message}<p role="status">{message}</p>{/if}
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
-    </fieldset>
+      {#if access.write && network?.wifiSwitchAvailable && network.interfaces?.wifi?.enabled != null}
+        {@const enabled=network.interfaces.wifi.enabled}
+        <div class="row"><button type="button" disabled={busy || rtspBusy} onclick={()=>switchWifi(!enabled)}>{t(enabled?'network-disconnect':'network-reconnect')}</button></div>
+      {:else if access.write && network?.interfaces?.ethernet && network?.interfaces?.wifi?.enabled!==false}
+        <p class="muted">{t(network.interfaces.ethernet.active?'network-no-switch':'network-disconnect-requires-lan')}</p>
+      {/if}
+      </SettingsDisclosure>
+    {/if}
+    {#if message}<p role="status">{message}</p>{/if}
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if access.read}<div class="row"><button disabled={busy || rtspBusy} onclick={refresh}>{t('network-reload')}</button></div>{/if}
     {#if busy}<p role="status">{t('loading')}</p>{/if}
   {/if}

@@ -3,11 +3,12 @@
   import { api, errorText, t } from '$lib/api.js';
   import ConnectionTls from '$lib/ConnectionTls.svelte';
   import SearchSelect from '$lib/SearchSelect.svelte';
-  import { useAdministration } from '$lib/workspace.js';
+  import { useAdministration, useWorkspace } from '$lib/workspace.js';
   import { maxEventRetention } from '../../../../../../shared/events.js';
-  import type { HistorySettings, HistoryStorage } from '../../../../../../shared/history.js';
+  import type { HistorySettings, HistoryStorage, ValkeyTestResult } from '../../../../../../shared/history.js';
 
   const admin = useAdministration();
+  const workspace = useWorkspace();
   let settings = $state<HistorySettings>();
   let mode = $state<HistoryStorage['mode']>('defaults');
   let limit = $state<number>();
@@ -17,6 +18,34 @@
   const memorySelected = $derived(mode === 'memory' || (mode === 'defaults' && settings?.defaults.backend === 'memory'));
   let passwordConfigured = $state(false), clearPassword = $state(false);
   let error = $state(''), loading = $state(true);
+  const connection = $derived({
+    url: endpoint, rejectUnauthorized: verify,
+    ...(ca.trim() ? { ca: ca.trim() } : {}),
+    ...(clearPassword || password ? { password: clearPassword ? '' : password } : {})
+  });
+  const testDraft = $derived(mode === 'valkey' ? { mode, valkey: connection } :
+    mode === 'defaults' && settings?.defaults.backend === 'valkey' ? { mode } : undefined);
+  let testing = $state(false);
+  let feedback = $state<{ text: string; failed: boolean }>();
+  $effect(() => { void testDraft; feedback = undefined; });
+
+  const testConnection = async () => {
+    const draft = testDraft;
+    if (!draft || testing) return;
+    testing = true;
+    feedback = undefined;
+    try {
+      const result = await api<ValkeyTestResult>({
+        path: '/api/v1/admin/event-history/test', method: 'POST', body: draft, csrf: workspace.current().csrf
+      });
+      if (draft === testDraft) feedback = result.connected
+        ? { text: t('history-test-passed', { ms: result.elapsedMs }), failed: false }
+        : { text: t('history-test-' + result.failure), failed: true };
+    } catch (err) {
+      if (draft === testDraft) feedback = { text: errorText(err), failed: true };
+    } finally { testing = false; }
+  };
+
   const load = async () => {
     loading = true;
     try {
@@ -43,9 +72,7 @@
   const save = async () => {
     if (limit === undefined) return;
     const storage = mode === 'valkey' ? {
-      mode, valkey: { url: endpoint, keyPrefix, rejectUnauthorized: verify,
-        maxEvents: countEnabled ? maxEvents : null, ttlSeconds: timeoutEnabled ? ttlSeconds : null, ...(ca.trim() ? { ca: ca.trim() } : {}),
-        ...(clearPassword || password ? { password: clearPassword ? '' : password } : {}) }
+      mode, valkey: { ...connection, keyPrefix, maxEvents: countEnabled ? maxEvents : null, ttlSeconds: timeoutEnabled ? ttlSeconds : null }
     } : { mode };
     if (await admin.mutate({ suffix: '/event-history', method: 'PUT', body: { limit, storage } })) await load();
   };
@@ -102,7 +129,15 @@
       <p class="row"><span>{t('history-backend-' + settings.backend)}</span>
         <span class="pill" data-status={settings.connected ? 'online' : 'offline'}>{t(settings.connected ? 'online' : 'offline')}</span>
       </p>
-      <div class="row"><button class="primary" disabled={admin.busy() || (mode === 'valkey' && !countEnabled && !timeoutEnabled)}>{t('save')}</button></div>
+      <div class="row">
+        <button class="primary" disabled={admin.busy() || testing || (mode === 'valkey' && !countEnabled && !timeoutEnabled)}>{t('save')}</button>
+        {#if testDraft}
+          <button type="button" onclick={testConnection} disabled={admin.busy() || testing || (mode === 'valkey' && !endpoint.trim())}>
+            {t(testing ? 'history-testing' : 'history-test')}
+          </button>
+        {/if}
+      </div>
+      {#if feedback}<p class:error={feedback.failed} role={feedback.failed ? 'alert' : 'status'}>{feedback.text}</p>{/if}
     </form>
   {:else}<div class="row"><button onclick={load}>{t('refresh')}</button></div>{/if}
 </section>

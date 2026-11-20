@@ -1,14 +1,26 @@
 import { z } from 'zod';
 import { defaultEventRetention, maxEventRetention } from './events.js';
 
-export const valkeySchema = z.strictObject({
+const valkeyConnection = z.strictObject({
   url: z.string().max(2048).url().transform(value => new URL(value)).refine(url =>
     !url.hash && !url.search && !!url.hostname && /^\/?\d*$/.test(url.pathname)
     && ['redis:', 'rediss:'].includes(url.protocol)
   ),
-  keyPrefix: z.string().max(80).regex(/^[a-zA-Z0-9:_-]+$/).default('reolink-wui'),
   ca: z.string().min(1).max(65_536).optional(),
-  rejectUnauthorized: z.boolean().default(true),
+  rejectUnauthorized: z.boolean().default(true)
+});
+const password = z.string().max(512).optional();
+export const historyConnectionInput = z.discriminatedUnion('mode', [
+  z.strictObject({ mode: z.literal('defaults') }),
+  z.strictObject({ mode: z.literal('valkey'), valkey: valkeyConnection.extend({ password }) })
+]);
+export type HistoryConnectionInput = z.infer<typeof historyConnectionInput>;
+export type ValkeyTestResult =
+  | { connected: true; elapsedMs: number }
+  | { connected: false; failure: 'authorization' | 'tls' | 'timeout' | 'dns' | 'database' | 'transport' };
+
+export const valkeySchema = valkeyConnection.extend({
+  keyPrefix: z.string().max(80).regex(/^[a-zA-Z0-9:_-]+$/).default('reolink-wui'),
   maxEvents: z.number().int().min(0).max(1_000_000).nullable().optional(),
   ttlSeconds: z.number().int().min(1).max(365 * 86400).nullable().optional()
 }).refine(value => value.maxEvents !== null || Boolean(value.ttlSeconds), {
@@ -29,7 +41,7 @@ export const historyStorageInput = z.discriminatedUnion('mode', [
   z.strictObject({ mode: z.literal('memory') }),
   z.strictObject({
     mode: z.literal('valkey'),
-    valkey: valkeySchema.safeExtend({ password: z.string().max(512).optional() })
+    valkey: valkeySchema.safeExtend({ password })
   })
 ]);
 export type HistoryConfig = z.infer<typeof eventHistorySchema>;
