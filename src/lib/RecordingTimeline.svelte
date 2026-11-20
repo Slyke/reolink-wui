@@ -1,18 +1,22 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { t } from './api.js';
+  import { timelineIndex, type TimelineCapture } from '../../shared/recording-timeline.js';
+  import type { TimelinePhoto } from '../../shared/recordings.js';
   import InfoTip from './InfoTip.svelte';
   import RecordingPreview from './RecordingPreview.svelte';
   import type { RecordingPreviews } from './recording-previews.js';
   import { recordingTime, type RecordingGroup } from '../../shared/recording-groups.js';
 
-  let { previews, warming, recordings, date, available, playable, highlighted, onhover, onselect, clockHint }: {
-    previews: RecordingPreviews; warming: boolean; recordings: RecordingGroup[]; date: string; available: boolean; playable: boolean;
+  let { previews, warming, recordings, photos, undatedCount, date, available, playable, highlighted, onhover, onselect, clockHint }: {
+    previews: RecordingPreviews; warming: boolean; recordings: RecordingGroup[]; photos: TimelinePhoto[]; undatedCount:number; date: string; available: boolean; playable: boolean;
     highlighted?: string; clockHint?:string; onhover: (id?: string) => void; onselect: (item: RecordingGroup, offsetMs: number) => void;
   } = $props();
   const day = $derived(recordingTime(date + 'T00:00:00'));
   let range = $state('fit');
-  const rangeStart = $derived(range === 'day' ? day : Math.max(day,Math.floor(recordingTime(recordings[0]?.start ?? date + 'T00:00:00') / 3_600_000) * 3_600_000));
-  const rangeEnd = $derived(range === 'day' ? day + 86_400_000 : Math.min(day + 86_400_000,Math.max(rangeStart + 3_600_000,Math.ceil(Math.max(...recordings.map(item => recordingTime(item.end))) / 3_600_000) * 3_600_000)));
+  const index = $derived(timelineIndex(recordings,photos));
+  const rangeStart = $derived(range === 'day' || undatedCount ? day : Math.max(day,Math.floor((Number.isFinite(index.first) ? index.first : day) / 3_600_000) * 3_600_000));
+  const rangeEnd = $derived(range === 'day' || undatedCount ? day + 86_400_000 : Math.min(day + 86_400_000,Math.max(rangeStart + 3_600_000,Math.ceil(index.last / 3_600_000) * 3_600_000)));
   const span = $derived(rangeEnd - rangeStart);
   let rail: HTMLDivElement;
   let railWidth = $state(0), visibility = $state<DocumentVisibilityState>();
@@ -22,34 +26,57 @@
     void previews.warm(recordings, rangeStart, rangeEnd, railWidth, controller.signal);
     return () => controller.abort();
   });
-  let hover = $state<{ item?: RecordingGroup; offsetMs: number; time: number; percent: number; cursor: number }>();
+  let hover = $state<{ raw:number; explicit?:RecordingGroup; percent:number; cursor:number }>();
   let pinned = $state(false);
   let touchPointer: number | undefined;
-  const byId = $derived(new Map(recordings.map(item => [item.id,item])));
+  const known = $derived(hover?.explicit ? {item:hover.explicit,time:recordingTime(hover.explicit.start),offsetMs:0}
+    : hover ? index.closest(hover.raw) : undefined);
+  const second = $derived(hover ? Math.floor((hover.raw-day)/1000) : -1);
+  const radius = $derived.by(() => {
+    if (!hover || !undatedCount || hover.explicit) return -1;
+    if (!known) return 86_399;
+    if ('item' in known && recordingTime(known.item.start) <= hover.raw && hover.raw < recordingTime(known.item.end)) return -1;
+    return Math.min(86_399,Math.ceil(Math.abs(known.time-hover.raw)/1000));
+  });
+  let resolved = $state<{second:number;radius:number;photo:TimelinePhoto|null}>();
+  $effect(() => {
+    const at = second, distance = radius, cache = previews;
+    if (at < 0 || distance < 0) return;
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const photo = await cache.nearestPhoto(at,distance,controller.signal);
+        if (!controller.signal.aborted) resolved = {second:at,radius:distance,photo};
+      } catch { if (!controller.signal.aborted) resolved = {second:at,radius:distance,photo:null}; }
+    },180);
+    return () => {clearTimeout(timer);controller.abort();};
+  });
+  const resolution = $derived(resolved && second === resolved.second && radius === resolved.radius ? resolved : undefined);
+  const capture = $derived.by((): TimelineCapture | undefined => {
+    const photo = resolution?.photo;
+    if (!photo || !hover) return known;
+    const time = recordingTime(photo.capturedAt);
+    return !known || Math.abs(time-hover.raw) < Math.abs(known.time-hover.raw) ? {photo,time} : known;
+  });
+  const selectedVideo = $derived(capture && 'item' in capture ? capture : undefined);
+  $effect(() => {
+    const id = selectedVideo?.item.id;
+    untrack(() => { if (highlighted !== id) onhover(id); });
+  });
   const position = (item: RecordingGroup) => Math.max(0, (recordingTime(item.start) - rangeStart) / span * 100);
-  const width = (item: RecordingGroup) => Math.min(100 - position(item), (recordingTime(item.end) - Math.max(rangeStart,recordingTime(item.start))) / span * 100);
-  const point = (item?: RecordingGroup, x?: number) => {
+  const width = (item: RecordingGroup) => Math.max(0, Math.min(100 - position(item), (recordingTime(item.end) - Math.max(rangeStart,recordingTime(item.start))) / span * 100));
+  const point = (raw: number, item?: RecordingGroup) => {
     const bounds = rail.getBoundingClientRect();
     if (!bounds.width) return;
-    const raw = x === undefined ? recordingTime(item!.start)
-      : rangeStart + Math.max(0,Math.min(1,(x - bounds.left) / bounds.width)) * span;
-    const start = item ? recordingTime(item.start) : 0;
-    const offsetMs = item ? Math.max(0, Math.floor(Math.min(raw-start,recordingTime(item.end)-start-1)/1000)*1000) : 0;
-    const time = item ? start + offsetMs : Math.min(rangeEnd-1,raw);
     const cursor = Math.max(0,Math.min(100,(raw-rangeStart)/span*100));
     const half = Math.min(50,Math.min(144,window.innerWidth * .35) / bounds.width * 100);
-    hover = { item, offsetMs, time, cursor, percent:Math.max(half,Math.min(100-half,cursor)) };
-    onhover(item?.id);
+    hover = { raw, explicit:item, cursor, percent:Math.max(half,Math.min(100-half,cursor)) };
   };
   const clear = () => { pinned = false; hover = undefined; onhover(); };
   const leave = () => { if (!pinned) clear(); };
   const scrub = (event: PointerEvent) => {
-    // Captured touch events keep their original target. Hit-test the rail at the
-    // finger's current x so narrow, visually enlarged segments remain reachable.
     const bounds = rail.getBoundingClientRect();
-    const x = Math.max(bounds.left+1,Math.min(bounds.right-1,event.clientX));
-    const segment = document.elementFromPoint(x,bounds.top+bounds.height/2)?.closest<HTMLElement>('.timeline-segment');
-    point(segment && rail.contains(segment) ? byId.get(segment.dataset.id!) : undefined,x);
+    if (bounds.width) point(Math.min(rangeEnd-1,rangeStart + Math.max(0,Math.min(1,(event.clientX-bounds.left)/bounds.width))*span));
   };
   const begin = (event: PointerEvent) => {
     if (event.pointerType === 'mouse' || !event.isPrimary || (event.target as Element).closest('.timeline-hover')) return;
@@ -65,8 +92,8 @@
     if (rail.hasPointerCapture(event.pointerId)) rail.releasePointerCapture(event.pointerId);
   };
   const jump = () => {
-    if (!playable || !hover?.item) return;
-    const {item,offsetMs} = hover;
+    if (!playable || !selectedVideo) return;
+    const {item,offsetMs} = selectedVideo;
     clear();
     onselect(item,offsetMs);
   };
@@ -86,32 +113,41 @@
     <div class="row timeline-legend"><span class="timeline-key busy"></span>{t('recording-busy')}<span class="timeline-key"></span>{t('recording-still')}</div>
   </div>
   <div class="timeline-rail" bind:this={rail} bind:clientWidth={railWidth} onpointerleave={leave} onpointerdown={begin}
-    onpointermove={event => {if (event.pointerId === touchPointer) scrub(event);}}
+    onpointerenter={event => {if (event.pointerType === 'mouse' && !pinned) scrub(event);}}
+    onpointermove={event => {if (event.pointerId === touchPointer || (event.pointerType === 'mouse' && !pinned)) scrub(event);}}
     onpointerup={finish} onpointercancel={finish} role="group" aria-label={t('recording-timeline')}>
-    {#each recordings as item (item.id)}
+    <input class="sr-only timeline-scrubber" type="range" min={rangeStart} max={rangeEnd-1} step="1000"
+      aria-label={t('timeline-scrub')} aria-valuetext={new Date(capture?.time ?? hover?.raw ?? rangeStart).toISOString().slice(11,19)} value={hover ? rangeStart+hover.cursor/100*span : rangeStart}
+      onfocus={event => point(event.currentTarget.valueAsNumber)} oninput={event => point(event.currentTarget.valueAsNumber)} onblur={leave} />
+    {#each recordings as item, i (item.id)}
       <button type="button" class="timeline-segment" data-id={item.id} data-highlighted={highlighted === item.id}
-        style:left={position(item) + '%'} style:width={width(item) + '%'} aria-disabled={!playable}
+        style:left={position(item) + '%'} style:width={width(item) + '%'}
+        style:min-width={recordings[i+1] ? 'min(3px, '+Math.max(0,position(recordings[i+1])-position(item))+'%)' : '3px'} aria-disabled={!playable}
         aria-label={t('recording-play-at', { time: item.start.replace('T',' ') })}
         title={item.start.slice(11) + '–' + item.end.slice(11)}
-        onpointerenter={event => { if (!pinned && event.pointerType === 'mouse') point(item,event.clientX); }}
-        onpointermove={event => { if (!pinned && event.pointerType === 'mouse') point(item,event.clientX); }}
-        onfocus={() => { if (!pinned) point(item); }} onblur={leave}
+        onfocus={() => { if (!pinned) point(recordingTime(item.start),item); }} onblur={leave}
         onclick={event => {
           if (!playable || (pinned && event.detail > 0)) return;
-          onselect(item,hover?.item?.id === item.id ? hover.offsetMs : 0);
+          if (event.detail > 0 && selectedVideo) onselect(selectedVideo.item,selectedVideo.offsetMs);
+          else if (!event.detail || !capture || 'item' in capture) onselect(item,0);
         }}></button>
     {/each}
     {#if hover}
       {#if pinned}<span class="timeline-cursor" style:left={hover.cursor + '%'} aria-hidden="true"></span>{/if}
       <div class="timeline-hover stack" class:pinned style:left={hover.percent + '%'} role={pinned ? 'group' : 'tooltip'}
         aria-label={pinned ? t('recording-timeline') : undefined}>
-        {#if hover.item}
-          <RecordingPreview {previews} recording={hover.item.id} {available} offsetMs={Math.max(0,hover.offsetMs - (recordingTime(hover.item.variants[0].start) - recordingTime(hover.item.start)))} eager />
+        {#if capture && 'photo' in capture}
+          <RecordingPreview {previews} recording={capture.photo.id} available photo eager />
+        {:else if selectedVideo}
+          {@const video = selectedVideo}
+          {@const variant = video.item.variants.find(v => recordingTime(v.start) <= video.time && video.time < recordingTime(v.end)) ?? video.item.variants[0]}
+          <RecordingPreview {previews} recording={variant.id} {available} offsetMs={Math.max(0,video.time-recordingTime(variant.start))} eager />
         {:else}
-          <span class="muted">{t('recording-still')}</span>
+          <div class="recording-preview"><span class="muted">{t(resolution ? 'recording-preview-failed' : 'loading')}</span></div>
         {/if}
-        <div class="row between"><time>{new Date(hover.time).toISOString().slice(11,19)}</time>
-          {#if pinned && hover.item && playable}<button type="button" onclick={jump}>{t('jump-recording')}</button>{/if}
+        <div class="row between"><time>{new Date(capture?.time ?? hover.raw).toISOString().slice(11,19)}</time>
+          {#if capture && 'photo' in capture}<small class="muted">{t('timeline-photo')}</small>{/if}
+          {#if pinned && selectedVideo && playable}<button type="button" onclick={jump}>{t('jump-recording')}</button>{/if}
         </div>
       </div>
     {/if}

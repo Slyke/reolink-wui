@@ -2,7 +2,7 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import yazl from 'yazl';
 import { z } from 'zod';
-import { recordingDate, recordingId, recordingsResponse } from '../shared/recordings.js';
+import { recordingDate, recordingPhotos, recordingsResponse } from '../shared/recordings.js';
 import { audit } from './db.js';
 import { Failure, report } from './errors.js';
 import { jsonResponse } from './net.js';
@@ -13,9 +13,6 @@ const querySchema = z.strictObject({
   kind: z.enum(['videos', 'photos']), date: recordingDate, from: time.optional(), to: time.optional(),
   download: z.literal('1').optional()
 }).refine(q => Boolean(q.from) === Boolean(q.to) && (!q.from || (q.kind === 'photos' && q.from <= q.to!)));
-const gallerySchema = z.object({ photos: z.array(z.object({
-  id: recordingId, capturedAt: z.string().regex(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d$/).nullable()
-})).max(20_000) });
 type Entry = { id: string; name: string; path: string; list: string };
 const safeTime = (stamp: string) => stamp.replaceAll(':', '-');
 const clock = (second: number) => new Date(second * 1000).toISOString().slice(11,19);
@@ -53,7 +50,7 @@ export function recordingExportRoute(api: FastifyInstance, base: string, runtime
       const params = new URLSearchParams({date:q.date});
       if (list === 'photos') {
         if (q.from && q.to) {params.set('from',q.from); params.set('to',q.to);}
-        const data = await parse(await read('/time-lapse/photos', '?' + params), gallerySchema);
+        const data = await parse(await read('/time-lapse/photos', '?' + params), recordingPhotos);
         return data.photos.map(p => ({
           id:p.id, list, path:'/time-lapse/photos/' + p.id,
           name:(p.capturedAt ? safeTime(p.capturedAt) : q.date) + '_' + p.id + '.png'

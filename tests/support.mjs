@@ -151,6 +151,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const networks = new Map();
   const displays = new Map();
   let displayRejection;
+  let photoExpired = false;
   const encoders = new Map();
   const clocks = new Map(), radios = new Map();
   let delayNextPreset = false;
@@ -477,12 +478,23 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     const gallery=new URL(req.url,'http://127.0.0.1');
     if (recordings && gallery.pathname.endsWith('/time-lapse/photos')) {
       const q=gallery.searchParams;
+      if (q.get('date')==='2026-11-18') {
+        const time='10:30:00';
+        const present=time >= (q.get('from')??'00:00:00') && time <= (q.get('to')??'23:59:59');
+        return res.end(JSON.stringify({photos:present?[{id:'3'.repeat(64),capturedAt:null}]:[]}));
+      }
       const photos=['09:15:00','12:45:00'].map((time,index)=>({time,id:String(index+1).repeat(64)}))
         .filter(photo=>q.get('date')==='2026-11-17' && photo.time >= (q.get('from')??'00:00:00') && photo.time <= (q.get('to')??'23:59:59'))
         .map(photo=>({id:photo.id,capturedAt:q.get('date')+'T'+photo.time}));
       return res.end(JSON.stringify({photos}));
     }
-    if (recordings && /\/time-lapse\/photos\/(?:1{64}|2{64})$/.test(gallery.pathname)) {
+    if (recordings && /\/time-lapse\/photos\/(?:1{64}|2{64}|3{64})$/.test(gallery.pathname)) {
+      if (gallery.searchParams.get('preview') === 'true') {
+        if (photoExpired) {photoExpired=false;res.statusCode=404;return res.end('{}');}
+        if (gallery.pathname.endsWith('1'.repeat(64))) {
+          res.writeHead(200,{'content-type':'image/jpeg','content-length':jpeg.length});return res.end(jpeg);
+        }
+      }
       const data=png();
       res.writeHead(200,{'content-type':'image/png','content-length':data.length}); return res.end(data);
     }
@@ -601,6 +613,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     delayNextPreset: () => {delayNextPreset = true;},
     setPresetList: entries => { presets.clear(); for (const [id,name] of entries) presets.set(id,name); },
     setPlaybackAvailable: value => { playbackAvailable = value; },
+    expireNextPhoto: () => {photoExpired=true;},
     setRecordingCount: value => { recordingCount = value; },
     setStorageFailure: value => { storageFailure = value; },
     setRecordingFailure: value => { playbackFailure = value; },

@@ -13,7 +13,7 @@
   import { groupRecordings, recordingTime, recordingVariant, type RecordingGroup } from '../../../../shared/recording-groups.js';
   import { recordingSize, recordingDuration, recordingKinds } from '$lib/recordings.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
-  import { recordingDate, recordingStream, type Recording, type RecordingList, type StorageInfo } from '../../../../shared/recordings.js';
+  import { recordingDate, recordingStream, type Recording, type RecordingList, type StorageInfo, type TimelinePhoto } from '../../../../shared/recordings.js';
 
   const fieldId = $props.id();
   let cameras = $state<Camera[]>([]);
@@ -21,8 +21,9 @@
   const linkedDate = $derived(recordingDate.safeParse(page.url.searchParams.get('date')).data);
   const linkedClip = $derived(page.url.searchParams.get('recording'));
   const linkedStream = $derived(recordingStream.safeParse(page.url.searchParams.get('stream')).data);
-  const selected = $derived(linkedCamera ?? cameras.find(item => item.capabilities.recordings)?.id ?? cameras[0]?.id ?? '');
+  const selected = $derived(linkedCamera ?? cameras.find(item => item.capabilities.recordings || item.capabilities.timeLapsePhotos)?.id ?? cameras[0]?.id ?? '');
   const camera = $derived(cameras.find(item => item.id === selected));
+  const canBrowse = $derived(Boolean(camera?.capabilities.recordings || camera?.capabilities.timeLapsePhotos));
   let storage = $state<StorageInfo>();
   const playbackAvailable = $derived(Boolean(storage?.playbackAvailable ?? camera?.capabilities.recordingPlayback));
   const clockComparison = $derived.by(() => {
@@ -36,7 +37,12 @@
   });
   const defaultStreams = ['sub', 'main'] as const;
   let listing = $state<{ date: string; recordings: RecordingGroup[]; truncated: boolean; partial: boolean }>();
-  const listedDate = $derived(listing?.date ?? '');
+  let gallery = $state<{date:string;photos:TimelinePhoto[];undatedCount:number}>();
+  let photoError = $state(''), photosLoading = $state(false);
+  const listedDate = $derived(listing?.date ?? gallery?.date ?? '');
+  const undatedCount = $derived(gallery?.date === listedDate ? gallery.undatedCount : 0);
+  const timelineVideos = $derived(listing?.recordings ?? []);
+  const timelinePhotos = $derived(gallery?.date === listedDate ? gallery.photos : []);
   const previews = $derived(new RecordingPreviews(selected, listedDate));
   $effect(() => {
     const cache = previews;
@@ -169,11 +175,24 @@
     const current = new AbortController();
     listController = current;
     const combined = signal ? AbortSignal.any([signal, current.signal]) : current.signal;
-    loading = true;
+    const id = selected, searchDate = date;
+    highlighted = undefined;
+    if (listing?.date !== searchDate) listing = undefined;
+    if (gallery?.date !== searchDate) gallery = undefined;
+    photoError = '';
+    photosLoading = Boolean(camera?.capabilities.timeLapsePhotos);
+    if (photosLoading) {
+      void api<{date:string;photos:TimelinePhoto[];undatedCount:number}>({path:'/api/v1/cameras/'+id+'/time-lapse/photos?date='+searchDate,signal:combined})
+        .then(result => { if (!combined.aborted && result.date === searchDate) gallery = result; })
+        .catch(err => { if (!combined.aborted) photoError = errorText(err); })
+        .finally(() => { if (!combined.aborted && listController === current) photosLoading = false; });
+    }
+    loading = Boolean(camera?.capabilities.recordings);
     pageNumber = 0;
     searchError = '';
+    if (!loading) return;
     try {
-      const next = await loadListing(combined);
+      const next = await loadListing(combined,searchDate);
       if (!combined.aborted) listing = next;
     } catch (err) {
       if (!combined.aborted) { listing = undefined; searchError = errorText(err); }
@@ -182,7 +201,7 @@
     }
   };
   const refresh = async () => {
-    if (!camera?.capabilities.recordings) return;
+    if (!canBrowse) return;
     controller?.abort();
     const current = new AbortController();
     controller = current;
@@ -193,6 +212,7 @@
     const searchedStreams = new Set(storage?.streams ?? defaultStreams);
     void search({ signal: current.signal });
     const startedSearch = listController;
+    if (!camera?.capabilities.recordings) { reading = false; return; }
     try {
       const next = await api<StorageInfo>({ path: '/api/v1/cameras/' + selected + '/storage', signal: current.signal });
       if (current.signal.aborted) return;
@@ -214,11 +234,12 @@
       if (controller === current) reading = false;
     }
   };
-  let loadedCamera: string | undefined, loadedSupport: boolean | undefined;
+  let loadedCamera: string | undefined, loadedSupport: string | undefined;
   $effect(() => {
-    const id = camera?.id, supported = camera?.capabilities.recordings, day = linkedDate;
+    const id = camera?.id, supported = canBrowse, day = linkedDate;
+    const support = [camera?.capabilities.recordings,camera?.capabilities.timeLapsePhotos].join('/');
     untrack(() => {
-      if (id === loadedCamera && supported === loadedSupport) {
+      if (id === loadedCamera && support === loadedSupport) {
         if (day && supported) {
           userSelectedDate = true;
           date = day;
@@ -226,11 +247,13 @@
         }
         return;
       }
-      loadedCamera = id; loadedSupport = supported;
+      loadedCamera = id; loadedSupport = support;
       controller?.abort();
       listController?.abort();
       storage = undefined;
       listing = undefined;
+      gallery = undefined;
+      photosLoading = false; photoError = '';
       date = day ?? '';
       userSelectedDate = Boolean(day);
       storageError = '';
@@ -267,6 +290,7 @@
       if (JSON.parse(event.data).kind !== 'access-changed') return;
       controller?.abort(); listController?.abort();
       previews.close();
+      gallery = undefined;
       listing = undefined;
       cameras = [];
       void listCameras();
@@ -281,7 +305,7 @@
 <section class="panel stack">
   <div class="row between panel-title">
     <h2>{t('recordings-camera')}</h2>
-    <button disabled={initial || reading || loading || !camera?.capabilities.recordings} onclick={refresh}>{t('refresh')}</button>
+    <button disabled={initial || reading || loading || photosLoading || !canBrowse} onclick={refresh}>{t('refresh')}</button>
   </div>
   {#if cameras.length}
     <SearchSelect label={t('camera-noun')} value={selected} onchange={({ value }) => { void navigate(listUrl(value), true); }} options={cameras.map((item, index) => ({
@@ -292,7 +316,7 @@
   {:else}
     <p class="muted">{t('no-cameras')}</p>
   {/if}
-  {#if camera && !camera.capabilities.recordings}<p class="muted">{t('recordings-unavailable')}</p>{/if}
+  {#if camera && !canBrowse}<p class="muted">{t('recordings-unavailable')}</p>{/if}
   {#if cameraError}<p role="alert" class="error">{cameraError}</p>{/if}
   {#if linkedClip && !initial && !cameraError && (!camera || !linkedDate || (!loading && listing && listing.date === linkedDate && !recording))}
     <p role="status" class="notice">{t('recording-link-unavailable')}</p>
@@ -329,7 +353,9 @@
       <p role="status">{t('loading')}</p>
     {/if}
   </section>
+{/if}
 
+{#if camera && canBrowse}
   <section class="panel stack" aria-labelledby="recording-list">
     <div class="row between panel-title">
       <h2 id="recording-list">{t('recordings')}</h2>
@@ -351,12 +377,18 @@
     {/if}
     {#if searchError}<p role="alert" class="error">{searchError}</p>{/if}
     {#if listing?.partial && !loading}<p class="notice">{t('recording-search-partial')}</p>{/if}
-    {#if !playbackAvailable}<p class="notice">{t('recording-workspace-unavailable')}</p>{/if}
-    {#if loading}
+    {#if !playbackAvailable && timelineVideos.length}<p class="notice">{t('recording-workspace-unavailable')}</p>{/if}
+    {#if photoError}<p role="alert" class="error">{t('timeline-photos-failed')} {photoError}</p>{/if}
+    {#if listedDate && (timelineVideos.length || timelinePhotos.length || undatedCount)}
+      {#key selected + '/' + listedDate}
+        <RecordingTimeline {previews} clockHint={clockComparison ? t('recording-clock-comparison',clockComparison) : undefined}
+          warming={!recording} recordings={timelineVideos} photos={timelinePhotos} {undatedCount} date={listedDate} available={Boolean(camera.capabilities.recordingPreview)}
+          playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
+      {/key}
+    {/if}
+    {#if loading || (photosLoading && !timelineVideos.length && !timelinePhotos.length)}
       <p role="status">{t('recordings-searching')}</p>
     {:else if listing?.recordings.length}
-      <RecordingTimeline {previews} clockHint={clockComparison ? t('recording-clock-comparison',clockComparison) : undefined} warming={!recording} recordings={listing.recordings} date={listing.date} available={Boolean(camera.capabilities.recordingPreview)}
-        playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
       <div class="row recording-list-controls">
         <div class="field">
           <label for={fieldId + '-time-order'}>{t('recording-time-order')}</label>
@@ -416,8 +448,8 @@
         <span>{t('recording-page-count', { page: pageNumber + 1, count: pageCount, total: listing.recordings.length })}</span>
         <button disabled={pageNumber + 1 >= pageCount} onclick={() => { pageNumber++; }}>{t('recording-page-next')}</button>
       </div>
-    {:else if listing}
-      <p class="muted">{t('recordings-empty')}</p>
+    {:else if !timelinePhotos.length && !undatedCount && (listing || gallery)}
+      <p class="muted">{t(camera.capabilities.timeLapsePhotos && !photoError ? 'timeline-empty' : 'recordings-empty')}</p>
     {/if}
     {#if listing?.truncated}<p class="notice">{t('recordings-truncated')}</p>{/if}
   </section>

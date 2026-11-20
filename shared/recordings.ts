@@ -8,6 +8,10 @@ export const recordingDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(valu
 });
 export const recordingStream = z.enum(['main', 'sub']);
 const wallTime = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+export const recordingPhotos = z.object({
+  photos:z.array(z.object({id:recordingId, capturedAt:wallTime.nullable()})).max(20_000)
+});
+export type TimelinePhoto = {id:string; capturedAt:string};
 export const storageResponse = z.object({
   cards: z.array(z.object({
     number: z.number().int().min(0), kind: z.enum(['sd', 'hdd']), mounted: z.boolean(), formatted: z.boolean(),

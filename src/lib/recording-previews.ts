@@ -1,4 +1,5 @@
-import { url } from './api.js';
+import { api, url } from './api.js';
+import type { TimelinePhoto } from '../../shared/recordings.js';
 import { recordingTime, type RecordingGroup } from '../../shared/recording-groups.js';
 import { RecordingPreviewCache, recordingPreviewLifetime, type RecordingFrame } from '../../shared/recording-preview-cache.js';
 
@@ -8,11 +9,15 @@ type Job = { result: Promise<Frame>; controller: AbortController; readers: numbe
 // One cache per camera on the signed-in Recordings page. Cards, table and timeline share it.
 export class RecordingPreviews extends RecordingPreviewCache<Blob> {
   private jobs = new Map<string, Job>();
+  private photoTimes = new Map<string, {photo:TimelinePhoto|null; expires:number}>();
 
   constructor(private camera: string, private date: string) { super(); }
 
   private async load(recording: string, offset: number, signal: AbortSignal, background: boolean) {
-    const path = url('/api/v1/cameras/' + this.camera + '/recordings/' + recording + '/preview?offsetMs=' + offset);
+    const resource = recording.startsWith('photo/')
+      ? '/time-lapse/photos/' + recording.slice(6) + '/preview?date=' + this.date
+      : '/recordings/' + recording + '/preview?offsetMs=' + offset;
+    const path = url('/api/v1/cameras/' + this.camera + resource);
     const response = await fetch(path, { signal, priority: background ? 'low' : 'auto' });
     if (!response.ok || response.headers.get('content-type')?.split(';')[0] !== 'image/jpeg') {
       await response.body?.cancel();
@@ -34,7 +39,7 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
     let job = this.jobs.get(key);
     if (!job || job.controller.signal.aborted) {
       const controller = new AbortController();
-      const result = this.load(recording, offset, AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)]), background);
+      const result = this.load(recording, offset, AbortSignal.any([controller.signal, AbortSignal.timeout(recording.startsWith('photo/') ? 140_000 : 45_000)]), background);
       job = { controller, result, readers: 0 };
       this.jobs.set(key, job);
     }
@@ -57,6 +62,18 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
     } finally { signal.removeEventListener('abort', release); release(); }
   }
 
+  async nearestPhoto(second:number,radius:number,signal:AbortSignal) {
+    const key = second+'/'+radius;
+    const hit = this.photoTimes.get(key);
+    if (hit && hit.expires > Date.now()) return hit.photo;
+    const query = new URLSearchParams({date:this.date,second:String(second),radius:String(radius)});
+    const {photo} = await api<{photo:TimelinePhoto|null}>({path:'/api/v1/cameras/'+this.camera+'/time-lapse/photos/nearest?'+query,signal});
+    signal.throwIfAborted();
+    if (this.photoTimes.size >= 1024) this.photoTimes.delete(this.photoTimes.keys().next().value!);
+    this.photoTimes.set(key,{photo,expires:Date.now()+recordingPreviewLifetime});
+    return photo;
+  }
+
   async warm(recordings: RecordingGroup[], start: number, end: number, width: number, signal: AbortSignal) {
     const until = Date.now() + recordingPreviewLifetime;
     const midnight = recordingTime(this.date + 'T00:00:00');
@@ -76,6 +93,7 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
   close() {
     for (const job of this.jobs.values()) job.controller.abort();
     this.jobs.clear();
+    this.photoTimes.clear();
     this.clear();
   }
 }

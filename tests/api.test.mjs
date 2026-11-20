@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { recordingGaps } from '../dist/shared/recording-groups.js';
+import { nearestUndatedPhoto } from '../dist/server/nearest-photo.js';
+import { timelineIndex } from '../dist/shared/recording-timeline.js';
+import { recordingTime, recordingGaps } from '../dist/shared/recording-groups.js';
 import { test } from 'node:test';
 import { createServer as tcp } from 'node:net';
 import { once } from 'node:events';
@@ -13,6 +15,33 @@ import { RecordingPreviewCache } from '../dist/shared/recording-preview-cache.js
 
 const envPg = process.env.WUI_TEST_POSTGRES;
 const dbs = [undefined, ...(envPg ? [{ driver:'postgres', url:envPg, tls:false }] : [])];
+
+test('the timeline picks the covering video or nearest saved capture in camera time', () => {
+  const stamp = minute => '2026-11-17T12:'+String(minute).padStart(2,'0')+':00';
+  const at = minute => recordingTime(stamp(minute));
+  const clip = (id,start,end) => ({id,start:stamp(start),end:stamp(end)});
+  const video = clip('long',1,9), nested = clip('nested',3,4), later = clip('late',25,27);
+  const a = {id:'still-a',capturedAt:stamp(2)}, b = {id:'still-b',capturedAt:stamp(15)};
+  const mixed = timelineIndex([later,video,nested],[b,a]);
+  assert.equal(mixed.closest(at(2)).item,video);
+  assert.equal(mixed.closest(at(3)).item,nested);
+  assert.equal(mixed.closest(at(6)).item,video);
+  assert.equal(mixed.closest(at(10)).time,at(9)-1000);
+  assert.equal(mixed.closest(at(14)).photo,b);
+  assert.equal(mixed.closest(at(24)).item,later);
+  const only = timelineIndex([],[b,a]);
+  assert.equal(only.closest(at(0)).photo,a);
+  assert.equal(only.closest(at(59)).photo,b);
+  assert.equal(timelineIndex([],[]).closest(at(0)),undefined);
+});
+
+test('undated photos need an independently verifiable capture second', async () => {
+  assert.equal(await nearestUndatedPhoto(10,100,async () => ['same-reply-for-every-window']),null);
+  const read = async (a,b) => [0,60,86_399].filter(t => a<=t && t<=b).map(String);
+  assert.deepEqual(await nearestUndatedPhoto(0,0,read),{id:'0',time:0});
+  assert.deepEqual(await nearestUndatedPhoto(30,40,read),{id:'0',time:0});
+  assert.deepEqual(await nearestUndatedPhoto(86_398,4,read),{id:'86399',time:86_399});
+});
 
 test('timeline frames expire after 600 seconds and fallback images belong to the selected clip', t => {
   t.mock.timers.enable({apis:['Date','setTimeout']});
@@ -953,6 +982,31 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal((await incoming({path:exportPath+'photos',headers:restricted})).statusCode,403);
   assert.equal((await incoming({path:exportPath+'photos&from=20:00:00&to=01:00:00',headers:privileged})).statusCode,400);
   assert.equal((await incoming({path:exportPath+'photos&from=00:00:00&to=01:00:00',headers:privileged})).json().count,0);
+  const gallery=root+'/time-lapse/photos';
+  const day='?date=2026-11-17';
+  const thumbnail=(id)=>gallery+'/'+id+'/preview'+day;
+  assert.equal((await incoming({path:gallery+day,headers:restricted})).statusCode,403);
+  assert.equal((await incoming({path:gallery+'?date=2026-02-30',headers:privileged})).statusCode,400);
+  await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','recordings.view']),viewer,camera.id);
+  const photoList=(await incoming({path:gallery+day,headers:restricted})).json();
+  assert.deepEqual(photoList.photos.map(p=>p.capturedAt),['2026-11-17T09:15:00','2026-11-17T12:45:00']);
+  assert.equal((await incoming({path:exportPath+'photos',headers:restricted})).statusCode,403);
+  fixture.expireNextPhoto();
+  for (const photo of photoList.photos) {
+    const image=await incoming({path:thumbnail(photo.id),headers:restricted});
+    assert.equal(image.statusCode,200);
+    assert.equal(image.headers['content-type'],'image/jpeg');
+    assert.equal(image.rawPayload.readUInt16BE(),0xffd8);
+  }
+  const legacy = (await incoming({path:gallery+'?date=2026-11-18',headers:restricted})).json();
+  assert.equal(legacy.undatedCount,1);
+  assert.equal(legacy.photos.length,0);
+  const find=async(second,radius)=>incoming({path:gallery+'/nearest?date=2026-11-18&second='+second+'&radius='+radius,headers:restricted});
+  assert.deepEqual((await find(37_806,20)).json().photo,{id:'3'.repeat(64),capturedAt:'2026-11-18T10:30:00'});
+  assert.equal((await find(37_806,2)).json().photo,null);
+  assert.equal((await incoming({path:gallery+'?date=2026-11-21',headers:restricted})).json().photos.length,0);
+  await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','media.live']),viewer,camera.id);
+  assert.equal((await incoming({path:thumbnail(photoList.photos[0].id),headers:restricted})).statusCode,403);
   const archive=async (kind,types) => {
     const answer=await incoming({path:exportPath+kind+'&download=1',headers:privileged});
     assert.equal(answer.statusCode,200,answer.statusCode===200?'':answer.body);

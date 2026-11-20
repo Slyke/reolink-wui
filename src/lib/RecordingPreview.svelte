@@ -3,13 +3,14 @@
   import { t } from './api.js';
   import type { RecordingPreviews } from './recording-previews.js';
 
-  let { previews, recording, available, offsetMs = 0, eager = false }: {
-    previews: RecordingPreviews; recording: string; available: boolean; offsetMs?: number; eager?: boolean
+  let { previews, recording, available, offsetMs = 0, eager = false, photo = false }: {
+    previews: RecordingPreviews; recording: string; available: boolean; offsetMs?: number; eager?: boolean; photo?: boolean
   } = $props();
   let element: HTMLDivElement;
   let visible = $state(false), failed = $state(false);
   let image = $state<{ cache: RecordingPreviews; recording: string; src: string; offset: number; jpeg: Blob }>();
-  const shown = $derived(available && image?.cache === previews && image.recording === recording ? image : undefined);
+  const cacheKey = $derived(photo ? 'photo/' + recording : recording);
+  const shown = $derived(available && image?.cache === previews && image.recording === cacheKey ? image : undefined);
   const seconds = $derived(shown ? Math.round((offsetMs - shown.offset) / 1000) : 0);
   onMount(() => {
     if (eager || typeof IntersectionObserver === 'undefined') { visible = true; return; }
@@ -20,7 +21,7 @@
     return () => observer.disconnect();
   });
   $effect(() => {
-    const id = recording, offset = offsetMs, cache = previews, timeline = eager;
+    const id = cacheKey, offset = offsetMs, cache = previews, timeline = eager;
     failed = false;
     if (!available || !visible) return;
     const controller = new AbortController();
@@ -36,7 +37,7 @@
       image = { cache, recording: id, src, offset: frame.offsetMs, jpeg: frame.jpeg };
     };
     const hit = cache.exact(id, offset);
-    const nearby = !hit && timeline ? cache.nearest(id, offset) : undefined;
+    const nearby = !hit && timeline && !photo ? cache.nearest(id, offset) : undefined;
     // Show a warm image immediately while a cold, exact hover waits for the pointer to settle.
     const first = hit ?? nearby;
     const display = first ? show(first).catch(() => { if (!controller.signal.aborted && hit) failed = true; }) : Promise.resolve();

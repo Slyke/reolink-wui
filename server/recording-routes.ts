@@ -9,16 +9,19 @@ import { jsonResponse, responseBytes } from './net.js';
 import { audit } from './db.js';
 import { correlationPattern } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
+import { nearestUndatedPhoto } from './nearest-photo.js';
+import { timeLapseThumbnail } from './time-lapse-thumbnail.js';
 import { recordingExportRoute } from './recording-export.js';
 import { RecordingPreviewCache } from '../shared/recording-preview-cache.js';
-import { recordingStages, recordingMetadataResponse, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
+import { recordingStages, recordingMetadataResponse, recordingPhotos, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
 
 const object = z.strictObject;
-const bridgeRead = async ({ bridge, stableId, path, search, correlation, schema, failureKey }: {
-  bridge: Bridge; stableId: string; path: string; search?: string; correlation: string; schema: z.ZodType;
+const bridgeRead = async <T>({ bridge, stableId, path, search, correlation, schema, failureKey, limit, timeoutMs = 48_000, signal }: {
+  bridge: Bridge; stableId: string; path: string; search?: string; correlation: string; schema: z.ZodType<T>; limit?: number; timeoutMs?: number; signal?: AbortSignal;
   failureKey: 'STORAGE_READ_FAILED' | 'RECORDING_SEARCH_FAILED'
 }) => {
-  const response = await bridge.api({ path, stableId, search, correlation, signal: AbortSignal.timeout(48_000) });
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const response = await bridge.api({ path, stableId, search, correlation, signal: signal ? AbortSignal.any([signal,deadline]) : deadline });
   if (!response.ok) {
     const body = record(await jsonResponse({ response, limit: 16_384 }).catch(() => ({})));
     const details = {
@@ -33,7 +36,7 @@ const bridgeRead = async ({ bridge, stableId, path, search, correlation, schema,
     const status = [503, 504].includes(response.status) ? response.status : 502;
     throw new Failure(failureKey, status, undefined, details);
   }
-  const parsed = schema.safeParse(await jsonResponse({ response }).catch(() => undefined));
+  const parsed = schema.safeParse(await jsonResponse({ response, limit }).catch(() => undefined));
   if (!parsed.success) throw new Failure(failureKey, 502);
   return parsed.data;
 };
@@ -58,6 +61,79 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     if (!result.bridge.hasStorage(result.row.routeId)) throw new Failure('UNSUPPORTED', 422);
     return result;
   };
+  const photoJobs = new Map<string, Promise<Buffer>>();
+  const photoCamera = async (request: Parameters<Runtime['camera']>[0]['request'], id: string) => {
+    const active = await runtime.camera({ request, id, permission:'recordings.view' });
+    if (!active.bridge.hasTimeLapsePhotos(active.row.routeId)) throw new Failure('UNSUPPORTED',422);
+    return active;
+  };
+  const photoDate = object({date:recordingDate});
+  const listPhotos = (bridge: Bridge, row: {remote_id:string; routeId:string}, date: string, correlation: string, window?: {from:string;to:string}, signal?:AbortSignal) =>
+    bridgeRead({bridge, stableId:row.remote_id, path:'/cameras/'+row.routeId+'/time-lapse/photos',
+      search:'?'+new URLSearchParams({date,...window}), correlation, signal, schema:recordingPhotos, failureKey:'RECORDING_SEARCH_FAILED',
+      limit:6 * 1024 * 1024, timeoutMs:65_000});
+  api.get<{ Params: {id:string} }>(root + '/time-lapse/photos', async request => {
+    const {date} = input({schema:photoDate,value:request.query});
+    const {bridge,row} = await photoCamera(request,request.params.id);
+    const {photos} = await listPhotos(bridge,row,date,request.id);
+    const active = await photoCamera(request,row.id);
+    if (active.bridge !== bridge || active.row.routeId !== row.routeId || active.row.remote_id !== row.remote_id) throw new Failure('CAMERA_UNKNOWN',404);
+    return {date, undatedCount:photos.filter(p => p.capturedAt === null).length, photos:photos.flatMap(({id,capturedAt}) => capturedAt?.startsWith(date+'T') ? [{id,capturedAt}] : [])};
+  });
+  let activePhotoLookups = 0;
+  api.get<{Params:{id:string}}>(root + '/time-lapse/photos/nearest',async (request,reply) => {
+    const seconds = z.coerce.number().int().min(0).max(86_399);
+    const {date,second,radius} = input({schema:photoDate.extend({second:seconds,radius:seconds}),value:request.query});
+    const {bridge,row} = await photoCamera(request,request.params.id);
+    if (activePhotoLookups >= 4) throw new Failure('MEDIA_UNAVAILABLE',503);
+    const canceled = new AbortController();
+    const signal = AbortSignal.any([canceled.signal,AbortSignal.timeout(60_000)]);
+    reply.raw.once('close',() => canceled.abort());
+    const clock = (value:number) => new Date(value*1000).toISOString().slice(11,19);
+    activePhotoLookups++;
+    try {
+      const match = await nearestUndatedPhoto(second,radius,async (from,to) => {
+        signal.throwIfAborted();
+        const {photos} = await listPhotos(bridge,row,date,request.id,{from:clock(from),to:clock(to)},signal);
+        return photos.filter(photo => photo.capturedAt === null).map(photo => photo.id);
+      });
+      const active = await photoCamera(request,row.id);
+      if (active.bridge !== bridge || active.row.routeId !== row.routeId || active.row.remote_id !== row.remote_id) throw new Failure('CAMERA_UNKNOWN',404);
+      return {photo:match ? {id:match.id,capturedAt:date+'T'+clock(match.time)} : null};
+    } finally { activePhotoLookups--; }
+  });
+  api.get<{ Params: {id:string; photo:string} }>(root + '/time-lapse/photos/:photo/preview', async (request,reply) => {
+    const {date} = input({schema:photoDate,value:request.query});
+    const id = input({schema:recordingId,value:request.params.photo});
+    const {bridge,row} = await photoCamera(request,request.params.id);
+    const key = [row.id,row.remote_id,row.routeId,'photo',date,id].join('/');
+    const hit = previews.exact(key,0);
+    if (hit) return reply.type('image/jpeg').send(hit.jpeg);
+    const load = async () => {
+      const read = () => bridge.api({stableId:row.remote_id,path:'/cameras/'+row.routeId+'/time-lapse/photos/'+id,
+        search:'?preview=true',correlation:request.id,signal:AbortSignal.timeout(65_000)});
+      let response = await read();
+      if (response.status === 404) {
+        await response.body?.cancel();
+        const {photos} = await listPhotos(bridge,row,date,request.id);
+        if (!photos.some(p => p.id === id && (p.capturedAt === null || p.capturedAt.startsWith(date+'T')))) throw new Failure('MEDIA_UNAVAILABLE',404);
+        response = await read();
+      }
+      if (!response.ok) throw await mediaFailure({response});
+      return timeLapseThumbnail(response);
+    };
+    let job = photoJobs.get(key);
+    if (!job) {
+      if (photoJobs.size >= 8) throw new Failure('MEDIA_UNAVAILABLE',503);
+      job = load().finally(() => photoJobs.delete(key));
+      photoJobs.set(key,job);
+    }
+    const jpeg = await job;
+    const active = await photoCamera(request,row.id);
+    if (active.bridge !== bridge || active.row.routeId !== row.routeId || active.row.remote_id !== row.remote_id) throw new Failure('CAMERA_UNKNOWN',404);
+    previews.store(key,0,{jpeg,offsetMs:0},jpeg.length);
+    return reply.type('image/jpeg').send(jpeg);
+  });
   api.get<{ Params: { id: string } }>(root + '/storage', async request => {
     const { bridge, row } = await camera(request, request.params.id);
     return bridgeRead({
