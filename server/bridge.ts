@@ -681,6 +681,11 @@ export const result = ({ reply, write }: { reply: Envelope; write: boolean }): A
   const bridgeCorrelationId = typeof reply.correlation_id === 'string' && correlationPattern.test(reply.correlation_id)
     ? reply.correlation_id : undefined;
   if (reply.ok !== true) {
+    if (reply.errorKey === 'CONTROL_TIME_LAPSE_REJECTED') {
+      const status = reply.cameraStatus;
+      return {outcome:'rejected', reason:'CAMERA_TIME_LAPSE_REJECTED', bridgeCorrelationId,
+        ...(typeof status === 'number' && Number.isInteger(status) && status >= 0 && status <= 65535 && {cameraStatus:status})};
+    }
     const known = !write || (typeof reply.errorKey === 'string' && rejectedBeforeWrite.has(reply.errorKey));
     return {
       outcome: known ? 'rejected' : 'unknown', bridgeCorrelationId,

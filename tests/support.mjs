@@ -150,7 +150,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const networks = new Map();
   const displays = new Map();
-  let displayRejection;
+  let displayRejection, lapseRejection;
   let photoExpired = false;
   const encoders = new Map();
   const clocks = new Map(), radios = new Map();
@@ -236,6 +236,11 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       writes++;
     }
     if (command.setting === 'time_lapse') {
+      if (lapseRejection) {
+        const cameraStatus = lapseRejection;
+        lapseRejection = undefined;
+        return {id,ok:false,correlation_id:uuid(),errorKey:'CONTROL_TIME_LAPSE_REJECTED',cameraStatus};
+      }
       const {setting, ...fields} = command;
       Object.assign(lapse, fields);
       if (fields.enabled) lapse.configured = true;
@@ -641,6 +646,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       await broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic,JSON.stringify(payload),{qos:1,retain:true});
     },
     rejectNextDisplay: cameraStatus => { displayRejection = {cameraStatus}; },
+    rejectNextTimeLapse: status => { lapseRejection = status; },
     setReportedLevels: levels => { brightness = levels.brightness; sensitivity = levels.sensitivity; },
     disconnect: broker.stop,
     disconnectWs: () => { socketOpen = false; wss?.clients.forEach(socket => socket.terminate()); },

@@ -33,6 +33,7 @@
   let drafts = $state<Partial<Record<Field, number | null>>>({});
   let lightDuration = $state(60);
   let busy = $state(false), reading = $state(false), message = $state(''), failed = $state(false);
+  let messageGroup = $state<SettingsGroup>();
   let inFlight: Promise<void> | undefined;
 
   const lights = $derived(values.spotlight?.spotlight);
@@ -81,11 +82,19 @@
     const groups = shown.filter(group => capabilities[group]?.read);
     const fresh = manual && online && camera.capabilities.freshSettings;
     reading = true;
-    if (manual) { message = t('pending'); failed = false; }
-    const reads = groups.map(group => read({ group, fresh }));
+    if (manual) { messageGroup = undefined; message = t('pending'); failed = false; }
+    const reads = groups.map(group => read({
+      group, fresh: fresh || (group === 'time_lapse' && online && camera.capabilities.freshSettings)
+    }));
     if (camera.capabilities.alerts.read) reads.push(read({ group: 'motion', alert: true, fresh: fresh && !groups.includes('motion') }));
     const pending = Promise.allSettled(reads).then(results => {
-      if (!manual) return;
+      if (!manual) {
+        const lapse = results[groups.indexOf('time_lapse')];
+        if (lapse?.status === 'rejected') {
+          messageGroup = 'time_lapse'; failed = true; message = errorText(lapse.reason);
+        }
+        return;
+      }
       const failure = results.find(result => result.status === 'rejected');
       failed = !!failure;
       message = failure ? errorText(failure.reason) : t('settings-refreshed');
@@ -113,14 +122,16 @@
 
   const change = async ({ group, fields, alert = false }: { group: SettingsGroup; fields: Record<string, unknown>; alert?: boolean }) => {
     if (disabled) return;
-    busy = true; message = t('pending'); failed = false;
+    busy = true; messageGroup = group; message = t('pending'); failed = false;
     try {
       const value = await api<Outcome>({
         path: base + (alert ? '/alerts/motion' : '/settings/' + group), method: 'PATCH', csrf,
         body: { operationId: operationId(), change: fields }
       });
-      message = outcomeText(value);
-      failed = ['rejected', 'unknown'].includes(value.outcome);
+      const rejection = value.reason === 'CAMERA_TIME_LAPSE_REJECTED' && value.cameraStatus !== undefined
+        ? t('lapse-camera-status', {status:value.cameraStatus}) : undefined;
+      message = outcomeText(value, rejection);
+      failed = ['rejected', 'unknown'].includes(value.outcome) || (group === 'time_lapse' && value.outcome === 'unverified');
       const received = value.data as Values | undefined;
       if (value.outcome === 'confirmed' && received) {
         if (alert && alertData) alertData = { ...alertData, values: { ...alertData.values, ...received } };
@@ -131,13 +142,19 @@
       }
     } catch (error) {
       message = errorText(error); failed = true;
-    } finally { busy = false; }
+    } finally {
+      if (failed && group === 'time_lapse' && online && capabilities.time_lapse?.read && camera.capabilities.freshSettings) {
+        try { await read({group, fresh:true}); }
+        catch (error) { message += ' ' + errorText(error); }
+      }
+      busy = false;
+    }
   };
 </script>
 
 {#if shown.length || camera.capabilities.imageOrientation || camera.capabilities.alerts.read || camera.capabilities.alerts.write}
   <SettingsDisclosure title={t('settings')} open>
-    {#if message}<p class:error={failed} role="status">{message}</p>{/if}
+    {#if message && messageGroup !== 'time_lapse'}<p class:error={failed} role="status">{message}</p>{/if}
     <div class="grid camera-settings-grid">
       {#each shown as group (group)}
         {@const caps = capabilities[group]}
@@ -241,6 +258,7 @@
                   save={fields => change({ group, fields })} />
               {/key}
             {:else}<p class="muted">{t('settings-not-read')}</p>{/if}
+            {#if message && messageGroup === group}<p class:error={failed} role={failed ? 'alert' : 'status'}>{message}</p>{/if}
           {:else if selectedClass}
             {@const type = selectedClass}
             {@const name = t(type)}

@@ -8,13 +8,13 @@
   let interval = $state(untrack(() => value.interval_seconds ?? 10));
   let format = $state(untrack(() => value.format ?? 'jpeg'));
   let stream = $state(untrack(() => value.stream ?? 'main'));
-  let overwrite = $state(untrack(() => value.overwrite === true));
+  let overwrite = $state(untrack(() => value.configured ? value.overwrite === true : true));
   const fields = $derived({
     ...(enabled !== value.enabled && { enabled }),
     ...(interval !== (value.interval_seconds ?? 10) && { interval_seconds: interval }),
     ...(format !== (value.format ?? 'jpeg') && { format }),
     ...(stream !== (value.stream ?? 'main') && { stream }),
-    ...(value.overwrite !== undefined && overwrite !== value.overwrite && { overwrite })
+    ...(value.overwrite !== undefined && (value.configured ? overwrite !== value.overwrite : enabled) && { overwrite })
   });
   const changed = $derived(Object.keys(fields).length > 0);
   const locked = $derived(!writable || disabled);

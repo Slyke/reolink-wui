@@ -789,6 +789,8 @@
   "reolink-wui-schedule-hours": "Recording hours (camera time) for {$day}",
   "reolink-wui-schedule-day-on": "Select all hours",
   "reolink-wui-schedule-day-off": "Clear day",
+  "reolink-wui-error-CAMERA_TIME_LAPSE_REJECTED": "The camera rejected the time-lapse settings.",
+  "reolink-wui-lapse-camera-status": "The camera rejected the time-lapse settings (status {$status}).",
   "reolink-wui-lapse-enabled": "Enable time lapse",
   "reolink-wui-lapse-interval": "Capture interval (seconds)",
   "reolink-wui-lapse-output": "Save as",
