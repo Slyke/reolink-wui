@@ -691,9 +691,10 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('option',{name:/Fixture bridge/}).click();
       await expect(page.getByText('remote-browser-callback',{exact:true})).toHaveCount(0);
       await page.goto(publicOrigin+'/settings/cameras?camera='+remoteCamera);
+      const sectionSummary=title=>page.getByRole('group',{name:title,exact:true}).locator(':scope > summary');
+      await sectionSummary('Image adjustments and day/night').click();
       await expect(page.getByRole('heading',{name:'Image orientation',exact:true})).toBeVisible();
       await expect(page.getByText('The connected bridge does not expose image orientation. Update reolink-bridge and refresh camera settings.')).toBeVisible();
-      const sectionSummary=title=>page.getByRole('group',{name:title,exact:true}).locator(':scope > summary');
       await sectionSummary('Recording and storage').click();
       const legacySchedule=page.getByRole('group',{name:'SD recording schedule',exact:true});
       await expect(legacySchedule).not.toHaveAttribute('open','');
@@ -853,7 +854,12 @@ for (const mode of ['browser','proxy']) {
       await expect(display.getByLabel('Camera name position',{exact:true})).toHaveValue('bottom-left');
       await expect(display.getByLabel('Camera name',{exact:true})).toHaveValue('Workshop');
       const imageOptions=page.getByRole('group',{name:'Image adjustments and day/night',exact:true});
+      const firstImagePanel=page.getByRole('group',{name:'Live view and image',exact:true}).locator(':scope > .stack > :first-child');
+      await expect(firstImagePanel.getByRole('heading',{name:'Spotlight',exact:true})).toBeVisible();
+      await expect(firstImagePanel.getByRole('heading',{name:'LEDs',exact:true})).toBeVisible();
+      await expect(page.getByRole('heading',{name:'Image orientation',exact:true})).toBeHidden();
       await imageOptions.locator(':scope > summary').click();
+      await expect(imageOptions.getByRole('heading',{name:'Image orientation',exact:true})).toBeVisible();
       const pictureForm=imageOptions.locator('form').filter({has:page.getByLabel('Image brightness',{exact:true})});
       await expect(pictureForm.getByLabel('Image brightness')).toHaveValue('128');
       await pictureForm.getByLabel('Day/night mode').selectOption('color');
@@ -1019,6 +1025,25 @@ for (const mode of ['browser','proxy']) {
       await expect(rotationPanel.getByRole('status')).toContainText(/restart/i);
       await expect(rotationPanel.getByRole('button',{name:'Rotate credential'})).toBeDisabled();
       await sectionSummary('Detection and alerts').click();
+      await sectionSummary('FTP uploads').click();
+      const ftp=page.getByRole('group',{name:'FTP uploads',exact:true});
+      await ftp.getByLabel('FTP server',{exact:true}).fill('uploads.example.test');
+      await ftp.getByLabel('FTP port',{exact:true}).fill('2121');
+      await ftp.getByLabel('FTP username',{exact:true}).fill('camera');
+      await ftp.getByLabel('FTP password',{exact:true}).fill('fixture-browser-only');
+      await ftp.getByLabel('Remote directory',{exact:true}).fill('/security');
+      await ftp.getByLabel('Require encrypted FTP (FTPS)').check();
+      await ftp.getByRole('button',{name:'Save FTP destination'}).click();
+      await expect(ftp.getByRole('status')).toContainText('Confirmed');
+      await expect(ftp.getByLabel('FTP password',{exact:true})).toHaveValue('');
+      await ftp.getByLabel('Enable camera FTP uploads').check();
+      await ftp.getByRole('button',{name:'Save upload setting'}).click();
+      await expect(ftp.getByRole('button',{name:'Save upload setting'})).toBeDisabled();
+      await ftp.getByRole('button',{name:'Reload FTP settings'}).click();
+      await expect(ftp.getByLabel('FTP server',{exact:true})).toHaveValue('uploads.example.test');
+      await expect(ftp.getByLabel('Enable camera FTP uploads')).toBeChecked();
+      await expect(ftp.getByLabel('FTP password',{exact:true})).toHaveValue('');
+      await sectionSummary('FTP uploads').click();
       const detectionType = page.getByRole('combobox',{name:'Detection type'});
       await detectionType.selectOption('pet');
       const petSettings = page.getByRole('group',{name:'Pet detection settings'});
@@ -1164,6 +1189,7 @@ for (const mode of ['browser','proxy']) {
       await expect(fixtureRows.getByText('Online',{exact:true})).toHaveCount(3);
 
       await page.goto(publicOrigin+'/settings/cameras?camera='+camera.id);
+      await sectionSummary('Image adjustments and day/night').click();
       const orientationPanel=page.locator('article').filter({has:page.getByRole('heading',{name:'Image orientation',exact:true})});
       await expect(orientationPanel).toBeVisible();
       await orientationPanel.getByRole('button',{name:'Flip horizontally',exact:true}).click();

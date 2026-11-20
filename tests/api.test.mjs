@@ -1116,6 +1116,33 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.equal(result.cameraStatus,403);
     assert.equal(result.bridgeCorrelationId,deniedOverlay.bridgeCorrelationId);
   }
+  const ftpPath=root+'/ftp';
+  const changeFtp=(fields,headers=privileged,operationId=uuid())=>incoming({path:ftpPath,method:'PUT',headers,payload:{operationId,fields}});
+  assert.equal((await incoming({path:ftpPath,headers:restricted})).statusCode,403);
+  assert.equal((await changeFtp({port:2121},restricted)).statusCode,403);
+  assert.equal((await changeFtp({port:65536})).statusCode,400);
+  assert.equal((await changeFtp({unexpected:true})).statusCode,400);
+  const ftpSecret='private-fixture-FTP-password',ftpOp=uuid();
+  const ftpIntent={server:'camera-backup.example.test',port:2121,username:'camera',remoteDirectory:'/clips',ftpsOnly:true,password:ftpSecret};
+  for(let i=0;i<2;i++){
+    const response=await changeFtp(ftpIntent,privileged,ftpOp);
+    assert.equal(response.statusCode,200,response.body);
+    assert.equal(response.json().outcome,'confirmed');
+    if(i===0)assert.equal(response.json().data.fields.port,2121);
+    else assert.equal(response.json().data,undefined);
+    assert.ok(!response.body.includes(ftpSecret));
+  }
+  assert.equal((await changeFtp({...ftpIntent,password:'other'},privileged,ftpOp)).statusCode,409);
+  const ftpRead=await incoming({path:ftpPath,headers:privileged});
+  assert.equal(ftpRead.json().supported,true);
+  assert.equal(ftpRead.json().passwordStored,true);
+  assert.equal(ftpRead.json().fields.password,undefined);
+  assert.ok(!ftpRead.body.includes(ftpSecret));
+  assert.ok(!JSON.stringify(await runtime.sql.query('SELECT * FROM operations WHERE id=$1',ftpOp)).includes(ftpSecret));
+  assert.equal((await changeFtp({remoteDirectory:'/new'})).json().data.passwordStored,true);
+  assert.equal((await changeFtp({password:''})).json().data.passwordStored,false);
+  const [ftpUnsupported]=await runtime.sql.query('SELECT id FROM cameras WHERE remote_id=$1','beta');
+  assert.deepEqual((await incoming({path:'/cameras/'+ftpUnsupported.id+'/ftp',headers:privileged})).json(),{supported:false});
   const optionPath=root+'/options/';
   const saveOptions=(group,fields,headers=privileged,operationId=uuid())=>incoming({path:optionPath+group,method:'PUT',headers,payload:{operationId,fields}});
   assert.equal((await incoming({path:optionPath+'picture',headers:restricted})).statusCode,403);

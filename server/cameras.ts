@@ -216,6 +216,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
   return {
     discovered: !!caps,
     imageOrientation,
+    ftpDestination: bridge.has('ftpDestination') && !!deviceOptionAccess('ftp'),
     events: grant.has('events'),
     recordings: grant.has('recordings.view') && bridge.hasStorage(remote),
     recordingExport: grant.has('recordings.export') && grant.has('recordings.view') && bridge.hasRecordings(remote),

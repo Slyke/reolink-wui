@@ -371,7 +371,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
+      version:1, ftpDestination:imageSettings, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
       mediaFileCameras:inventory, previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -389,6 +389,20 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
     if (req.url.startsWith('/api/cameras/'+cameraId+'/options/')) {
       const group=req.url.split('/').at(-1);
+      if(group==='ftpDestination'){
+        if(cameraId!=='alpha'){res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_UNSUPPORTED'}));}
+        const fields=deviceOptions.get(req.url) ?? {server:'',port:21,username:'',remoteDirectory:'',anonymous:false,ftpsOnly:false,password:''};
+        if(req.method==='PUT'){
+          const change=(await read(req)).fields;
+          if(fields.password && !Object.hasOwn(change,'password') && ['server','port'].some(key=>Object.hasOwn(change,key) && change[key]!==fields[key])){
+            res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_INVALID'}));
+          }
+          Object.assign(fields,change);deviceOptions.set(req.url,fields);
+        }
+        // Include a spurious private field to verify that the WUI's own projection strips it.
+        return res.end(JSON.stringify({fields,password:fields.password,passwordStored:!!fields.password,passwordMaxLength:127,
+          ...(req.method==='PUT' && {outcome:'confirmed',correlation_id:req.headers['x-correlation-id']})}));
+      }
       const defaults={
         picture:{brightness:{value:128,min:0,max:255},contrast:{value:120,min:0,max:255},dayNight:{value:'auto',choices:['auto','color','blackAndWhite']}},
         threshold:{switchThreshold:{value:45,min:0,max:255}},

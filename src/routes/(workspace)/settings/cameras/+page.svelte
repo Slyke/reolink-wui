@@ -7,6 +7,7 @@
   import SearchSelect from '$lib/SearchSelect.svelte';
   import type { SettingsGroup } from '../../../../../shared/access.js';
   import SettingsDisclosure from '$lib/SettingsDisclosure.svelte';
+  import CameraFtp from '$lib/CameraFtp.svelte';
   import CameraOptions from '$lib/CameraOptions.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import MediaRetention from '$lib/MediaRetention.svelte';
@@ -25,11 +26,11 @@
   let busy = $state(true);
   let error = $state('');
   type Panel = { refresh: () => Promise<unknown>; working: () => boolean };
-  let liveSettings = $state<Panel>(), detectionSettings = $state<Panel>(), recordingSettings = $state<Panel>();
+  let lights = $state<Panel>(), orientation = $state<Panel>(), detectionSettings = $state<Panel>(), recordingSettings = $state<Panel>();
   let picture = $state<Panel>(), sound = $state<Panel>(), mic = $state<Panel>(), privacy = $state<Panel>();
-  let tracking = $state<Panel>(), siren = $state<Panel>(), delivery = $state<Panel>();
+  let tracking = $state<Panel>(), siren = $state<Panel>(), delivery = $state<Panel>(), ftp = $state<Panel>();
   let refreshed = $state(false);
-  const liveGroups = ['image','spotlight','leds'] as const, detectionGroups = ['motion','ai'] as const;
+  const lightGroups = ['spotlight','leds'] as const, detectionGroups = ['motion','ai'] as const;
   let schedule = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let retention = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let playback = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
@@ -38,7 +39,7 @@
   let display = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let network = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let rotation = $state<{ setStatus: (status: string) => void }>();
-  const panels = $derived([liveSettings,detectionSettings,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,schedule,retention,playback,encoding,clock,display,network]);
+  const panels = $derived([lights,orientation,detectionSettings,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,ftp,schedule,retention,playback,encoding,clock,display,network]);
   const camera = $derived(cameras.find(item => item.id === selected));
   const admin = $derived(workspace.current().user.admin);
   function visible(groups:readonly SettingsGroup[]) {
@@ -100,7 +101,8 @@
   {@const scheduleAccess = camera.capabilities.settings.recording_schedule}
   {@const caps = camera.capabilities}
   {@const csrf = workspace.current().csrf}
-  {@const live = admin || visible(liveGroups) || caps.imageOrientation || caps.encoding.read || caps.encoding.write || caps.display.read || caps.options.picture || caps.options.sound || caps.options.privacy}
+  {@const showOrientation = visible(['image']) || !!caps.imageOrientation}
+  {@const live = admin || visible(lightGroups) || showOrientation || caps.encoding.read || caps.encoding.write || caps.display.read || caps.options.picture || caps.options.sound || caps.options.privacy}
   {@const detection = visible(detectionGroups) || caps.alerts.read || caps.alerts.write || caps.options.tracking || caps.options.siren || caps.options.delivery}
   {@const connectivity = caps.network.read || caps.network.write || caps.clock.read || caps.clock.write}
   {@const accounts = caps.cameraUsers || caps.rotate}
@@ -108,21 +110,26 @@
   {#key camera.id}
     {#if live}
       <SettingsDisclosure title={t('settings-live-image')} open>
+        <SettingsPanel bind:this={lights} {camera} {base} {csrf} {online} groups={lightGroups}/>
+        {#if showOrientation || caps.options.picture}
+          <CameraOptions bind:this={picture} {base} {csrf} {online} group="picture" linked={['threshold']} title="device-picture-title" access={caps.options.picture}>
+            {#if showOrientation}<SettingsPanel bind:this={orientation} {camera} {base} {csrf} {online} groups={['image']}/>{/if}
+          </CameraOptions>
+        {/if}
         {#if admin}<PlaybackSettings bind:this={playback} {base} bridgePreview={caps.bridgePreview} {csrf}/>{/if}
         {#if caps.encoding.read || caps.encoding.write}<CameraEncoding bind:this={encoding} {base} {csrf} access={caps.encoding}/>{/if}
         {#if caps.display.read}<CameraDisplay bind:this={display} {base} {csrf} available={caps.display.available}
           writable={caps.display.write && online} onrename={() => void refresh()}/>{/if}
-        {#if caps.options.picture}<CameraOptions bind:this={picture} {base} {csrf} {online} group="picture" linked={['threshold']} title="device-picture-title" access={caps.options.picture}/>{/if}
         {#if caps.options.sound}<CameraOptions bind:this={sound} {base} {csrf} {online} group="sound" access={caps.options.sound}/>{/if}
         {#if caps.options.privacy}<CameraOptions bind:this={privacy} {base} {csrf} {online} group="privacy" access={caps.options.privacy}/>{/if}
-        <SettingsPanel bind:this={liveSettings} {camera} {base} {csrf} {online} groups={liveGroups}/>
       </SettingsDisclosure>
     {/if}
     {#if detection}
       <SettingsDisclosure title={t('settings-detection-alerts')}>
         <SettingsPanel bind:this={detectionSettings} {camera} {base} {csrf} {online} groups={detectionGroups} showAlerts/>
         {#if caps.options.tracking}<CameraOptions bind:this={tracking} {base} {csrf} {online} group="tracking" access={caps.options.tracking}/>{/if}
-        {#if caps.options.delivery}<CameraOptions bind:this={delivery} {base} {csrf} {online} group="push" linked={['email','ftp']} title="device-delivery-title" access={caps.options.delivery}/>{/if}
+        {#if caps.options.delivery}<CameraOptions bind:this={delivery} {base} {csrf} {online} group="push" linked={['email']} title="device-delivery-title" access={caps.options.delivery}/>{/if}
+        {#if caps.options.delivery}<CameraFtp bind:this={ftp} {base} {csrf} {online} available={caps.ftpDestination} access={caps.options.delivery}/>{/if}
         {#if caps.options.siren}<CameraOptions bind:this={siren} {base} {csrf} {online} group="siren" access={caps.options.siren}/>{/if}
       </SettingsDisclosure>
     {/if}

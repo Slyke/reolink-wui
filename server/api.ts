@@ -14,6 +14,7 @@ import { recordingRoutes } from './recording-routes.js';
 import { liveRoutes } from './live.js';
 import { encodingRoutes } from './encoding-routes.js';
 import { clockRoutes } from './clock-routes.js';
+import { ftpRoutes } from './ftp-routes.js';
 import { deviceOptionsRoutes } from './device-options-routes.js';
 import { displayRoutes } from './display-routes.js';
 import { networkRoutes } from './network-routes.js';
@@ -110,6 +111,7 @@ export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions
   cameraRoutes({ api: app, path, runtime });
   networkRoutes({ api: app, path, runtime });
   deviceOptionsRoutes({ api: app, path, runtime });
+  ftpRoutes({ api: app, path, runtime });
   displayRoutes({ api: app, path, runtime });
   encodingRoutes({ api: app, path, runtime });
   clockRoutes({ api: app, path, runtime });

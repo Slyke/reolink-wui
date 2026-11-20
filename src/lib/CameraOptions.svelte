@@ -1,10 +1,11 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import SettingsDisclosure from './SettingsDisclosure.svelte';
   import { api,errorText,operationId,outcomeText,t,type Outcome } from './api.js';
   import { optionTypes,type OptionGroup,type OptionValue,type OptionView } from '../../shared/device-options.js';
 
-  let {base,csrf,online,group,linked=[],title,access}:{
-    base:string;csrf:string;online:boolean;group:OptionGroup;linked?:OptionGroup[];title?:string;access:{read:boolean;write:boolean}
+  let {base,csrf,online,group,linked=[],title,access,children}:{
+    base:string;csrf:string;online:boolean;group:OptionGroup;linked?:OptionGroup[];title?:string;access?:{read:boolean;write:boolean};children?:Snippet
   }=$props();
   const groups=$derived([group,...linked]);
   let expanded=$state(false), busy=$state(false);
@@ -26,7 +27,7 @@
   const choiceText=(key:string,item:string)=>t('device-choice-'+(key==='hdr'?'hdr-':'')+item);
   export function working(){return busy;}
   export async function refresh(){
-    if(!expanded || !access.read || busy)return;
+    if(!expanded || !access?.read || busy)return;
     busy=true;
     try{
       for(const section of groups){
@@ -40,7 +41,7 @@
   function open(show:boolean){expanded=show;if(show && groups.some(section=>!views[section]))void refresh();}
   async function save(section:OptionGroup){
     const fields=changes(section);
-    if(!online || !access.write || busy || !Object.keys(fields).length)return;
+    if(!online || !access?.write || busy || !Object.keys(fields).length)return;
     busy=true;errors[section]='';messages[section]='';
     try{
       const result=await api<Outcome>({path:base+'/options/'+section,method:'PUT',csrf,body:{operationId:operationId(),fields}});
@@ -53,19 +54,20 @@
 
 <SettingsDisclosure title={t(title??'device-group-'+group)} ontoggle={open}>
   {#if expanded}
-    {#if !access.read}<p class="muted">{t('device-read-required')}</p>
-    {:else}
+    {@render children?.()}
+    {#if access && !access.read}<p class="muted">{t('device-read-required')}</p>
+    {:else if access}
       {#each groups as section (section)}
         {@const view=views[section]}
         {#if view && Object.keys(view.fields).length}
           <form class="stack device-options" onsubmit={e=>{e.preventDefault();void save(section);}}>
             {#if groups.length>1}<h4>{t('device-group-'+section)}</h4>{/if}
             {#if section==='privacy' && view.privacyZones!==undefined}<p class="muted">{view.privacyZones?t('device-privacy-count',{count:String(view.privacyZones)}):t('device-privacy-empty')}</p>{/if}
-            {#if ['email','push','ftp','siren'].includes(section)}<p class="muted">{t('device-help-'+section)}</p>{/if}
+            {#if ['email','push','siren'].includes(section)}<p class="muted">{t('device-help-'+section)}</p>{/if}
             <div class="form-grid">
               {#each Object.keys(optionTypes[section]).filter(key=>view.fields[key]) as key (key)}
                 {@const field=view.fields[key]}
-                {@const disabled=busy || !online || !access.write || !!dependsOnManual(section,key)}
+                {@const disabled=busy || !online || !access?.write || !!dependsOnManual(section,key)}
                 {#if 'choices' in field}
                   <label>{t('device-field-'+key)}
                     <select aria-label={t('device-field-'+key)} value={String(value(section,key))} disabled={disabled || field.choices.length<2}
