@@ -1134,6 +1134,19 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal((await adjust('2026-11-19T06:05:09',restricted)).statusCode,403);
   assert.equal((await adjust('2026-11-19T06:05:09')).json().outcome,'confirmed');
   assert.equal((await incoming({path:clockPath,headers:privileged})).json().cameraTime,'2026-11-19T06:05:09');
+  const syncId=uuid();
+  const changeZone=(zone,operationId=uuid())=>incoming({path:clockPath,headers:privileged,method:'PUT',payload:{operationId,
+    cameraTime:'2026-11-19T07:05:09',timeZone:{utcOffsetMinutes:zone,daylightSaving:null},ntpEnabled:true}});
+  const sync=(await changeZone(-420,syncId)).json();
+  assert.equal(sync.outcome,'confirmed');
+  assert.deepEqual(sync.data.settings,{utcOffsetMinutes:-420,daylightSavingEnabled:false,ntpEnabled:true});
+  assert.deepEqual((await incoming({path:clockPath,headers:privileged})).json(),sync.data);
+  assert.equal((await changeZone(-480,syncId)).statusCode,409);
+  assert.equal((await changeZone(900)).statusCode,400);
+  assert.equal((await adjust('2026-11-19T05:05:09')).json().reason,'CAMERA_CLOCK_NTP_ACTIVE');
+  fixture.setLegacyClock(true);
+  assert.equal((await changeZone(-420)).json().outcome,'unverified');
+  fixture.setLegacyClock(false);
   const networkPath=root+'/network';
   const rtspPath=networkPath+'/rtsp';
   assert.equal((await incoming({path:rtspPath,headers:restricted})).statusCode,403);

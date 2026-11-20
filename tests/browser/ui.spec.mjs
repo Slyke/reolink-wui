@@ -846,8 +846,14 @@ for (const mode of ['browser','proxy']) {
       await clock.getByLabel('Camera time (24-hour)').fill('19:20:09');
       await clock.getByRole('button',{name:'Set camera time'}).click();
       await expect(clock.getByText('2026-11-19 19:20:09')).toBeVisible();
+      await clock.getByLabel('Time zone for sync').selectOption('fixed');
+      await clock.getByLabel('UTC offset (±HH:MM)').fill('-07:00');
+      await clock.getByLabel('Use automatic network time after sync').check();
       await clock.getByRole('button',{name:'Sync to this device'}).click();
       await expect(clock.getByText('2026-11-19 19:20:09')).toBeHidden();
+      await clock.getByRole('button',{name:'Read camera time'}).click();
+      await expect(clock.getByText('UTC-07:00',{exact:true})).toBeVisible();
+      await expect(clock.getByLabel('Use automatic network time after sync')).toBeChecked();
       const network=page.getByRole('group',{name:'Network and Wi-Fi',exact:true});
       await expect(network).not.toHaveAttribute('open', '');
       await expect(network.getByText('192.0.2.3')).toBeAttached();
@@ -1110,20 +1116,27 @@ for (const mode of ['browser','proxy']) {
       await inputDate.fill('2026-11-16');
       await expect(page.locator('.recording-card time').first()).toHaveAttribute('datetime',/^2026-11-16/);
       bridge.setStorageFailure(undefined);
-      const clockCheck = await page.evaluate(() => new Date('2026-11-17T13:30:00').toISOString());
-      await page.route('**'+prefix+'/v1/cameras/*/storage',async route => {
-        const response = await route.fetch();
-        await route.fulfill({ response, json:{ ...await response.json(), refreshedAt:clockCheck } });
-      },{times:1});
+      let driftSeconds=3600;
+      await page.route('**'+prefix+'/v1/cameras/*/storage',async route=>{
+        const response=await route.fetch();
+        const cameraTime=await page.evaluate(seconds=>{
+          const now=new Date();
+          return new Date(now.getTime()-now.getTimezoneOffset()*60000-seconds*1000).toISOString().slice(0,19);
+        },driftSeconds);
+        await route.fulfill({response,json:{...await response.json(),cameraTime}});
+      },{times:2});
       await page.getByRole('button',{name:'Refresh',exact:true}).click();
       const clockInfo = page.locator('.timeline-title .info-button');
-      await expect(clockInfo).toBeVisible();
-      const clockHint = page.getByText('At the last check the camera read 12:30 and your clock read 13:30.');
+      await expect(clockInfo).toHaveText('!');
+      const clockHint = page.getByRole('tooltip').filter({hasText:/The camera is (?:01:00:0[01]|00:59:59) behind this device/});
       await expect(clockHint).toBeHidden();
       await clockInfo.click();
       await expect(clockHint).toBeVisible();
       await page.getByRole('heading',{name:'Recording timeline'}).click();
       await expect(clockHint).toBeHidden();
+      driftSeconds=0;
+      await page.getByRole('button',{name:'Refresh',exact:true}).click();
+      await expect(clockInfo).toHaveText('i');
       await expect(storagePanel.getByRole('alert')).toHaveCount(0);
       await expect(storagePanel.getByText('64 GB',{exact:true})).toBeVisible();
       await expect(inputDate).toHaveValue('2026-11-16');

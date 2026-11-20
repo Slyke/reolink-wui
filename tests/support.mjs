@@ -153,6 +153,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let displayRejection, lapseRejection;
   let photoExpired = false;
   const encoders = new Map();
+  let legacyClock=false;
   const clocks = new Map(), radios = new Map();
   let delayNextPreset = false;
   const rtspSwitches = new Map();
@@ -418,11 +419,18 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({profiles}));
     }
     if (req.url.endsWith('/clock')) {
+      const current=clocks.get(cameraId) ?? {cameraTime:'2026-11-19T07:05:02',settings:{utcOffsetMinutes:-480,daylightSavingEnabled:false,ntpEnabled:false}};
       if (req.method==='PUT') {
-        const {cameraTime}=await read(req);clocks.set(cameraId,cameraTime);
-        return res.end(JSON.stringify({outcome:'confirmed',cameraTime}));
+        const {cameraTime,timeZone,ntpEnabled}=await read(req);
+        if(!timeZone && (ntpEnabled ?? current.settings.ntpEnabled) && cameraTime!==current.cameraTime) {
+          res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_CLOCK_NTP_ACTIVE'}));
+        }
+        const settings={utcOffsetMinutes:timeZone?.utcOffsetMinutes ?? current.settings.utcOffsetMinutes,
+          daylightSavingEnabled:timeZone?Boolean(timeZone.daylightSaving):current.settings.daylightSavingEnabled,ntpEnabled:ntpEnabled ?? current.settings.ntpEnabled};
+        clocks.set(cameraId,{cameraTime,settings});
+        return res.end(JSON.stringify({outcome:'confirmed',cameraTime,...(!legacyClock && {settings})}));
       }
-      return res.end(JSON.stringify({cameraTime:clocks.get(cameraId) ?? '2026-11-19T07:05:02'}));
+      return res.end(JSON.stringify(legacyClock?{cameraTime:current.cameraTime}:current));
     }
     if (req.url.endsWith('/network/wifi') && req.method==='PUT') {
       const {enabled,confirmation}=await read(req);
@@ -624,6 +632,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     setPlaybackAvailable: value => { playbackAvailable = value; },
     expireNextPhoto: () => {photoExpired=true;},
     setRecordingCount: value => { recordingCount = value; },
+    setLegacyClock: value => { legacyClock=value; },
     setStorageFailure: value => { storageFailure = value; },
     setRecordingFailure: value => { playbackFailure = value; },
     setPreviewNotifications: value => { previewNotifications = value; },

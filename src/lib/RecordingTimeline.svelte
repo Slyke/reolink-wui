@@ -3,16 +3,16 @@
   import { t } from './api.js';
   import { timelineIndex, type TimelineCapture } from '../../shared/recording-timeline.js';
   import { formatLocalTimestamp } from './dates.js';
-  import type { StorageInfo, TimelinePhoto } from '../../shared/recordings.js';
+  import type { TimelinePhoto } from '../../shared/recordings.js';
   import InfoTip from './InfoTip.svelte';
   import RecordingPreview from './RecordingPreview.svelte';
   import type { RecordingPreviews } from './recording-previews.js';
   import { recordingTime, type RecordingGroup } from '../../shared/recording-groups.js';
 
-  let { previews, warming, recordings, photos, undatedCount, date, available, playable, highlighted, onhover, onselect, clockHint, clock, range = $bindable('fit') }: {
+  let { previews, warming, recordings, photos, undatedCount, date, available, playable, highlighted, onhover, onselect, clockHint, clockWarning, clock, range = $bindable('fit') }: {
     previews: RecordingPreviews; warming: boolean; recordings: RecordingGroup[]; photos: TimelinePhoto[]; undatedCount:number; date: string; available: boolean; playable: boolean;
-    clock?: Pick<StorageInfo, 'cameraTime' | 'refreshedAt'>; range?: 'fit' | 'day';
-    highlighted?: string; clockHint?:string; onhover: (id?: string) => void; onselect: (item: RecordingGroup, offsetMs: number) => void;
+    clock?: {cameraTime:string;sampledAt:number}; range?: 'fit' | 'day';
+    highlighted?: string; clockHint:string; clockWarning:boolean; onhover: (id?: string) => void; onselect: (item: RecordingGroup, offsetMs: number) => void;
   } = $props();
   const day = $derived(recordingTime(date + 'T00:00:00'));
   const index = $derived(timelineIndex(recordings,photos));
@@ -33,7 +33,7 @@
   const futureStart = $derived.by(() => {
     if (range !== 'day') return;
     const wallNow = clock?.cameraTime
-      ? recordingTime(clock.cameraTime) + now - Date.parse(clock.refreshedAt)
+      ? recordingTime(clock.cameraTime) + now - clock.sampledAt
       : recordingTime(formatLocalTimestamp(now).replace(' ', 'T'));
     if (wallNow >= day && wallNow < day + 86_400_000) return (wallNow - day) / 86_400_000 * 100;
   });
@@ -122,7 +122,7 @@
 <svelte:document bind:visibilityState={visibility} onpointerdown={outside} onkeydown={event => {if (event.key === 'Escape' && pinned) clear();}} />
 <div class="recording-timeline stack">
   <div class="row between"><div class="field-heading timeline-title"><h3>{t('recording-timeline')}</h3>
-      {#if clockHint}<InfoTip label={t('recording-clock-label')} text={clockHint} />{/if}
+      <InfoTip label={t(clockWarning?'recording-clock-drift-label':'recording-clock-label')} text={clockHint} warning={clockWarning} />
     </div>
     <select class="timeline-range" aria-label={t('recording-timeline-range')} bind:value={range} onchange={clear}>
       <option value="fit">{t('recording-timeline-fit')}</option><option value="day">{t('recording-timeline-day')}</option>

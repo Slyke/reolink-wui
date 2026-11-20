@@ -8,6 +8,7 @@
   import RecordingExport from '$lib/RecordingExport.svelte';
   import RecordingPlayer from '$lib/RecordingPlayer.svelte';
   import RecordingPreview from '$lib/RecordingPreview.svelte';
+  import { compareClocks } from '../../../../shared/clock.js';
   import RecordingTimeline from '$lib/RecordingTimeline.svelte';
   import { RecordingPreviews } from '$lib/recording-previews.js';
   import { groupRecordings, recordingTime, recordingVariant, type RecordingGroup } from '../../../../shared/recording-groups.js';
@@ -26,15 +27,8 @@
   const canBrowse = $derived(Boolean(camera?.capabilities.recordings || camera?.capabilities.timeLapsePhotos));
   let storage = $state<StorageInfo>();
   const playbackAvailable = $derived(Boolean(storage?.playbackAvailable ?? camera?.capabilities.recordingPlayback));
-  const clockComparison = $derived.by(() => {
-    if (!storage?.cameraTime) return;
-    const cameraTime = storage.cameraTime;
-    const localTime = formatLocalTimestamp(storage.refreshedAt).replace(' ', 'T');
-    if (Math.abs(recordingTime(cameraTime) - recordingTime(localTime)) < 300_000) return;
-    const sameDay = cameraTime.slice(0, 10) === localTime.slice(0, 10);
-    const display = (time: string) => sameDay ? time.slice(11, 16) : time.replace('T', ' ').slice(0, 16);
-    return { camera: display(cameraTime), local: display(localTime) };
-  });
+  let clockSample = $state<{started:number;received:number}>();
+  const clockComparison = $derived(storage?.cameraTime && clockSample ? compareClocks(storage.cameraTime, clockSample.started, clockSample.received) : undefined);
   const defaultStreams = ['sub', 'main'] as const;
   let listing = $state<{ date: string; recordings: RecordingGroup[]; truncated: boolean; partial: boolean }>();
   let gallery = $state<{date:string;photos:TimelinePhoto[];undatedCount:number}>();
@@ -220,8 +214,10 @@
     const startedSearch = listController;
     if (!camera?.capabilities.recordings) { reading = false; return; }
     try {
+      const started = Date.now();
       const next = await api<StorageInfo>({ path: '/api/v1/cameras/' + selected + '/storage', signal: current.signal });
       if (current.signal.aborted) return;
+      clockSample = {started,received:Date.now()};
       storage = next;
       // Only refine the automatic search. A newer selection or manual search takes precedence.
       if (listController === startedSearch && date === searchedDate) {
@@ -389,7 +385,10 @@
     {#if photoError}<p role="alert" class="error">{t('timeline-photos-failed')} {photoError}</p>{/if}
     {#if listedDate}
       {#key selected + '/' + listedDate}
-        <RecordingTimeline {previews} clock={storage} bind:range={timelineRange} clockHint={clockComparison ? t('recording-clock-comparison',clockComparison) : undefined}
+        <RecordingTimeline {previews} clock={storage?.cameraTime && clockSample ? {cameraTime:storage.cameraTime,sampledAt:(clockSample.started+clockSample.received)/2} : undefined}
+          bind:range={timelineRange} clockWarning={Boolean(clockComparison && !clockComparison.matched)}
+          clockHint={clockComparison ? t(clockComparison.matched?'recording-clock-aligned':clockComparison.seconds<0?'recording-clock-behind':'recording-clock-ahead',
+            {camera:clockComparison.camera,local:clockComparison.local,duration:clockComparison.duration}) : t('recording-clock-unknown')}
           warming={!recording} recordings={timelineVideos} photos={timelinePhotos} {undatedCount} date={listedDate} available={Boolean(camera.capabilities.recordingPreview)}
           playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
       {/key}

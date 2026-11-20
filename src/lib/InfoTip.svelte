@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { t } from './api.js';
-  let { label, text }: { label: string; text: string } = $props();
+  let { label, text, warning=false }: { label: string; text: string; warning?:boolean } = $props();
   const id = $props.id();
   let panel: HTMLDivElement, button: HTMLButtonElement;
   let opened = $state(false), pinned = false, left = $state(0), top = $state(0);
@@ -23,7 +23,7 @@
   <button class="info-button" type="button" bind:this={button} aria-label={t('help-about', { label })}
     aria-expanded={opened} aria-controls={id} aria-describedby={opened ? id : undefined}
     onpointerenter={show} onpointerleave={hide} onfocus={show} onblur={hide}
-    onclick={() => { pinned = !pinned; if (pinned) show(); else panel.hidePopover(); }}>i</button>
+    onclick={() => { pinned = !pinned; if (pinned) show(); else panel.hidePopover(); }}>{warning?'!':'i'}</button>
   <div class="info-popover" {id} bind:this={panel} popover="auto" role="tooltip"
     style:left={left + 'px'} style:top={top + 'px'} onpointerenter={() => clearTimeout(timer)} onpointerleave={hide}
     ontoggle={event => { opened = event.newState === 'open'; if (!opened) pinned = false; }}>{text}</div>

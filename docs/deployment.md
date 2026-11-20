@@ -155,6 +155,8 @@ The bridge downloads and prepares a private temporary MP4 on first playback. Sub
 
 Dashboard live-view links include the WUI camera ID and stream. Opening a link requires the recipient’s own camera access. Changing quality updates the link and the signed-in user’s browser preference for that camera.
 
+**Settings → Camera settings → Camera clock** displays the camera’s local time, standard UTC offset, daylight-saving switch and network time (NTP). **Sync to this device** applies the browser’s time zone and recurring daylight-saving rules. Choose **Fixed UTC offset** for a year-round offset such as Vancouver’s `-07:00`. Sync keeps the current NTP choice unless you change the checkbox. **Set camera time** switches off active NTP for a manual time. The bridge checks the settings and running clock on a new camera connection before confirming. The recordings timeline shows **!** when a fresh sample differs from this device’s clock beyond its timing uncertainty.
+
 **Settings → Camera settings → Image orientation** shows supported camera-side horizontal/vertical flip and clockwise/counterclockwise rotation controls. They require `settings.image.write` and use fresh camera reads followed by verified readback. Camera-admin grants include the image-setting permissions. Quarter-turn rotation requires an advertised camera range.
 
 In **Settings → Camera settings**, **SD recording schedule** edits hourly blocks for each recording type the device reports. Select a weekday in camera local time. **Time lapse** saves an MP4 or JPEG series with the capture interval and camera stream you select. New captures run daily until stopped. Both settings use native camera storage.
