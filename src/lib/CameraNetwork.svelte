@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { CameraNetwork, NetworkInterface, RtspSettings } from '../../shared/network.js';
   import { validWifiName, validWifiPassword } from '../../shared/network.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
@@ -7,31 +8,44 @@
   let {base, csrf, access}: {base: string; csrf: string; access: {read: boolean; write: boolean; available: boolean; rtsp?: boolean}} = $props();
   const listId = $props.id();
   let network = $state<CameraNetwork>(), busy = $state(false), error = $state(''), message = $state('');
-  let ssid = $state(''), password = $state(''), openNetwork = $state(false), expanded = $state(false);
+  let ssid = $state(''), password = $state(''), openNetwork = $state(false);
   let rtsp = $state<RtspSettings>(), choice = $state<boolean | undefined>();
   let rtspBusy = $state(false), rtspError = $state(''), rtspMessage = $state('');
   const canEdit = $derived(access.available && access.write && (!access.read || network?.wifi?.configurable === true));
   const valid = $derived(validWifiName(ssid) && validWifiPassword(password,openNetwork));
 
-  async function read() {
-    error = '';
-    const next = await api<CameraNetwork>({path:base+'/network'});
-    network = next;
-    ssid = next.wifi?.ssid ?? '';
-  }
-  export async function refresh() {
-    if (!expanded || !access.available || !access.read || busy || rtspBusy) return;
-    busy = true; password = ''; openNetwork = false; message = '';
-    try { await Promise.all([read().catch(err => { network = undefined; error = errorText(err); }),readRtsp()]); }
+  const canRead = $derived(access.available && access.read);
+  const canReadRtsp = $derived(canRead && access.rtsp === true);
+
+  $effect(() => {
+    if (canRead) untrack(() => void readNetwork());
+    else { network = undefined; ssid = ''; password = ''; }
+  });
+  $effect(() => {
+    if (canReadRtsp) untrack(() => void readRtsp());
+    else { rtsp = undefined; choice = undefined; }
+  });
+
+  async function readNetwork() {
+    if (!canRead || busy) return;
+    busy = true; error = ''; message = ''; password = ''; openNetwork = false;
+    try {
+      const next = await api<CameraNetwork>({path:base+'/network'});
+      if (canRead) { network = next; ssid = next.wifi?.ssid ?? ''; }
+    } catch (err) { network = undefined; error = errorText(err); }
     finally { busy = false; }
   }
   async function readRtsp() {
-    if (!access.rtsp || !access.read) return;
-    rtspError = ''; rtspMessage = '';
+    if (!canReadRtsp || rtspBusy) return;
+    rtspBusy = true; rtspError = ''; rtspMessage = '';
     try {
-      rtsp = await api<RtspSettings>({path:base+'/network/rtsp'});
-      choice = rtsp.supported ? rtsp.enabled : undefined;
+      const next = await api<RtspSettings>({path:base+'/network/rtsp'});
+      if (canReadRtsp) { rtsp = next; choice = next.supported ? next.enabled : undefined; }
     } catch (err) { rtsp = undefined; choice = undefined; rtspError = errorText(err); }
+    finally { rtspBusy = false; }
+  }
+  export async function refresh() {
+    if (!busy && !rtspBusy) await Promise.all([readNetwork(), readRtsp()]);
   }
   async function saveRtsp() {
     if (!access.write || choice === undefined || rtspBusy || busy) return;
@@ -60,11 +74,6 @@
     finally{busy=false;}
   }
   export function working() { return busy || rtspBusy; }
-  function toggle(show: boolean) {
-    expanded = show;
-    if (show) void refresh();
-    if (!show) password = '';
-  }
   async function save() {
     if (!canEdit || busy || !valid || !confirm(t('network-confirm', {name:ssid}))) return;
     busy=true; error=''; message='';
@@ -78,17 +87,22 @@
   }
 </script>
 
-{#snippet facts(info:NetworkInterface)}
+{#snippet facts(info:NetworkInterface, wifi = false)}
   <dl class="network-facts">
-    <dt>{t('network-interface-status')}</dt><dd>{info.active ? t('network-active-link') : info.enabled===false ? t('network-disabled') : info.enabled ? t('network-enabled') : info.active===false ? t('network-standby') : '—'}</dd>
-    <dt>{t('network-ip')}</dt><dd>{info.addresses.join(', ') || t('network-ip-unreported')}</dd>
+    {#if info.active != null}
+      <dt>{t('network-bridge-path')}</dt><dd>{t(info.active ? 'network-active-link' : 'network-other-link')}</dd>
+    {/if}
+    {#if !info.active && info.enabled != null}
+      <dt>{t('network-interface-status')}</dt><dd>{t(info.enabled ? 'network-enabled' : 'network-disabled')}</dd>
+    {/if}
+    <dt>{t('network-ip')}</dt><dd>{info.addresses.join(', ') || t(wifi && network?.interfaces?.ethernet?.active && network.interfaces.ethernet.addresses.length ? 'network-ip-wired-only' : 'network-ip-unreported')}</dd>
     {#if info.dhcp!==null}<dt>{t('network-addressing')}</dt><dd>{info.dhcp ? 'DHCP' : t('network-static')}</dd>{/if}
     {#if info.active && network?.link?.netmask}<dt>{t('network-netmask')}</dt><dd>{network.link.netmask}</dd>{/if}
     {#if info.active && network?.link?.gateway}<dt>{t('network-gateway')}</dt><dd>{network.link.gateway}</dd>{/if}
   </dl>
 {/snippet}
 
-<SettingsDisclosure title={t('camera-network')} ontoggle={toggle}>
+<SettingsDisclosure title={t('camera-network')} ontoggle={show => { if (!show) password = ''; }}>
   {#if !access.available}
     <p class="muted">{t('network-bridge-update')}</p>
   {:else}
@@ -122,12 +136,11 @@
     {#if network?.interfaces?.wifi || network?.wifi || !access.read && canEdit}
       <SettingsDisclosure title={t('network-wifi')} open>
       {#if network?.interfaces?.wifi}
-        {@render facts(network.interfaces.wifi)}
+        {@render facts(network.interfaces.wifi, true)}
         {#if network.interfaces.wifi.enabled !== false}
+          {@const associated = network.wifiStatus?.associated ?? (network.interfaces.wifi.active ? true : null)}
           <dl class="network-facts">
-            {#if network.wifiStatus?.associated!=null}
-              <dt>{t('network-wifi-association')}</dt><dd>{network.wifiStatus.associated ? network.wifiStatus.ssid || t('network-associated') : t('network-disassociated')}</dd>
-            {/if}
+            <dt>{t('network-wifi-association')}</dt><dd>{associated === true ? network.wifiStatus?.ssid || t('network-associated') : t(associated === false ? 'network-disassociated' : 'network-association-unreported')}</dd>
             {#if network.wifiSignal!=null}
               <dt>{t('network-signal')}</dt><dd>{network.wifiSignal<0 ? network.wifiSignal+' dBm' : t('network-signal-raw',{value:network.wifiSignal})}</dd>
             {:else if network.wifiStatus?.signal}

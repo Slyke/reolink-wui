@@ -1036,7 +1036,7 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   const updatedEncoder=(await changeEncoder({fps:10})).json();
   assert.equal(updatedEncoder.outcome,'confirmed');
   const {profiles}= (await incoming({path:encodingPath,headers:privileged})).json();
-  assert.deepEqual(profiles.map(p=>p.current.fps),[20,10]);
+  assert.deepEqual(profiles.map(p=>p.current.fps),[20,10,15]);
   const clockPath=root+'/clock';
   assert.equal((await incoming({path:clockPath,headers:restricted})).statusCode,403);
   assert.equal((await incoming({path:clockPath,headers:privileged})).json().cameraTime,'2026-11-19T07:05:02');

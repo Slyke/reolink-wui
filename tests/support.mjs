@@ -362,7 +362,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub'], beta:['main']},
+      version:1, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
       previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -392,7 +392,8 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
         {stream:'main',current:{width:2560,height:1440,fps:20,bitrate:4096,gop:2},gopRange:[1,2],options:[
           {width:2560,height:1440,fps:[25,20,15],bitrates:[2048,3072,4096]},
           {width:1920,height:1080,fps:[15,10],bitrates:[2048,3072]}]},
-        {stream:'sub',current:{width:640,height:360,fps:4,bitrate:128},options:[{width:640,height:360,fps:[10,4],bitrates:[128,256]}]}
+        {stream:'sub',current:{width:640,height:360,fps:4,bitrate:128},options:[{width:640,height:360,fps:[10,4],bitrates:[128,256]}]},
+        {stream:'third',current:{width:896,height:512,fps:15,bitrate:1228},options:[]}
       ];
       if(req.method==='PUT'){
         const {stream,settings}=await read(req); const p=profiles.find(p=>p.stream===stream);
@@ -536,7 +537,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     }
     if (req.url.endsWith('/settings/ai')) return res.end(JSON.stringify({ values:ai }));
     if (req.url.endsWith('/settings/leds')) return res.end(JSON.stringify({ values:{ leds:{status_led:led,ir_mode:'auto'} } }));
-    if (/\/media\/(main|sub)$/.test(req.url)) {
+    if (/\/media\/(main|sub|third)$/.test(req.url)) {
       mediaOpened++;
       if (mediaStartGate) await mediaStartGate;
       if (res.destroyed) return;

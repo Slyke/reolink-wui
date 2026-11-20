@@ -85,6 +85,9 @@
           <label>{t('encoding-gop')}<input type="number" step="1" min={profile.gopRange[0]} max={profile.gopRange[1]} bind:value={draft.gop} disabled={!writable || profile.gopRange[0]===profile.gopRange[1]}/></label>
         {/if}
       </div>
+      {#if !profile.options.length && !profile.gopRange}
+        <p class="muted">{t('encoding-fixed')}</p>
+      {/if}
       {#if profile.bitrateMode || profile.encoderProfile}
         <p class="muted">{[profile.bitrateMode?.toUpperCase(),profile.encoderProfile && t('encoding-profile',{profile:profile.encoderProfile})].filter(Boolean).join(' · ')}</p>
       {/if}

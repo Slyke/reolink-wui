@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { liveStreams } from './playback.js';
 
 const number = z.int().min(1).max(0xffffffff);
-export const streamId = z.enum(['main','sub','third']);
+export const streamId = z.enum(liveStreams);
 export const encoderValues = z.strictObject({
   width:number.optional(), height:number.optional(), fps:number.optional(), bitrate:number.optional(), gop:number.optional()
 });

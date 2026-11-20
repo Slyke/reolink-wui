@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { Runtime } from './runtime.js';
 import { input, uuid } from './runtime.js';
 import { camerasFor, audit, type Account, type CameraRef } from './db.js';
-import { minPreviewIntervalMs, maxPreviewIntervalMs, previewAlerts } from '../shared/playback.js';
+import { liveStreams, minPreviewIntervalMs, maxPreviewIntervalMs, previewAlerts } from '../shared/playback.js';
 import type { CameraEvent } from './cameras.js';
 import { maxFeedGapReports, maxFeedGapSamples, type FeedGap } from '../shared/events.js';
 import { Failure } from './errors.js';
@@ -206,7 +206,7 @@ export const liveRoutes = ({ api, path, runtime }: { api: FastifyInstance; path:
   });
 
   api.post<{ Params: { id: string } }>(path + '/cameras/:id/media-sessions', async (request, reply) => {
-    const data = input({ schema: z.strictObject({ operationId: uuid, stream: z.enum(['main', 'sub']) }), value: request.body });
+    const data = input({ schema: z.strictObject({ operationId: uuid, stream: z.enum(liveStreams) }), value: request.body });
     const current = await signedCamera({ request, id: request.params.id, mutate: true });
     const { bridge, row, session } = current;
     if (!playbackStreams({ bridge, row }).includes(data.stream)) throw new Failure('MEDIA_UNAVAILABLE', 422);

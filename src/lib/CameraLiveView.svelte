@@ -7,7 +7,7 @@
   import type { Camera } from './models.js';
   import { useWorkspace } from './workspace.js';
 
-  type Quality = 'main' | 'sub';
+  import { isLiveStream, liveStreams, type LiveStream as Quality } from '../../shared/playback.js';
   const workspace = useWorkspace();
 
   let { previewTag, pushConnected = false, camera, name, csrf, administer, compact = false, refreshRequest = 0, headingId, actions, linked, linkedStream, setLink }: {
@@ -46,7 +46,7 @@
     let saved: string | null = null;
     try { saved = localStorage.getItem(preference()); } catch { /* Browser storage is optional. */ }
     const available = camera.capabilities.media;
-    return [requested,saved,'main','sub'].find((q): q is Quality => (q==='main' || q==='sub') && available.includes(q));
+    return [requested, saved, ...liveStreams].find((q): q is Quality => isLiveStream(q) && available.includes(q));
   }
   function selectQuality(value: Quality) {
     if (value === stream || !camera.capabilities.media.includes(value)) return;
@@ -223,7 +223,7 @@
     const supported = camera.capabilities.media;
     const valid = supported.includes(stream);
     if (!valid) untrack(() => { if (playback || liveBusy) void stopLive(); });
-    if (!valid) stream = supported.includes('sub') ? 'sub' : 'main';
+    if (!valid) stream = supported.find(isLiveStream) ?? 'main';
   });
 
   $effect(() => { const tag = previewTag; if (tag) untrack(() => notifyPreview?.(tag)); });
@@ -487,6 +487,7 @@
                     <option value="main">{t(camera.capabilities.viaProxy ? 'live-proxy-quality' : 'primary')}</option>
                   {/if}
                   {#if camera.capabilities.media.includes('sub')}<option value="sub">{t('secondary')}</option>{/if}
+                  {#if camera.capabilities.media.includes('third')}<option value="third">{t('encoding-third')}</option>{/if}
               </select>
             {/if}
             {#if playback || liveBusy}

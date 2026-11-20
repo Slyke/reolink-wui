@@ -7,6 +7,7 @@ import type { ConnectionState, Transport, Upstream, UpstreamConnection } from '.
 import { at, dispatcher, jsonResponse } from './net.js';
 import { ApiChannel, BrokerChannel, SocketChannel, record, type ChannelChanges, type Envelope } from './bridge-channels.js';
 import { Failure, recordError } from './errors.js';
+import { isLiveStream } from '../shared/playback.js';
 import { settingsGroups, type SettingsGroup } from '../shared/access.js';
 import { correlationPattern, segment } from '../shared/urls.js';
 
@@ -600,7 +601,7 @@ export class Bridge {
     if (this.bridgeVersion.media) {
       for (const [camera, streams] of Object.entries(record(contract.mediaCameras))) {
         if (this.inScope(camera) && Array.isArray(streams)) {
-          this.mediaStreams.set(camera, streams.filter(value => value === 'main' || value === 'sub'));
+          this.mediaStreams.set(camera, streams.filter(isLiveStream));
         }
       }
     }

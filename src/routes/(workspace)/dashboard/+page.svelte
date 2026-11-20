@@ -5,7 +5,7 @@
   import { api, errorText, t, UiError, url } from '$lib/api.js';
   import { cameraStatus, type Camera } from '$lib/models.js';
   import { useWorkspace } from '$lib/workspace.js';
-  import { matchesPreviewAlert } from '../../../../shared/playback.js';
+  import { matchesPreviewAlert, type LiveStream } from '../../../../shared/playback.js';
   import type { InventoryState } from '../../../../shared/upstreams.js';
   import CameraLiveView from '$lib/CameraLiveView.svelte';
 
@@ -26,7 +26,7 @@
     const previous=from?.url.searchParams.get('camera');
     if (previous) document.getElementById('dashboard-expand-'+previous)?.focus({preventScroll:true});
   });
-  function cameraLink(id:string, open:boolean, stream?: 'main'|'sub') {
+  function cameraLink(id:string, open:boolean, stream?: LiveStream) {
     const target = new URL(page.url);
     const fromList = 'dashboardCameraFromList' in page.state && page.state.dashboardCameraFromList === true;
     if (!open && linkedCamera !== id) return;
