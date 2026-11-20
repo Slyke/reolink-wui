@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import type { FastifyInstance } from 'fastify';
 import { cameraEncoding, encoderChange } from '../shared/encoding.js';
 import { correlationPattern } from '../shared/urls.js';
@@ -12,9 +13,24 @@ export function encodingRoutes({api,path,runtime}: {api:FastifyInstance;path:str
   api.get<{Params:{id:string}}>(endpoint,async request => {
     const {row,bridge}=await runtime.camera({request,id:request.params.id,permission:'settings.encoding.read'});
     if (!bridge.hasEncoding(row.routeId)) throw new Failure('UNSUPPORTED',422);
-    const response=await bridge.api({path:'/cameras/'+row.routeId+'/encoding',stableId:row.remote_id,correlation:request.id,signal:AbortSignal.timeout(24_000)});
-    if (!response.ok) throw new Failure(response.status===409?'CAMERA_UNKNOWN':'BRIDGE_UNAVAILABLE',502);
-    const result=cameraEncoding.safeParse(await jsonResponse({response}));
+    const signal = AbortSignal.timeout(24_000);
+    const read = async () => {
+      const response = await bridge.api({path:'/cameras/'+row.routeId+'/encoding',stableId:row.remote_id,correlation:request.id,signal});
+      const body = record(await jsonResponse({response}).catch(() => undefined));
+      return {response,body};
+    };
+    let {response,body} = await read();
+    const retryable = (response.status===502 && body.errorKey==='API_ENCODING_READ_FAILED')
+      || (response.status===503 && body.errorKey==='API_READ_BUSY');
+    if (retryable && !signal.aborted) {
+      await delay(350);
+      ({response,body} = await read());
+    }
+    if (!response.ok) {
+      const bridgeCorrelationId = typeof body.correlation_id==='string' && correlationPattern.test(body.correlation_id) ? body.correlation_id : undefined;
+      throw new Failure(response.status===409?'CAMERA_UNKNOWN':'BRIDGE_UNAVAILABLE',502,undefined,{upstreamStatus:response.status,bridgeCorrelationId});
+    }
+    const result = cameraEncoding.safeParse(body);
     if (!result.success) throw new Failure('BRIDGE_UNAVAILABLE',502);
     return result.data;
   });

@@ -21,7 +21,11 @@
   const delta=$derived.by(()=>{
     const change:EncoderValues={};
     if (!profile) return change;
-    if (draft.width!==profile.current.width || draft.height!==profile.current.height) {change.width=draft.width;change.height=draft.height;}
+    if (draft.width!==profile.current.width || draft.height!==profile.current.height) {
+      change.width=draft.width;
+      change.height=draft.height;
+      if(draft.fps!==undefined && frameRates.includes(draft.fps))change.fps=draft.fps;
+    }
     for(const key of ['fps','bitrate','gop'] as const) if(draft[key]!==undefined && draft[key]!==profile.current[key]) change[key]=draft[key];
     return change;
   });

@@ -1133,6 +1133,11 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal((await saveOptions('privacy',{maskEnabled:true})).json().outcome,'rejected');
   const encodingPath=root+'/encoding';
   assert.equal((await incoming({path:encodingPath,headers:restricted})).statusCode,403);
+  fixture.failEncoderReads(1);
+  assert.equal((await incoming({path:encodingPath,headers:privileged})).statusCode,200);
+  fixture.failEncoderReads(2);
+  assert.equal((await incoming({path:encodingPath,headers:privileged})).statusCode,502);
+  assert.equal((await incoming({path:encodingPath,headers:privileged})).statusCode,200);
   const changeEncoder=(settings,headers=privileged)=>incoming({path:encodingPath,method:'PUT',headers,payload:{stream:'sub',settings,operationId:uuid()}});
   assert.equal((await changeEncoder({fps:10},restricted)).statusCode,403);
   assert.equal((await changeEncoder({width:640})).statusCode,400);

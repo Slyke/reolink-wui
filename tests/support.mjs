@@ -150,7 +150,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const networks = new Map();
   const displays = new Map();
-  let displayRejection, lapseRejection;
+  let displayRejection, lapseRejection, encoderReadFailures=0;
   let photoExpired = false;
   const encoders = new Map();
   const deviceOptions = new Map();
@@ -427,6 +427,11 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({fields}));
     }
     if (req.url.endsWith('/encoding')) {
+      if(req.method==='GET' && encoderReadFailures>0){
+        encoderReadFailures--;
+        res.statusCode=502;
+        return res.end(JSON.stringify({errorKey:'API_ENCODING_READ_FAILED',correlation_id:req.headers['x-correlation-id']}));
+      }
       const profiles = encoders.get(cameraId) ?? [
         {stream:'main',current:{width:2560,height:1440,fps:20,bitrate:4096,gop:2},gopRange:[1,2],options:[
           {width:2560,height:1440,fps:[20,25,15],bitrates:[2048,3072,4096]},
@@ -686,6 +691,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       broadcast(camera_id, {op:'snapshot',snapshot:{camera_id,topic,payload}});
       await broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic,JSON.stringify(payload),{qos:1,retain:true});
     },
+    failEncoderReads: count => { encoderReadFailures=count; },
     rejectNextDisplay: cameraStatus => { displayRejection = {cameraStatus}; },
     rejectNextTimeLapse: status => { lapseRejection = status; },
     setReportedLevels: levels => { brightness = levels.brightness; sensitivity = levels.sensitivity; },
