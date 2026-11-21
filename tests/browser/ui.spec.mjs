@@ -371,6 +371,9 @@ for (const mode of ['browser','proxy']) {
       const holdToTalk=largeView.getByRole('button',{name:'Hold to talk'});
       const micSettings=largeView.getByRole('button',{name:'Microphone settings'});
       const input=largeView.getByRole('combobox',{name:'Microphone',exact:true});
+      await expect(input).toHaveCount(0);
+      await installMicrophones(page);
+      await micSettings.click();
       const talkViewport=page.viewportSize();
       for (const width of [talkViewport.width,375]) {
         await page.setViewportSize({...talkViewport,width});
@@ -384,11 +387,15 @@ for (const mode of ['browser','proxy']) {
             rightMargin:Math.round(el.querySelector('.live-stream-controls').getBoundingClientRect().right-hold.right)
           };
         }), {message:'Talk toolbar at '+width+'px'}).toEqual({inOrder:true,sameRow:true,rightMargin:0});
+        const micRow=largeView.locator('.talk-input-row');
+        await expect.poll(()=>micRow.evaluate(row=>{
+          const [label,select,button]=[...row.children].map(el=>el.getBoundingClientRect());
+          const centers=[label,select,button].map(rect=>rect.top+rect.height/2);
+          return Math.max(...centers)-Math.min(...centers)<=1 && label.right<=select.left
+            && select.right<=button.left && button.right<=row.getBoundingClientRect().right+1 && select.width>0;
+        }),{message:'Microphone controls at '+width+'px'}).toBe(true);
       }
       await page.setViewportSize(talkViewport);
-      await expect(input).toHaveCount(0);
-      await installMicrophones(page);
-      await micSettings.click();
       await input.selectOption({label:'USB input'});
       await expect.poll(()=>page.evaluate(()=>window.testMicIds.length)).toBe(0);
       await largeView.getByRole('button',{name:'Test microphone'}).click();

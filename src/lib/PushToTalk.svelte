@@ -202,27 +202,26 @@
   </div>
   {#if settingsOpen}
     <div id={panelId} class="talk-panel">
-      <label>{t('talk-input')}
-        <select value={selected} disabled={phase === 'talking' || phase === 'startingTalk'} onchange={e => selectInput(e.currentTarget.value)}>
+      <div class="talk-input-row">
+        <label for={panelId + '-input'}>{t('talk-input')}</label>
+        <select id={panelId + '-input'} value={selected} disabled={phase === 'talking' || phase === 'startingTalk'} onchange={e => selectInput(e.currentTarget.value)}>
           <option value="">{t('talk-input-default')}</option>
           {#if selected && !inputs.some(device => device.deviceId === selected)}<option value={selected}>{t('talk-saved-input')}</option>{/if}
           {#each inputs as device, index (device.deviceId)}
             <option value={device.deviceId}>{device.label || t('talk-input-number', { number: index + 1 })}</option>
           {/each}
         </select>
-      </label>
-      {#if listError}<span role="status">{listError}</span>
-      {:else if !inputs.some(input => input.label)}<span class="muted">{t('talk-names-help')}</span>{/if}
-      <div class="row test-controls">
         <button type="button" disabled={phase === 'talking' || phase === 'startingTalk'}
           onclick={() => { if (testing) release(true); else void begin('test'); }}>{t(testing ? 'talk-stop-test' : 'talk-test')}</button>
-        {#if testing || sampleUrl}
+      </div>
+      {#if listError}<span role="status">{listError}</span>{/if}
+      {#if testing || sampleUrl}
+        <div class="row">
           <meter min="-60" max="0" value={db} aria-label={t('talk-level')}></meter>
           <span>{db <= -60 ? t('talk-silent') : db + ' dBFS'}</span>
-        {/if}
-      </div>
+        </div>
+      {/if}
       {#if activeLabel}<span class="muted">{t('talk-active-input', { name: activeLabel })}</span>{/if}
-      <span class="muted">{t('talk-test-help')}</span>
       {#if sampleUrl}<audio src={sampleUrl} controls aria-label={t('talk-play-test')}></audio>{/if}
     </div>
   {/if}
@@ -238,7 +237,15 @@
     border-radius: var(--radius-sm); background: var(--color-panel); color: var(--color-text);
   }
   .talk-panel { grid-column: 1 / -1; min-width: 0; display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
-  .talk-panel label { width: min(100%, 30rem); }
+  .talk-input-row {
+    display: grid; grid-template-columns: max-content minmax(0, 30rem) max-content;
+    justify-content: start; align-items: center; gap: var(--space-2);
+  }
+  .talk-input-row select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+  @container (max-width: 26rem) {
+    .talk-input-row { grid-template-columns: max-content minmax(0, 1fr) min-content; }
+    .talk-input-row button { padding-inline: .5rem; white-space: normal; }
+  }
   .talk-panel meter { width: min(7rem, 28vw); }
   .talk-panel audio { max-width: 100%; }
 </style>

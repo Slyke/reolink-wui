@@ -11,8 +11,6 @@
   "reolink-wui-talk-list-failed": "The browser could not list microphones. Check the site’s microphone permission.",
   "reolink-wui-talk-test": "Test microphone",
   "reolink-wui-talk-stop-test": "Stop test",
-  "reolink-wui-talk-test-help": "Speak for up to five seconds, then play back the sample. The test stays in this browser.",
-  "reolink-wui-talk-names-help": "Test the microphone to let this browser show device names.",
   "reolink-wui-talk-no-samples": "No audio samples arrived. Test the microphone again.",
   "reolink-wui-talk-level": "Microphone input level",
   "reolink-wui-talk-silent": "No signal",
