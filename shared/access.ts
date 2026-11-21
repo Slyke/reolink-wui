@@ -18,8 +18,11 @@ export type Permission = typeof permissions[number];
 
 const viewer: Permission[] = ['view', 'events', 'media.live'];
 const operator: Permission[] = [
-  ...viewer, 'capture', 'ptz.read', 'ptz.write', 'settings.spotlight.read', 'settings.spotlight.write',
-  'settings.leds.read', 'settings.leds.write', 'settings.motion.read', 'alerts.read'
+  ...viewer, 'capture', 'recordings.view', 'recordings.export', 'audio.talk', 'ptz.read', 'ptz.write',
+  'settings.spotlight.read', 'settings.spotlight.write', 'settings.leds.read', 'settings.leds.write',
+  'settings.audio.read', 'settings.audio.write', 'settings.privacy.read', 'settings.privacy.write',
+  'settings.delivery.read', 'settings.delivery.write', 'settings.motion.read', 'settings.time_lapse.read',
+  'settings.network.read', 'settings.clock.read', 'alerts.read'
 ];
 export const presets = {
   viewer,

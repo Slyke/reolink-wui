@@ -176,10 +176,20 @@ header.mast { border-bottom: 1px solid var(--color-border); background: var(--co
 .stream-loading > * { grid-area: 1 / 1; }
 .stream-loading img { filter: brightness(.4); }
 .stream-loading span { position: relative; padding: .45em .75em; border-radius: var(--radius-sm); color: white; background: rgb(0 0 0 / .7); }
-@media (min-width: 801px) {
-  .mobile-live-start, .live-primary-actions:not(:has(> :not(.mobile-live-start))) { display: none; }
+.live-controls-width { min-width: 0; container-type: inline-size; }
+.live-stream-controls {
+  display: grid; grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-areas: "quality playback talk"; align-items: center; gap: var(--space-2);
 }
-.stream-quality { width: auto; max-width: 100%; }
+.live-stream-controls .stream-quality { grid-area: quality; justify-self: start; width: auto; max-width: 100%; }
+.live-stream-controls .stream-toggle { grid-area: playback; justify-self: start; }
+.live-stream-controls:not(:has(.stream-quality)) { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "playback talk"; }
+@container (max-width: 34rem) {
+  .live-stream-controls:has(.talk-controls):has(.stream-quality) {
+    grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "quality quality" "playback talk";
+  }
+  .live-stream-controls .stream-toggle { min-width: 0; max-width: 100%; white-space: normal; }
+}
 .preview-notice {
   position: absolute; inset: auto .5rem .5rem auto; color: var(--color-text);
   background: var(--color-panel); border-radius: var(--radius-sm); padding: .2rem .45rem;

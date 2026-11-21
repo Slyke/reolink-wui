@@ -156,6 +156,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const deviceOptions = new Map(), privacyAreas = new Map();
   const speakers = new Map();
   const talkStats = { starts:0, chunks:0, stops:0 };
+  let lastTalkPcm = Buffer.alloc(0);
   let legacyClock=false;
   const clocks = new Map(), radios = new Map();
   let delayNextPreset = false;
@@ -411,7 +412,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
         if(sequence>current.next || !pcm || Buffer.from(pcm,'base64').length%2050!==0){
           res.statusCode=400;return res.end(JSON.stringify({errorKey:'API_TALK_INVALID'}));
         }
-        if(sequence===current.next){talkStats.chunks++;current.next++;}
+        if(sequence===current.next){lastTalkPcm=Buffer.from(pcm,'base64');talkStats.chunks++;current.next++;}
       }
       if(req.method==='DELETE' && current?.owner===owner){speakers.delete(cameraId);talkStats.stops++;}
       res.statusCode=204;return res.end();
@@ -765,7 +766,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       broadcast(camera_id, {op:'snapshot',snapshot:{camera_id,topic,payload}});
       await broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic,JSON.stringify(payload),{qos:1,retain:true});
     },
-    talkStats,
+    talkStats, lastTalkPcm: () => lastTalkPcm,
     failFtpReads: count => {ftpReadFailures=count;},
     failEncoderReads: count => { encoderReadFailures=count; },
     rejectNextDisplay: cameraStatus => { displayRejection = {cameraStatus}; },

@@ -448,15 +448,7 @@
       </div>
     {/if}
   </div>
-  {#if actions || (!compact && camera.capabilities.mediaAllowed)}
-    <div class="row live-primary-actions">
-      {#if !compact && camera.capabilities.mediaAllowed}
-        <button class="primary mobile-live-start" type="button" aria-haspopup="dialog" disabled={!canStream}
-          onclick={show}>{t('live-start')}</button>
-      {/if}
-      {@render actions?.()}
-    </div>
-  {/if}
+  {#if actions}<div class="row">{@render actions()}</div>{/if}
   {#if presetAllowed}
     <CameraPresetShortcuts {camera} {csrf} onframe={frame => setPresetFrame?.(frame)} onnotice={showNotice} />
   {/if}
@@ -497,7 +489,7 @@
               </div>
             {/if}
           </div>
-          <div class="row">
+          <div class="live-controls-width"><div class="live-stream-controls">
             {#if canStream}
               <select class="stream-quality" aria-label={t('live-quality')} value={stream} disabled={liveBusy}
                   onchange={event => selectQuality(event.currentTarget.value as Quality)}>
@@ -509,14 +501,14 @@
               </select>
             {/if}
             {#if playback || liveBusy}
-              <button type="button" onclick={() => { void stopLive(); }}>{t('live-stop')}</button>
+              <button class="stream-toggle" type="button" onclick={() => { void stopLive(); }}>{t('live-stop')}</button>
             {:else}
-              <button class="primary" type="button" disabled={!canStream} onclick={startLive}>{t('live-start')}</button>
+              <button class="primary stream-toggle" type="button" disabled={!canStream} onclick={startLive}>{t('live-start')}</button>
             {/if}
-          </div>
-          {#if camera.capabilities.talk}
-            {#key camera.id}<PushToTalk {base} {csrf} />{/key}
-          {/if}
+            {#if camera.capabilities.talk}
+              {#key camera.id}<PushToTalk {base} {csrf} />{/key}
+            {/if}
+          </div></div>
           {#if liveMessage}<p role="status" class="notice">{liveMessage}</p>{/if}
           {@render guidance()}
         </div>

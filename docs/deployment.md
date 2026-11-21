@@ -157,7 +157,7 @@ The bridge downloads and prepares a private temporary MP4 on first playback. Sub
 
 ## Camera settings
 
-Camera settings groups controls under **Live view and image**, **Detection and alerts**, **Network and time**, **Camera accounts**, and **Recording and storage**. Playback preferences and SD media retention are marked **Managed by the WUI** and are stored in the WUI database. The SD recording schedule edits the camera and opens on demand.
+Camera settings groups controls under **Live view and image**, **Detection and alerts**, **Network and time**, **Camera accounts**, and **Recording and storage**. The WUI stores playback preferences and SD media retention rules in its database. The SD recording schedule edits the camera and opens on demand.
 
 Bridges advertising `deviceOptions` can report image tuning, day/night switching, anti-flicker, speaker volume, audio per recording stream, saved privacy masks, automatic tracking and alarm delivery. The WUI shows values and choices returned by the firmware. Under **Privacy masks → Edit privacy masks**, draw rectangles on the most recent live frame or add one with the keyboard. Save to apply them to the camera. Push, email and siren switches use the destinations and schedules already configured on the camera. Saving a change reads it back from the camera before the WUI confirms it.
 
@@ -185,7 +185,7 @@ Recording previews use the bridge's CoverPreview API with a read-only partial re
 Image orientation buttons are shown in Camera settings. Only reported camera controls are enabled. When a camera reports flips but no 90° rotation support, the UI keeps the rotation buttons disabled and explains that capability. The UI does not emulate a camera setting with a browser transform.
 
 
-Monitor and Dashboard share the Recordings, Camera settings, Refresh and Expand icons in the Live view heading. Expand, double-click or double-tap the preview to open the player. It starts the selected stream and displays the last preview until the first live frame arrives. Mobile also has a Start live stream button. On phones, PTZ fills the row below the video.
+Monitor and Dashboard share the Recordings, Camera settings, Refresh and Expand icons in the Live view heading. Expand, double-click or double-tap the preview to open the player. It starts the selected stream and displays the last preview until the first live frame arrives. On phones, PTZ fills the row below the video.
 
 Use the arrows beside each camera in Monitor to order both views. The WUI database stores the order per account. The first eight ordered PTZ presets appear on the Dashboard. Selecting one takes a snapshot after the bridge reports arrival. It uses the configured MQTT snapshot transport for PNG, or requests a fresh JPEG from the bridge preview API. The PTZ panel lets an operator change their order and choose a timed return preset.
 

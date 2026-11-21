@@ -36,7 +36,7 @@
   }
 </script>
 
-<SettingsDisclosure title={t('media-retention')} managed ontoggle={open=>{expanded=open;if(open)void refresh();}}>
+<SettingsDisclosure title={t('media-retention')} ontoggle={open=>{expanded=open;if(open)void refresh();}}>
   {#if view}
     <form class="stack" onsubmit={event=>{event.preventDefault();void save();}}>
       {#if !view.support}<p class="notice">{t(view.unavailable?'retention-offline':'retention-upgrade')}</p>{/if}

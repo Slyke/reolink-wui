@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installMicrophones, toneFrequency } from './microphone.mjs';
 import QRCode from 'qrcode';
 import { PNG } from 'pngjs';
 import { BinaryBitmap, HybridBinarizer, QRCodeReader, RGBLuminanceSource } from '@zxing/library';
@@ -300,6 +301,8 @@ for (const mode of ['browser','proxy']) {
       await expect(expanded).toBeHidden();
       await page.setViewportSize({width:375,height:812});
       await assertMonitorLayout();
+      await expect(liveView.getByRole('button',{name:'Start live stream',exact:true})).toHaveCount(0);
+      await expect(liveView.getByRole('button',{name:'Enlarge live view'})).toBeVisible();
       const cameraList = page.getByRole('group',{name:'Cameras',exact:true});
       const listHeading = cameraList.locator('summary');
       await expect(cameraList.getByRole('button',{name:/^Second camera/})).toBeVisible();
@@ -366,6 +369,50 @@ for (const mode of ['browser','proxy']) {
       await expect(largeView.locator('.stream-loading')).toHaveCount(0);
       await page.context().grantPermissions(['microphone','clipboard-read','clipboard-write'],{origin:publicOrigin});
       const holdToTalk=largeView.getByRole('button',{name:'Hold to talk'});
+      const micSettings=largeView.getByRole('button',{name:'Microphone settings'});
+      const input=largeView.getByRole('combobox',{name:'Microphone',exact:true});
+      const talkViewport=page.viewportSize();
+      for (const width of [talkViewport.width,375]) {
+        await page.setViewportSize({...talkViewport,width});
+        await expect.poll(()=>largeView.evaluate(el=>{
+          const [stop,mic,hold]=['.stream-toggle','.talk-controls .icon-button','.talk-controls .hold'].map(s=>el.querySelector(s)?.getBoundingClientRect());
+          if(!stop || !mic || !hold) return false;
+          const center=rect=>rect.top+rect.height/2;
+          return {
+            inOrder:stop.right <= mic.left && mic.right <= hold.left,
+            sameRow:Math.max(Math.abs(center(stop)-center(mic)),Math.abs(center(mic)-center(hold))) <= 1,
+            rightMargin:Math.round(el.querySelector('.live-stream-controls').getBoundingClientRect().right-hold.right)
+          };
+        }), {message:'Talk toolbar at '+width+'px'}).toEqual({inOrder:true,sameRow:true,rightMargin:0});
+      }
+      await page.setViewportSize(talkViewport);
+      await expect(input).toHaveCount(0);
+      await installMicrophones(page);
+      await micSettings.click();
+      await input.selectOption({label:'USB input'});
+      await expect.poll(()=>page.evaluate(()=>window.testMicIds.length)).toBe(0);
+      await largeView.getByRole('button',{name:'Test microphone'}).click();
+      const silentSample=largeView.locator('audio[aria-label="Play microphone test"]');
+      await expect(silentSample).toBeVisible({timeout:9000});
+      await expect(largeView.getByText('No signal',{exact:true})).toBeVisible();
+      await expect.poll(()=>silentSample.evaluate(el=>el.duration)).toBeCloseTo(5,1);
+      await input.selectOption({label:'Headset input'});
+      await expect(silentSample).toHaveCount(0);
+      await largeView.getByRole('button',{name:'Test microphone'}).click();
+      await expect.poll(()=>largeView.getByRole('meter').evaluate(el=>el.value)).toBeGreaterThan(-30);
+      await largeView.getByRole('button',{name:'Stop test'}).click();
+      const audio=largeView.locator('audio[aria-label="Play microphone test"]');
+      await expect.poll(()=>audio.evaluate(el=>el.readyState)).toBeGreaterThan(1);
+      const wav=Buffer.from(await page.evaluate(async()=>Array.from(new Uint8Array(await window.testMicWav.arrayBuffer()))));
+      expect(wav.toString('ascii',0,4)).toBe('RIFF');
+      expect(wav.readUInt32LE(24)).toBe(16000);
+      expect(Math.abs(toneFrequency(wav.subarray(44),16000)-440)).toBeLessThan(16);
+      expect(bridge.talkStats).toEqual({starts:0,chunks:0,stops:0});
+      await micSettings.click();
+      await expect(audio).toHaveCount(0);
+      await micSettings.click();
+      await expect(input).toHaveValue('test-input-1');
+      await micSettings.click();
       await holdToTalk.focus();
       await page.keyboard.down('Space');
       try {
@@ -373,10 +420,18 @@ for (const mode of ['browser','proxy']) {
           pressed:await holdToTalk.getAttribute('aria-pressed'),
           feedback:await largeView.locator('.talk-controls [role=status]').textContent()
         })).toEqual({pressed:'true',feedback:'Transmitting'});
-        await expect.poll(()=>bridge.talkStats.chunks).toBeGreaterThan(0);
+        await expect.poll(()=>bridge.talkStats.chunks).toBeGreaterThanOrEqual(4);
+        await expect.poll(()=>Math.abs(toneFrequency(bridge.lastTalkPcm(),16000)-440)).toBeLessThan(8);
       } finally {await page.keyboard.up('Space');}
       await expect(holdToTalk).toHaveAttribute('aria-pressed','false');
       await expect.poll(()=>bridge.talkStats.stops).toBe(1);
+      expect(await page.evaluate(()=>window.testMicIds)).toEqual(['test-input-0','test-input-1','test-input-1']);
+      expect(await page.evaluate(()=>window.testMicTracks.map(track=>track.readyState))).toEqual(['ended','ended','ended']);
+      await page.evaluate(()=>{
+        URL.createObjectURL=window.testCreateUrl;
+        delete navigator.mediaDevices.enumerateDevices;
+        delete navigator.mediaDevices.getUserMedia;
+      });
       const enlargedLive = largeView.getByRole('img',{name:'Live camera video'});
       expect((await enlargedLive.boundingBox()).width).toBeGreaterThan(previewTile.width);
       await page.mouse.click(2,2);
@@ -667,8 +722,14 @@ for (const mode of ['browser','proxy']) {
       await cameraPicker.press('ArrowDown');
       await cameraSearch.fill('DOCK');
       await cameraSearch.press('Enter');
-      await expect(page.getByRole('combobox',{name:'Apply preset'})).toHaveValue('viewer');
+      const grantPreset = page.getByRole('combobox',{name:'Apply preset'});
+      await expect(grantPreset).toHaveValue('viewer');
       await expect(page.getByLabel('View camera and state')).toBeChecked();
+      await grantPreset.selectOption('operator');
+      await expect(page.getByLabel('Change camera privacy mask settings')).toBeChecked();
+      await expect(page.getByLabel('Export recordings (when available)')).toBeChecked();
+      await expect(page.getByLabel('Use talk audio (when available)')).toBeChecked();
+      await expect(page.getByLabel('Change the camera clock')).not.toBeChecked();
 
       await page.getByRole('link',{name:'Event history',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/settings/events');
@@ -820,8 +881,9 @@ for (const mode of ['browser','proxy']) {
       const recordingCategory=page.getByRole('group',{name:'Recording and storage',exact:true});
       await expect(recordingCategory).not.toHaveAttribute('open','');
       await sectionSummary('Recording and storage').click();
-      await expect(page.getByText('Managed by the WUI',{exact:true})).toHaveCount(2);
-      const retentionSummary=page.locator('summary').filter({has:page.getByRole('heading',{name:'SD media retention',exact:true})});
+      const retentionSummary=sectionSummary('SD media retention');
+      await expect(retentionSummary).not.toContainText('Managed by the WUI');
+      await expect(sectionSummary('Playback preferences')).toContainText('Managed by the WUI');
       await retentionSummary.click();
       const retentionDays=page.getByRole('spinbutton',{name:'Delete time-lapse files after (days)'});
       await expect(retentionDays).toHaveValue('');

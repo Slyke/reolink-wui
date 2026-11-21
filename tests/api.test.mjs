@@ -216,6 +216,15 @@ for (const database of dbs) test('authorization, operations and live revocation:
   }]);
   assert.equal((await grant(owner, 'none')).json().reason, 'ACCESS_DENIED');
   assert.equal((await incoming({ path:'/cameras/' + camera + '/capabilities',headers:allowed })).json().ptz.write, true);
+  const operatorGrant = await grant(viewer, 'operator');
+  assert.equal(operatorGrant.statusCode, 200, operatorGrant.body);
+  assert.deepEqual(operatorGrant.json().data.permissions, [
+    'view', 'events', 'media.live', 'capture', 'ptz.read', 'ptz.write', 'alerts.read',
+    'settings.spotlight.read', 'settings.spotlight.write', 'settings.leds.read', 'settings.leds.write',
+    'settings.motion.read', 'settings.audio.read', 'settings.audio.write', 'settings.privacy.read',
+    'settings.privacy.write', 'settings.delivery.read', 'settings.delivery.write', 'settings.time_lapse.read',
+    'settings.network.read', 'settings.clock.read', 'recordings.view', 'recordings.export', 'audio.talk'
+  ].sort());
   assert.equal((await grant(viewer, 'viewer')).statusCode, 200);
   assert.deepEqual((await incoming({ path:'/status',headers:denied })).json(), status.json());
   assert.equal((await incoming({ path:'/cameras/' + other,headers:allowed })).statusCode, 200);
