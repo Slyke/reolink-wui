@@ -150,10 +150,12 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   const lapse = {enabled:false,configured:false,interval_seconds:10,format:'mp4',stream:'main',overwrite:false};
   const networks = new Map();
   const displays = new Map();
-  let displayRejection, lapseRejection, encoderReadFailures=0;
+  let displayRejection, lapseRejection, encoderReadFailures=0, ftpReadFailures=0;
   let photoExpired = false;
   const encoders = new Map();
-  const deviceOptions = new Map();
+  const deviceOptions = new Map(), privacyAreas = new Map();
+  const speakers = new Map();
+  const talkStats = { starts:0, chunks:0, stops:0 };
   let legacyClock=false;
   const clocks = new Map(), radios = new Map();
   let delayNextPreset = false;
@@ -371,7 +373,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, ftpDestination:imageSettings, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
+      version:1, talk:true, privacyMaskEditing:imageSettings, ftpDestination:imageSettings, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
       mediaFileCameras:inventory, previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -386,10 +388,32 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       return res.end(JSON.stringify({ ok:true, correlation_id:req.headers['x-correlation-id'], callbacks }));
     }
     const cameraId = req.url.split('/')[3];
+    const talk=req.url.match(/^\/api\/cameras\/[^/]+\/talk(?:\/([0-9a-f-]+))?$/);
+    if(talk){
+      const format={available:true,sampleRate:16000,blockSamples:1025};
+      const owner=talk[1], current=speakers.get(cameraId);
+      if(req.method==='GET')return res.end(JSON.stringify(format));
+      if(req.method==='POST'){
+        if(current && current.owner!==owner){res.statusCode=409;return res.end(JSON.stringify({errorKey:'API_TALK_BUSY'}));}
+        if(!current){speakers.set(cameraId,{owner,next:0});talkStats.starts++;}
+        return res.end(JSON.stringify(format));
+      }
+      if(req.method==='PUT'){
+        if(current?.owner!==owner){res.statusCode=404;return res.end(JSON.stringify({errorKey:'API_TALK_EXPIRED'}));}
+        const {pcm,sequence}=await read(req);
+        if(sequence>current.next || !pcm || Buffer.from(pcm,'base64').length%2050!==0){
+          res.statusCode=400;return res.end(JSON.stringify({errorKey:'API_TALK_INVALID'}));
+        }
+        if(sequence===current.next){talkStats.chunks++;current.next++;}
+      }
+      if(req.method==='DELETE' && current?.owner===owner){speakers.delete(cameraId);talkStats.stops++;}
+      res.statusCode=204;return res.end();
+    }
     if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
     if (req.url.startsWith('/api/cameras/'+cameraId+'/options/')) {
       const group=req.url.split('/').at(-1);
       if(group==='ftpDestination'){
+        if(req.method==='GET' && ftpReadFailures>0){ftpReadFailures--;res.statusCode=502;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_READ_FAILED'}));}
         if(cameraId!=='alpha'){res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_UNSUPPORTED'}));}
         const fields=deviceOptions.get(req.url) ?? {server:'',port:21,username:'',remoteDirectory:'',anonymous:false,ftpsOnly:false,password:''};
         if(req.method==='PUT'){
@@ -412,7 +436,22 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       };
       const fields=deviceOptions.get(req.url) ?? defaults[group];
       if(!fields){res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_UNSUPPORTED'}));}
-      const view={fields,...(group==='privacy' && {privacyZones:0})};
+      if(group==='privacy'){
+        const areas=privacyAreas.get(cameraId)??[];
+        const revision=()=>createHash('sha256').update(JSON.stringify([fields.maskEnabled.value,areas])).digest('hex');
+        if(req.method==='PUT'){
+          const {fields:changes}=await read(req);
+          if(changes.maskAreas){
+            if(changes.expectedRevision!==revision()){res.statusCode=409;return res.end(JSON.stringify({errorKey:'API_PRIVACY_MASKS_CHANGED'}));}
+            areas.splice(0,areas.length,...changes.maskAreas);
+          }
+          if(changes.maskEnabled && !areas.length){res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_INVALID'}));}
+          fields.maskEnabled.value=changes.maskEnabled;privacyAreas.set(cameraId,areas);deviceOptions.set(req.url,fields);
+        }
+        return res.end(JSON.stringify({fields,privacyZones:areas.length,privacyMasks:{areas,maxAreas:4,revision:revision()},
+          ...(req.method==='PUT' && {outcome:'confirmed',correlation_id:req.headers['x-correlation-id']})}));
+      }
+      const view={fields};
       if(req.method==='PUT'){
         const {fields:changes}=await read(req);
         if(Object.entries(changes).some(([key,value])=>!fields[key] || group==='privacy' && value)){
@@ -705,6 +744,8 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       broadcast(camera_id, {op:'snapshot',snapshot:{camera_id,topic,payload}});
       await broker.client.publishAsync(baseTopic+'/'+camera_id+'/'+topic,JSON.stringify(payload),{qos:1,retain:true});
     },
+    talkStats,
+    failFtpReads: count => {ftpReadFailures=count;},
     failEncoderReads: count => { encoderReadFailures=count; },
     rejectNextDisplay: cameraStatus => { displayRejection = {cameraStatus}; },
     rejectNextTimeLapse: status => { lapseRejection = status; },

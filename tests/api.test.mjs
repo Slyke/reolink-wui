@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { nearestUndatedPhoto } from '../dist/server/nearest-photo.js';
-import { timelineIndex } from '../dist/shared/recording-timeline.js';
+import { timelineIndex, ScannedPhotoTimes } from '../dist/shared/recording-timeline.js';
 import { recordingTime, recordingGaps } from '../dist/shared/recording-groups.js';
 import { test } from 'node:test';
 import { createServer as tcp } from 'node:net';
@@ -15,6 +15,21 @@ import { RecordingPreviewCache } from '../dist/shared/recording-preview-cache.js
 
 const envPg = process.env.WUI_TEST_POSTGRES;
 const dbs = [undefined, ...(envPg ? [{ driver:'postgres', url:envPg, tls:false }] : [])];
+
+test('a scanned interval reuses its closest photo and leaves uncovered seconds available for lookup', () => {
+  const scans=new ScannedPhotoTimes();
+  const a={id:'a',capturedAt:'2026-11-20T00:00:15'}, b={id:'b',capturedAt:'2026-11-20T00:00:40'};
+  scans.remember(6,15,a);
+  scans.remember(20,15,a);
+  scans.remember(50,40,b);
+  assert.equal(scans.lookup(8,20),a);
+  assert.equal(scans.lookup(17,1),null);
+  assert.equal(scans.lookup(17,2),a);
+  assert.equal(scans.lookup(31,20),undefined);
+  assert.equal(scans.lookup(42,2),b);
+  scans.clear();
+  assert.equal(scans.lookup(15,100),undefined);
+});
 
 test('the timeline picks the covering video or nearest saved capture in camera time', () => {
   const stamp = minute => '2026-11-17T12:'+String(minute).padStart(2,'0')+':00';
@@ -1133,6 +1148,9 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.ok(!response.body.includes(ftpSecret));
   }
   assert.equal((await changeFtp({...ftpIntent,password:'other'},privileged,ftpOp)).statusCode,409);
+  fixture.failFtpReads(2);
+  assert.equal((await incoming({path:ftpPath,headers:privileged})).statusCode,502);
+  fixture.failFtpReads(1);
   const ftpRead=await incoming({path:ftpPath,headers:privileged});
   assert.equal(ftpRead.json().supported,true);
   assert.equal(ftpRead.json().passwordStored,true);
@@ -1158,6 +1176,34 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.deepEqual((await incoming({path:optionPath+'picture',headers:privileged})).json(),imageChange.data);
   assert.equal((await saveOptions('picture',{dayNight:'auto'},privileged,imageOp)).statusCode,409);
   assert.equal((await saveOptions('privacy',{maskEnabled:true})).json().outcome,'rejected');
+  const maskPath=root+'/options/privacy';
+  const original=(await incoming({path:maskPath,headers:privileged})).json().privacyMasks;
+  const rectangle={id:0,x:120,y:60,width:200,height:110};
+  const edit={expectedRevision:original.revision,maskEnabled:true,maskAreas:[rectangle]};
+  assert.equal((await saveOptions('privacy',edit,restricted)).statusCode,403);
+  const savedMask=(await saveOptions('privacy',edit)).json();
+  assert.equal(savedMask.outcome,'confirmed');
+  assert.deepEqual(savedMask.data.privacyMasks.areas,[rectangle]);
+  assert.equal((await saveOptions('privacy',{...edit,maskEnabled:false,maskAreas:[]})).json().reason,'PRIVACY_MASKS_CHANGED');
+  assert.equal((await saveOptions('privacy',{expectedRevision:savedMask.data.privacyMasks.revision,maskEnabled:false,maskAreas:[]})).json().data.privacyZones,0);
+
+  const talkPath=root+'/talk', speaking=talkPath+'/'+uuid();
+  assert.equal((await incoming({path:talkPath,headers:restricted})).statusCode,403);
+  assert.equal((await incoming({path:talkPath,headers:privileged})).json().sampleRate,16000);
+  assert.equal((await incoming({path:speaking,method:'POST',headers:restricted})).statusCode,403);
+  const otherAdmin=await signIn('recording-admin');
+  assert.equal((await incoming({path:speaking,method:'POST',headers:privileged})).statusCode,200);
+  assert.equal((await incoming({path:speaking,method:'POST',headers:otherAdmin})).json().error,'TALK_BUSY');
+  const pcm=Buffer.alloc(4100).toString('base64');
+  const audioChunk=(headers,sequence)=>incoming({path:speaking,headers,method:'PUT',payload:{pcm,sequence}});
+  assert.equal((await audioChunk(otherAdmin,0)).json().error,'TALK_EXPIRED');
+  assert.equal((await incoming({path:speaking,method:'DELETE',headers:otherAdmin})).statusCode,204);
+  assert.equal((await audioChunk(privileged,1)).statusCode,400);
+  assert.equal((await audioChunk(privileged,0)).statusCode,204);
+  assert.equal((await audioChunk(privileged,0)).statusCode,204);
+  assert.equal((await incoming({path:speaking,method:'DELETE',headers:privileged})).statusCode,204);
+  assert.deepEqual(fixture.talkStats,{starts:1,chunks:1,stops:1});
+
   const encodingPath=root+'/encoding';
   assert.equal((await incoming({path:encodingPath,headers:restricted})).statusCode,403);
   fixture.failEncoderReads(1);

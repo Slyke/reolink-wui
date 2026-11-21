@@ -9,6 +9,7 @@
 
   let { children } = $props();
   const appearance = useAppearance();
+  const lastFrames=new Map<string,Blob>();
   let session = $state<SignedIn>();
   let error = $state('');
   let busy = $state(false);
@@ -21,17 +22,20 @@
     try {
       const current = await api<SessionView>({ path: '/api/v1/session' });
       if (current.user && current.csrf) {
+        if(session?.user.id!==current.user.id)lastFrames.clear();
         appearance.setAccount({ id: current.user.id });
         session = { user: current.user, csrf: current.csrf };
         error = '';
         return;
       }
+      lastFrames.clear();
       session = undefined;
       appearance.setAccount({});
       const destination = page.url.pathname === '/recordings' && page.url.searchParams.has('recording')
         ? '/?' + new URLSearchParams({ next: page.url.pathname + page.url.search }) : '/';
       await goto(destination, { replaceState: true });
     } catch (err) {
+      lastFrames.clear();
       session = undefined;
       appearance.setAccount({});
       error = errorText(err);
@@ -42,6 +46,7 @@
     busy = true;
     try {
       await api({ path: '/api/v1/session', method: 'DELETE', csrf: session?.csrf });
+      lastFrames.clear();
       session = undefined;
       await goto('/');
     } catch (err) {
@@ -50,7 +55,7 @@
       busy = false;
     }
   };
-  setContext<WorkspaceContext>(workspaceKey, { current: () => session!, refreshSession });
+  setContext<WorkspaceContext>(workspaceKey, { current: () => session!, refreshSession, lastFrames });
   onMount(() => {
     void refreshSession();
     const mobile = window.matchMedia('(max-width: 800px)');

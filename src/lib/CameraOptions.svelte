@@ -4,8 +4,8 @@
   import { api,errorText,operationId,outcomeText,t,type Outcome } from './api.js';
   import { optionTypes,type OptionGroup,type OptionValue,type OptionView } from '../../shared/device-options.js';
 
-  let {base,csrf,online,group,linked=[],title,access,children}:{
-    base:string;csrf:string;online:boolean;group:OptionGroup;linked?:OptionGroup[];title?:string;access?:{read:boolean;write:boolean};children?:Snippet
+  let {base,csrf,online,group,linked=[],title,access,children,extra}:{
+    base:string;csrf:string;online:boolean;group:OptionGroup;linked?:OptionGroup[];title?:string;access?:{read:boolean;write:boolean};children?:Snippet;extra?:Snippet<[OptionView,(next:OptionView)=>void]>
   }=$props();
   const groups=$derived([group,...linked]);
   let expanded=$state(false), busy=$state(false);
@@ -88,6 +88,7 @@
             </div>
             {#if access.write}<div class="row"><button class="primary" disabled={busy || !online || !Object.keys(changes(section)).length}>{t('save')}</button></div>{/if}
           </form>
+          {@render extra?.(view,(next)=>{views[section]=next;drafts[section]={};})}
         {:else if view && groups.length===1}<p class="muted">{t('device-options-empty')}</p>{/if}
         {#if errors[section]}<p class="error" role="alert">{t('device-group-'+section)} · {errors[section]}</p>{/if}
         {#if messages[section]}<p role="status">{messages[section]}</p>{/if}

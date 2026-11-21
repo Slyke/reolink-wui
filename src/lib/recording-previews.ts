@@ -1,15 +1,76 @@
 import { api, url } from './api.js';
+import { ScannedPhotoTimes } from '../../shared/recording-timeline.js';
 import type { TimelinePhoto } from '../../shared/recordings.js';
 import { recordingTime, type RecordingGroup } from '../../shared/recording-groups.js';
 import { RecordingPreviewCache, recordingPreviewLifetime, type RecordingFrame } from '../../shared/recording-preview-cache.js';
 
 type Frame = RecordingFrame<Blob>;
+type ViewedFrame = {cache: RecordingPreviews; recording: string; src: string; offset: number; jpeg: Blob};
 type Job = { result: Promise<Frame>; controller: AbortController; readers: number };
 
 // One cache per camera on the signed-in Recordings page. Cards, table and timeline share it.
 export class RecordingPreviews extends RecordingPreviewCache<Blob> {
   private jobs = new Map<string, Job>();
-  private photoTimes = new Map<string, {photo:TimelinePhoto|null; expires:number}>();
+  private scannedPhotos = new ScannedPhotoTimes();
+  private photoMisses = new Map<string, number>();
+
+  // The bounded warm cache can evict speculative frames. Scrubbed frames live with the selected day.
+  private viewed = new Map<string, Map<number, ViewedFrame>>();
+  private objectUrls = new Map<Blob, {src:string; decoded:Promise<void>}>();
+  private closed = false;
+
+  viewedFrame(clip:string, offset:number) {
+    return this.viewed.get(clip)?.get(offset);
+  }
+
+  async keepViewed(clip:string, offset:number, frame:Frame):Promise<ViewedFrame> {
+    const previous = this.viewedFrame(clip, offset);
+    if (previous) return previous;
+    if (this.closed) throw new DOMException('Timeline closed','AbortError');
+    let image = this.objectUrls.get(frame.jpeg);
+    if (!image) {
+      const decoded = new Image();
+      const src = URL.createObjectURL(frame.jpeg);
+      decoded.src = src;
+      image = {src, decoded:decoded.decode().catch(error => {
+        this.objectUrls.delete(frame.jpeg);
+        URL.revokeObjectURL(src);
+        throw error;
+      })};
+      this.objectUrls.set(frame.jpeg, image);
+    }
+    await image.decoded;
+    if (this.closed) throw new DOMException('Timeline closed','AbortError');
+    const result = {cache:this, recording:clip, src:image.src, offset:frame.offsetMs, jpeg:frame.jpeg};
+    let frames = this.viewed.get(clip);
+    if (!frames) { frames = new Map(); this.viewed.set(clip,frames); }
+    frames.set(offset,result);
+    if (!frames.has(frame.offsetMs)) frames.set(frame.offsetMs,result);
+    return result;
+  }
+  override exact(clip:string,offset:number){
+    const pinned=this.viewedFrame(clip,offset);
+    return pinned?{jpeg:pinned.jpeg,offsetMs:pinned.offset}:super.exact(clip,offset);
+  }
+  override nearest(clip:string, offset:number) {
+    let closest = super.nearest(clip,offset);
+    const frames = this.viewed.get(clip);
+    if (frames) {
+      for (const frame of frames.values()) {
+        if (!closest || Math.abs(frame.offset-offset) < Math.abs(closest.offsetMs-offset)) {
+          closest = {jpeg:frame.jpeg, offsetMs:frame.offset};
+        }
+      }
+    }
+    return closest;
+  }
+
+  cachedPhoto(second:number,radius:number) {
+    const visited = this.scannedPhotos.lookup(second,radius);
+    if (visited !== undefined) return visited;
+    const expires = this.photoMisses.get(second+'/'+radius);
+    return expires !== undefined && expires > Date.now() ? null : undefined;
+  }
 
   constructor(private camera: string, private date: string) { super(); }
 
@@ -64,13 +125,20 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
 
   async nearestPhoto(second:number,radius:number,signal:AbortSignal) {
     const key = second+'/'+radius;
-    const hit = this.photoTimes.get(key);
-    if (hit && hit.expires > Date.now()) return hit.photo;
+    const hit = this.cachedPhoto(second,radius);
+    if (hit !== undefined) return hit;
     const query = new URLSearchParams({date:this.date,second:String(second),radius:String(radius)});
     const {photo} = await api<{photo:TimelinePhoto|null}>({path:'/api/v1/cameras/'+this.camera+'/time-lapse/photos/nearest?'+query,signal});
     signal.throwIfAborted();
-    if (this.photoTimes.size >= 1024) this.photoTimes.delete(this.photoTimes.keys().next().value!);
-    this.photoTimes.set(key,{photo,expires:Date.now()+recordingPreviewLifetime});
+    if (this.closed) throw new DOMException('Timeline closed','AbortError');
+    if (photo) {
+      const capturedSecond = (recordingTime(photo.capturedAt)-recordingTime(this.date+'T00:00:00'))/1000;
+      this.scannedPhotos.remember(second,capturedSecond,photo);
+    } else {
+      // New photos can arrive while this day is open.
+      if (this.photoMisses.size >= 1024) this.photoMisses.delete(this.photoMisses.keys().next().value!);
+      this.photoMisses.set(key,Date.now()+recordingPreviewLifetime);
+    }
     return photo;
   }
 
@@ -93,7 +161,11 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
   close() {
     for (const job of this.jobs.values()) job.controller.abort();
     this.jobs.clear();
-    this.photoTimes.clear();
+    this.photoMisses.clear();
+    this.scannedPhotos.clear();
+    this.closed = true;
+    for (const image of this.objectUrls.values()) URL.revokeObjectURL(image.src);
+    this.objectUrls.clear();this.viewed.clear();
     this.clear();
   }
 }

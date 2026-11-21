@@ -7,6 +7,7 @@
   import SearchSelect from '$lib/SearchSelect.svelte';
   import type { SettingsGroup } from '../../../../../shared/access.js';
   import SettingsDisclosure from '$lib/SettingsDisclosure.svelte';
+  import PrivacyMaskEditor from '$lib/PrivacyMaskEditor.svelte';
   import CameraFtp from '$lib/CameraFtp.svelte';
   import CameraOptions from '$lib/CameraOptions.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
@@ -121,7 +122,15 @@
         {#if caps.display.read}<CameraDisplay bind:this={display} {base} {csrf} available={caps.display.available}
           writable={caps.display.write && online} onrename={() => void refresh()}/>{/if}
         {#if caps.options.sound}<CameraOptions bind:this={sound} {base} {csrf} {online} group="sound" access={caps.options.sound}/>{/if}
-        {#if caps.options.privacy}<CameraOptions bind:this={privacy} {base} {csrf} {online} group="privacy" access={caps.options.privacy}/>{/if}
+        {#if caps.options.privacy}
+          <CameraOptions bind:this={privacy} {base} {csrf} {online} group="privacy" access={caps.options.privacy}>
+            {#snippet extra(view,update)}
+              {#if view.privacyMasks && caps.options.privacy?.write}
+                <PrivacyMaskEditor {base} {csrf} {camera} {online} {view} onupdate={update}/>
+              {/if}
+            {/snippet}
+          </CameraOptions>
+        {/if}
       </SettingsDisclosure>
     {/if}
     {#if detection}

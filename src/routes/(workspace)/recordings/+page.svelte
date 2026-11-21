@@ -33,11 +33,12 @@
   let listing = $state<{ date: string; recordings: RecordingGroup[]; truncated: boolean; partial: boolean }>();
   let gallery = $state<{date:string;photos:TimelinePhoto[];undatedCount:number}>();
   let photoError = $state(''), photosLoading = $state(false);
+  let date = $state('');
   const listedDate = $derived(listing?.date ?? gallery?.date ?? '');
   const undatedCount = $derived(gallery?.date === listedDate ? gallery.undatedCount : 0);
   const timelineVideos = $derived(listing?.recordings ?? []);
   const timelinePhotos = $derived(gallery?.date === listedDate ? gallery.photos : []);
-  const previews = $derived(new RecordingPreviews(selected, listedDate));
+  let previews = $derived(new RecordingPreviews(selected, date));
   $effect(() => {
     const cache = previews;
     return () => cache.close();
@@ -50,7 +51,6 @@
     return recording && Number.isSafeInteger(offset) ? Math.max(0, Math.min(offset, recordingTime(recording.end) - recordingTime(recording.start))) : 0;
   });
   let highlighted = $state<string>();
-  let date = $state('');
   let userSelectedDate = false;
   let searchedDay = '';
   let timelineRange = $state<'fit' | 'day'>('fit');
@@ -126,9 +126,20 @@
     } else void navigate(base, true);
   };
   const selectDate = (value: string, reload = false) => {
-    if (!selected || !recordingDate.safeParse(value).success) return;
+    if (!selected) return;
+    if (value !== date) {
+      listController?.abort();
+      listing = undefined;
+      gallery = undefined;
+      photosLoading = false;
+      loading = false;
+      searchError = '';
+      photoError = '';
+      date = value;
+      searchedDay = '';
+    }
     userSelectedDate = true;
-    date = value;
+    if (!recordingDate.safeParse(value).success) return;
     const target = listUrl(selected, value);
     if (page.url.href !== target.href) void navigate(target, true);
     else if (reload || searchedDay !== value) void search();
@@ -302,6 +313,8 @@
   });
 </script>
 
+<svelte:window onpagehide={event=>{if (event.persisted) previews.close();}}
+  onpageshow={event=>{if (event.persisted) previews = new RecordingPreviews(selected,date);}} />
 <svelte:head><title>{t('recordings')} · {t('title')}</title></svelte:head>
 
 <h1>{t('recordings')}</h1>
@@ -368,7 +381,7 @@
       </div>
     </div>
     <form class="row recording-search" onsubmit={event => { event.preventDefault(); selectDate(date, true); }}>
-      <label>{t('recording-date')}<input type="date" required bind:value={date} oninput={() => { userSelectedDate = true; }}
+      <label>{t('recording-date')}<input type="date" required value={date} oninput={() => { userSelectedDate = true; }}
         onchange={event => selectDate(event.currentTarget.value)} /></label>
       <button disabled={loading || !date}>{t('recordings-search')}</button>
     </form>

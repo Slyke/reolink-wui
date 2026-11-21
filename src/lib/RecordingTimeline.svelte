@@ -58,7 +58,7 @@
   let resolved = $state<{second:number;radius:number;photo:TimelinePhoto|null}>();
   $effect(() => {
     const at = second, distance = radius, cache = previews;
-    if (at < 0 || distance < 0) return;
+    if (at < 0 || distance < 0 || cache.cachedPhoto(at,distance)!==undefined) return;
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
@@ -68,7 +68,10 @@
     },180);
     return () => {clearTimeout(timer);controller.abort();};
   });
-  const resolution = $derived(resolved && second === resolved.second && radius === resolved.radius ? resolved : undefined);
+  const resolution = $derived.by(()=>{
+    const photo=previews.cachedPhoto(second,radius);
+    return photo!==undefined?{second,radius,photo}:resolved && second===resolved.second && radius===resolved.radius?resolved:undefined;
+  });
   const capture = $derived.by((): TimelineCapture | undefined => {
     const photo = resolution?.photo;
     if (!photo || !hover) return known;

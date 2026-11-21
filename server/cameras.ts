@@ -216,6 +216,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
   return {
     discovered: !!caps,
     imageOrientation,
+    talk: grant.has('audio.talk') && bridge.has('talk') && bridge.hasDisplay(remote),
     ftpDestination: bridge.has('ftpDestination') && !!deviceOptionAccess('ftp'),
     events: grant.has('events'),
     recordings: grant.has('recordings.view') && bridge.hasStorage(remote),

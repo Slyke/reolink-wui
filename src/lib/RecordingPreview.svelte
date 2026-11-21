@@ -8,9 +8,11 @@
   } = $props();
   let element: HTMLDivElement;
   let visible = $state(false), failed = $state(false);
-  let image = $state<{ cache: RecordingPreviews; recording: string; src: string; offset: number; jpeg: Blob }>();
+  let image = $state<{ cache: RecordingPreviews; recording: string; src: string; offset: number; jpeg: Blob; owned?:boolean }>();
   const cacheKey = $derived(photo ? 'photo/' + recording : recording);
-  const shown = $derived(available && image?.cache === previews && image.recording === cacheKey ? image : undefined);
+  const offsetKey=$derived(eager && !photo ? Math.floor(offsetMs/1000)*1000 : offsetMs);
+  const cached=$derived(eager && available ? previews.viewedFrame(cacheKey,offsetKey) : undefined);
+  const shown = $derived(cached ?? (available && image?.cache === previews && image.recording === cacheKey ? image : undefined));
   const seconds = $derived(shown ? Math.round((offsetMs - shown.offset) / 1000) : 0);
   onMount(() => {
     if (eager || typeof IntersectionObserver === 'undefined') { visible = true; return; }
@@ -21,11 +23,19 @@
     return () => observer.disconnect();
   });
   $effect(() => {
-    const id = cacheKey, offset = offsetMs, cache = previews, timeline = eager;
+    const id = cacheKey, offset = offsetKey, cache = previews, timeline = eager;
     failed = false;
     if (!available || !visible) return;
     const controller = new AbortController();
-    const show = async (frame: { jpeg: Blob; offsetMs: number }) => {
+    const show = async (frame: { jpeg: Blob; offsetMs: number }, exact=true) => {
+      if (timeline) {
+        const shared=await cache.keepViewed(id,exact ? offset : frame.offsetMs,frame);
+        if (controller.signal.aborted) return;
+        const previous=untrack(()=>image);
+        if(previous?.owned)URL.revokeObjectURL(previous.src);
+        image=shared;
+        return;
+      }
       if (untrack(() => image?.jpeg === frame.jpeg)) return;
       const src = URL.createObjectURL(frame.jpeg);
       try {
@@ -33,14 +43,14 @@
         await decoded.decode();
         if (controller.signal.aborted) { URL.revokeObjectURL(src); return; }
       } catch (error) { URL.revokeObjectURL(src); throw error; }
-      if (image) URL.revokeObjectURL(image.src);
-      image = { cache, recording: id, src, offset: frame.offsetMs, jpeg: frame.jpeg };
+      if (image?.owned) URL.revokeObjectURL(image.src);
+      image = { cache, recording: id, src, offset: frame.offsetMs, jpeg: frame.jpeg,owned:true };
     };
     const hit = cache.exact(id, offset);
     const nearby = !hit && timeline && !photo ? cache.nearest(id, offset) : undefined;
     // Show a warm image immediately while a cold, exact hover waits for the pointer to settle.
     const first = hit ?? nearby;
-    const display = first ? show(first).catch(() => { if (!controller.signal.aborted && hit) failed = true; }) : Promise.resolve();
+    const display = first ? show(first,!!hit).catch(() => { if (!controller.signal.aborted && hit) failed = true; }) : Promise.resolve();
     const fetchExact = async () => {
       try {
         const frame = await cache.read(id, offset, controller.signal);
@@ -52,7 +62,7 @@
     if (!hit && !timeline) void fetchExact();
     return () => { clearTimeout(timer); controller.abort(); };
   });
-  onDestroy(() => { if (image) URL.revokeObjectURL(image.src); });
+  onDestroy(() => { if (image?.owned) URL.revokeObjectURL(image.src); });
 </script>
 
 <div class="recording-preview" bind:this={element} aria-busy={available && !failed && !shown}>

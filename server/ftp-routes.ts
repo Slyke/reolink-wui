@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { createHmac } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -20,8 +21,16 @@ export function ftpRoutes({api,path,runtime}:{api:FastifyInstance;path:string;ru
   api.get<{Params:{id:string}}>(endpoint,async request=>{
     const {row,bridge}=await runtime.camera({request,id:request.params.id,permission:'settings.delivery.read'});
     if(!bridge.has('ftpDestination') || !bridge.hasDisplay(row.routeId))throw new Failure('UNSUPPORTED',422);
-    const response=await bridge.api({path:destination(row.routeId),stableId:row.remote_id,correlation:request.id,signal:AbortSignal.timeout(21_000)});
-    const body=record(await jsonResponse({response}));
+    const signal=AbortSignal.timeout(24_000);
+    const read=async()=>{
+      const response=await bridge.api({path:destination(row.routeId),stableId:row.remote_id,correlation:request.id,signal});
+      return {response,body:record(await jsonResponse({response}))};
+    };
+    let {response,body}=await read();
+    if(!signal.aborted && ((response.status===502 && body.errorKey==='API_DEVICE_OPTIONS_READ_FAILED') || (response.status===503 && body.errorKey==='API_READ_BUSY'))){
+      await delay(350);
+      ({response,body}=await read());
+    }
     if(response.status===422 && body.errorKey==='API_DEVICE_OPTIONS_UNSUPPORTED')return {supported:false};
     if(!response.ok){
       if(response.status===409)throw new Failure('CAMERA_UNKNOWN',409);

@@ -1,3 +1,4 @@
+import { privacyMaskView } from './privacy-masks.js';
 import { z } from 'zod';
 import type { Permission } from './access.js';
 
@@ -32,7 +33,7 @@ const descriptor=z.union([
   z.strictObject({value:z.string().max(40),choices:z.array(z.string().max(40)).min(1).max(24)}).refine(o=>o.choices.includes(o.value))
 ]);
 export type OptionDescriptor=z.infer<typeof descriptor>;
-export const optionView=z.object({fields:z.record(z.string(),descriptor),privacyZones:z.int().min(0).optional()});
+export const optionView=z.object({fields:z.record(z.string(),descriptor),privacyZones:z.int().min(0).optional(),privacyMasks:privacyMaskView.optional()});
 export type OptionView=z.infer<typeof optionView>;
 function allowed(group:OptionGroup,key:string,value:OptionValue) {
   const schema=(optionTypes[group] as Record<string,z.ZodType>)[key];

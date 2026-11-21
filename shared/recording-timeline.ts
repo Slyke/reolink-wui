@@ -15,6 +15,34 @@ function after<T extends {start:number}>(items: T[], time: number) {
   return low;
 }
 
+// A nearest-photo lookup also proves that the same photo is closest between the
+// requested second and its capture time. A return drag can reuse that interval.
+export class ScannedPhotoTimes {
+  private ranges: {start:number; from:number; to:number; photo:TimelinePhoto}[] = [];
+
+  remember(second:number, capturedSecond:number, photo:TimelinePhoto) {
+    const i = after(this.ranges,capturedSecond);
+    const previous = this.ranges[i-1];
+    const from = Math.min(second,capturedSecond), to = Math.max(second,capturedSecond);
+    if (previous?.start === capturedSecond) {
+      previous.from = Math.min(previous.from,from);
+      previous.to = Math.max(previous.to,to);
+    } else {
+      this.ranges.splice(i,0,{start:capturedSecond,from,to,photo});
+    }
+  }
+
+  lookup(second:number, radius:number):TimelinePhoto | null | undefined {
+    const i = after(this.ranges,second);
+    for (const range of [this.ranges[i-1],this.ranges[i]]) {
+      if (range && range.from <= second && second <= range.to) {
+        return Math.abs(range.start-second) <= radius ? range.photo : null;
+      }
+    }
+  }
+  clear() { this.ranges.length = 0; }
+}
+
 export function timelineIndex(recordings: RecordingGroup[], photos: TimelinePhoto[]) {
   const clips = recordings.map(item => ({item,start:recordingTime(item.start),end:recordingTime(item.end)}))
     .sort((a,b) => a.start-b.start);

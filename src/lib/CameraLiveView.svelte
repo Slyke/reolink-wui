@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick, untrack, type Snippet } from 'svelte';
   import { api, errorText, fetchPreview, operationId, outcomeText, t, UiError, url, type Outcome } from './api.js';
+  import PushToTalk from './PushToTalk.svelte';
   import CameraPtz from './CameraPtz.svelte';
   import CameraPresetShortcuts from './CameraPresetShortcuts.svelte';
   import { dismissOnBackdrop } from './dialog.js';
@@ -63,7 +64,22 @@
   let playbackSequence = 0;
 
   const release = ({ path }: { path: string }) => api({ path, method: 'DELETE', csrf, keepalive: true }).catch(() => {});
+  let streamImage=$state<HTMLImageElement>();
+  function rememberLiveFrame(){
+    if(!playing || !streamImage?.naturalWidth || !camera.capabilities.mediaAllowed)return;
+    const account=workspace.current().user.id, cameraId=camera.id;
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.min(1280,streamImage.naturalWidth);
+    canvas.height=Math.max(1,Math.round(canvas.width*streamImage.naturalHeight/streamImage.naturalWidth));
+    const context=canvas.getContext('2d');
+    if(!context)return;
+    try{
+      context.drawImage(streamImage,0,0,canvas.width,canvas.height);
+      canvas.toBlob(blob=>{if(blob && workspace.current()?.user.id===account)workspace.lastFrames.set(cameraId,blob);},'image/jpeg',0.9);
+    }catch{/* The last decoded preview also serves as a drawing reference. */}
+  }
   const stopLive = () => {
+    rememberLiveFrame();
     playbackSequence++;
     clearTimeout(playbackTimer);
     liveBusy = false;
@@ -249,6 +265,7 @@
     };
     setPresetFrame = frame => {
       if (stopped || !presetAllowed) return;
+      workspace.lastFrames.set(camera.id,frame);
       request?.abort();
       const previous = image;
       image = URL.createObjectURL(frame);
@@ -283,6 +300,7 @@
               if (stopped || !enabled || request.signal.aborted) { URL.revokeObjectURL(candidate); return; }
             } catch (error) { URL.revokeObjectURL(candidate); throw error; }
             const previous = image;
+            workspace.lastFrames.set(camera.id,next.image);
             image = candidate;
             presetFrame = false;
             if (previous) URL.revokeObjectURL(previous);
@@ -462,7 +480,7 @@
               {#key playback}
                 {@const path = playback}
                 <div class="viewport">
-                  <img src={url(path)} alt={t('live-alt')} use:firstLiveFrame={path}
+                  <img bind:this={streamImage} src={url(path)} alt={t('live-alt')} use:firstLiveFrame={path}
                     onload={() => { if (playback === path) playing = true; }}
                     onerror={() => failLive({ path })} />
                 </div>
@@ -496,6 +514,9 @@
               <button class="primary" type="button" disabled={!canStream} onclick={startLive}>{t('live-start')}</button>
             {/if}
           </div>
+          {#if camera.capabilities.talk}
+            {#key camera.id}<PushToTalk {base} {csrf} />{/key}
+          {/if}
           {#if liveMessage}<p role="status" class="notice">{liveMessage}</p>{/if}
           {@render guidance()}
         </div>

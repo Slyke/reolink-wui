@@ -4,7 +4,7 @@ import type { Appearance } from '../../shared/appearance.js';
 import type { Account, BridgeSummary, CameraSummary, User } from './models.js';
 
 export type SignedIn = { user: User; csrf: string };
-export type WorkspaceContext = { current: () => SignedIn; refreshSession: () => Promise<void> };
+export type WorkspaceContext = { lastFrames:Map<string,Blob>; current: () => SignedIn; refreshSession: () => Promise<void> };
 export type AppearanceContext = {
   current: () => Appearance;
   customized: () => boolean;

@@ -6,6 +6,6 @@ export default defineConfig({
   timeout: 60_000,
   use: {
     browserName: 'chromium',
-    launchOptions: { executablePath: process.env.WUI_TEST_CHROMIUM }
+    launchOptions: { args: ['--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream'], executablePath: process.env.WUI_TEST_CHROMIUM }
   }
 });

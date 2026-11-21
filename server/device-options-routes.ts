@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { isOptionGroup, optionPermission, optionValue, readOptionView, validOptionChange } from '../shared/device-options.js';
+import { privacyMaskChanges,sameAreas } from '../shared/privacy-masks.js';
 import { correlationPattern } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
 import { sendOutcome } from './camera-routes.js';
@@ -31,16 +32,22 @@ export function deviceOptionsRoutes({api,path,runtime}:{api:FastifyInstance;path
     const {row,bridge,session}=await runtime.camera({request,id,permission:optionPermission(group,'write'),mutate:true});
     if(group==='tracking')await runtime.camera({request,id,permission:'ptz.write',mutate:true});
     if(!bridge.has('deviceOptions') || !bridge.hasDisplay(row.routeId))throw new Failure('UNSUPPORTED',422);
-    const {operationId,fields}=input({schema:z.strictObject({operationId:uuid,fields:z.record(z.string(),optionValue).refine(input=>validOptionChange(group,input))}),value:request.body});
+    const simple=z.record(z.string(),optionValue).refine(value=>validOptionChange(group,value));
+    const fieldSchema=group==='privacy'?z.union([privacyMaskChanges,simple]):simple;
+    const {operationId,fields}=input({schema:z.strictObject({operationId:uuid,fields:fieldSchema}),value:request.body});
+    const masks=group==='privacy' && 'maskAreas' in fields?privacyMaskChanges.parse(fields):undefined;
+    if(masks && !bridge.has('privacyMaskEditing'))throw new Failure('UNSUPPORTED',422);
     const result=await runtime.ops.run({id:operationId,actor:session.account.id,resource:row.id,action:'settings.options.'+group,correlation:request.id,input:fields,serialized:true,
       execute:async()=>{
         const response=await bridge.api({path:'/cameras/'+row.routeId+'/options/'+group,method:'PUT',stableId:row.remote_id,data:{fields},correlation:request.id,signal:AbortSignal.timeout(30_000)});
         const body=record(await jsonResponse({response}));
         const bridgeCorrelationId=typeof body.correlation_id==='string' && correlationPattern.test(body.correlation_id)?body.correlation_id:undefined;
         const observed=readOptionView(group,body);
-        if(response.ok && body.outcome==='confirmed' && observed && Object.entries(fields).every(([key,value])=>observed.fields[key]?.value===value))
+        if(response.ok && body.outcome==='confirmed' && observed && (masks
+          ? !!observed.privacyMasks && observed.fields.maskEnabled?.value===masks.maskEnabled && sameAreas(observed.privacyMasks.areas,masks.maskAreas)
+          : Object.entries(fields).every(([key,value])=>observed.fields[key]?.value===value)))
           return {outcome:'confirmed',bridgeCorrelationId,data:observed};
-        const reasons={API_DEVICE_OPTIONS_INVALID:'BAD_INPUT',API_DEVICE_OPTIONS_UNSUPPORTED:'UNSUPPORTED',API_DEVICE_OPTIONS_REJECTED:'CAMERA_OPTION_REJECTED',
+        const reasons={API_DEVICE_OPTIONS_INVALID:'BAD_INPUT',API_PRIVACY_MASKS_CHANGED:'PRIVACY_MASKS_CHANGED',API_DEVICE_OPTIONS_UNSUPPORTED:'UNSUPPORTED',API_DEVICE_OPTIONS_REJECTED:'CAMERA_OPTION_REJECTED',
           API_READ_BUSY:'COMMAND_BUSY',API_DISPLAY_BUSY:'COMMAND_BUSY',API_CAMERA_IDENTITY_CHANGED:'CAMERA_UNKNOWN',API_DEVICE_OPTIONS_READ_FAILED:'CAMERA_OPTION_READ_FAILED'} as const;
         const key=typeof body.errorKey==='string' && Object.hasOwn(reasons,body.errorKey)?body.errorKey as keyof typeof reasons:undefined;
         return key?{outcome:'rejected',reason:reasons[key],bridgeCorrelationId}:{outcome:'unverified',reason:'CAMERA_OPTION_UNVERIFIED',bridgeCorrelationId};

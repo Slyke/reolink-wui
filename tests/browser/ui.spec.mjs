@@ -298,6 +298,19 @@ for (const mode of ['browser','proxy']) {
         expect(await poster.evaluate(el=>getComputedStyle(el).filter)).toBe('brightness(0.4)');
       } finally { releaseFirstFrame(); bridge.holdMediaUntil(undefined); }
       await expect(largeView.locator('.stream-loading')).toHaveCount(0);
+      await page.context().grantPermissions(['microphone','clipboard-read','clipboard-write'],{origin:publicOrigin});
+      const holdToTalk=largeView.getByRole('button',{name:'Hold to talk'});
+      await holdToTalk.focus();
+      await page.keyboard.down('Space');
+      try {
+        await expect.poll(async ()=>({
+          pressed:await holdToTalk.getAttribute('aria-pressed'),
+          feedback:await largeView.locator('.talk-controls [role=status]').textContent()
+        })).toEqual({pressed:'true',feedback:'Transmitting'});
+        await expect.poll(()=>bridge.talkStats.chunks).toBeGreaterThan(0);
+      } finally {await page.keyboard.up('Space');}
+      await expect(holdToTalk).toHaveAttribute('aria-pressed','false');
+      await expect.poll(()=>bridge.talkStats.stops).toBe(1);
       const enlargedLive = largeView.getByRole('img',{name:'Live camera video'});
       expect((await enlargedLive.boundingBox()).width).toBeGreaterThan(previewTile.width);
       await page.mouse.click(2,2);
@@ -870,6 +883,25 @@ for (const mode of ['browser','proxy']) {
       await imageOptions.locator(':scope > summary').click();
       await sectionSummary('Privacy masks').click();
       await expect(page.getByRole('checkbox',{name:'Apply saved privacy masks'})).toBeDisabled();
+      const editMasks=page.getByRole('button',{name:'Edit privacy masks'});
+      await editMasks.click();
+      const maskDialog=page.getByRole('dialog',{name:'Edit privacy masks'});
+      const maskStage=maskDialog.getByRole('button',{name:'Draw or select a privacy mask'});
+      await expect(maskStage.locator('img')).toBeVisible();
+      const maskBox=await maskStage.boundingBox();
+      await page.mouse.move(maskBox.x+maskBox.width*.2,maskBox.y+maskBox.height*.2);
+      await page.mouse.down();
+      await page.mouse.move(maskBox.x+maskBox.width*.5,maskBox.y+maskBox.height*.6,{steps:4});
+      await page.mouse.up();
+      await maskDialog.getByRole('button',{name:'Save privacy masks'}).click();
+      await expect(maskDialog.getByRole('status')).toContainText('Confirmed');
+      await maskDialog.getByRole('button',{name:'Close',exact:true}).click();
+      await expect(page.getByRole('checkbox',{name:'Apply saved privacy masks'})).toBeChecked();
+      await editMasks.click();
+      await maskDialog.getByRole('button',{name:'Remove rectangle'}).click();
+      await maskDialog.getByRole('button',{name:'Save privacy masks'}).click();
+      await expect(maskDialog.getByRole('status')).toContainText('Confirmed');
+      await maskDialog.getByRole('button',{name:'Close',exact:true}).click();
       const encoding=page.getByRole('group',{name:'Bandwidth and stream quality',exact:true});
       await encoding.locator('summary').click();
       await expect(encoding.getByLabel('Frame rate (fps)')).toHaveValue('20');
@@ -1279,7 +1311,27 @@ for (const mode of ['browser','proxy']) {
       await expect(page.locator('.timeline-hover img')).toBeVisible();
       await expect.poll(()=>page.locator('.timeline-hover img').evaluate(image=>image.naturalWidth)).toBeGreaterThan(0);
       expect(dayPreviews).toHaveLength(warmCount);
+      const hoveredImage=page.locator('.timeline-hover img');
+      const firstHoverUrl=await hoveredImage.getAttribute('src');
+      await page.mouse.move(0,0);
+      await expect(hoveredImage).toHaveCount(0);
+      await page.evaluate(()=>{
+        window.originalTimelineNow=Date.now;
+        Date.now=()=>window.originalTimelineNow()+660_000;
+      });
+      try {
+        await segment.hover();
+        await expect(hoveredImage).toHaveAttribute('src',firstHoverUrl);
+      } finally {await page.evaluate(()=>{Date.now=window.originalTimelineNow;delete window.originalTimelineNow;});}
+      expect(dayPreviews).toHaveLength(warmCount);
       page.off('response',trackPreview);
+      // A browser can suspend the whole document when the user follows a link.
+      await page.evaluate(()=>{
+        window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));
+        window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+      });
+      await expect(hoveredImage).toBeVisible();
+      await expect(hoveredImage).not.toHaveAttribute('src',firstHoverUrl);
       await expect(page.getByText('Recording preview',{exact:true})).toHaveCount(0);
       const scopeSelect=page.locator('.timeline-range'), timelineRail=page.locator('.timeline-rail');
       await scopeSelect.selectOption('day');
@@ -1546,6 +1598,14 @@ for (const mode of ['browser','proxy']) {
       const pointAtHour=h=>({x:photoRail.x+photoRail.width*h/24,y:photoRail.y+photoRail.height/2});
       await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[pointAtHour(9.25)]});
       await expect(bubble.locator('time')).toHaveText('09:15:00');
+      const touchPhoto=bubble.locator('img');
+      await expect(touchPhoto).toBeVisible();
+      const morningUrl=await touchPhoto.getAttribute('src');
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[pointAtHour(12.75)]});
+      await expect(touchPhoto).toBeVisible();
+      await expect(touchPhoto).not.toHaveAttribute('src',morningUrl);
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[pointAtHour(9.25)]});
+      await expect(touchPhoto).toHaveAttribute('src',morningUrl);
       await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[pointAtHour(12.75)]});
       await expect(bubble.locator('time')).toHaveText('12:45:00');
       await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
@@ -1556,6 +1616,9 @@ for (const mode of ['browser','proxy']) {
       await expect(bubble).toHaveCount(0);
       await inputDate.fill('2026-11-18');
       await expect(page).toHaveURL(/date=2026-11-18/);
+      await expect.poll(()=>page.evaluate(async src=>{
+        try {return (await fetch(src)).ok;} catch {return false;}
+      },morningUrl)).toBe(false);
       await expect(page.getByRole('heading',{name:'Recording timeline'})).toBeVisible();
       await rail.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
       await expect(page.getByText('No video recordings for 2026-11-18. 1 time-lapse photo.')).toBeVisible();
