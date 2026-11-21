@@ -10,7 +10,7 @@ export type { CameraEvent } from '../../server/cameras.js';
 export type User = { id: string; label: string; admin: boolean };
 export type SessionView = { user?: User; methods?: { local: boolean; oidc: boolean; proxy: boolean }; csrf?: string };
 export type BridgeSummary = {
-  id: string; label: string; connected: boolean; refreshedAt?: string | null; enrollment: boolean; callbacks: boolean;
+  id: string; label: string; connected: boolean; restart:boolean; refreshedAt?: string | null; enrollment: boolean; callbacks: boolean;
   connections: BridgeConnections;
   eventSources: EventSource[]; availableEventSources: EventSource[];
 };

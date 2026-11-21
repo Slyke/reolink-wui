@@ -115,6 +115,31 @@ const expectMediaClosed = async reader => {
   }
 };
 
+test('detection zones use the detector grant and reject conflicting edits',async t=>{
+  const fixture=await fixtureBridge();t.after(()=>fixture.close());
+  const {app,runtime,incoming,seed,signIn}=await launch({bridges:[fixture.config]});
+  t.after(()=>app.close());
+  await seed({username:'zone-admin',admin:true});
+  const id=await seed({username:'zone-viewer'}),admin=await signIn('zone-admin'),viewer=await signIn('zone-viewer');
+  await eventually(()=>runtime.bridges.get('lab').has('detectionZones'));
+  const camera=await eventually(async()=>(await runtime.sql.query('SELECT id FROM cameras WHERE bridge_id=$1 AND remote_id=$2','lab','alpha'))[0]?.id);
+  await runtime.sql.query('INSERT INTO grants VALUES ($1,$2,$3)',id,camera,JSON.stringify(['view','settings.motion.read']));
+  const path='/cameras/'+camera+'/options/';
+  const read=(group,headers)=>incoming({path:path+group,headers});
+  const write=(group,headers,fields)=>incoming({path:path+group,headers,method:'PUT',payload:{operationId:uuid(),fields}});
+  const original=(await read('motionZone',viewer)).json().zone;
+  assert.equal(original.cells,'1'.repeat(32));
+  assert.equal((await read('personZone',viewer)).statusCode,403);
+  const wanted={expectedRevision:original.revision,cells:'0'+'1'.repeat(31)};
+  assert.equal((await write('motionZone',viewer,wanted)).statusCode,403);
+  assert.equal((await write('motionZone',{cookie:admin.cookie},wanted)).statusCode,403);
+  assert.equal((await write('motionZone',admin,{...wanted,cells:'unexpected'})).statusCode,400);
+  assert.equal((await write('motionZone',admin,wanted)).json().data.zone.cells,wanted.cells);
+  const stale=await write('motionZone',admin,{...wanted,cells:original.cells});
+  assert.equal(stale.json().reason,'DETECTION_ZONE_CHANGED');
+  assert.equal((await read('personZone',admin)).json().zone.cells,original.cells);
+});
+
 for (const database of dbs) test('authorization, operations and live revocation: ' + (database?.driver ?? 'sqlite'), async t => {
   const bridge = await fixtureBridge({ previewCameras:['alpha'] });
   t.after(() => bridge.close());

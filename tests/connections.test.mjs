@@ -44,6 +44,31 @@ test('bridge tests check draft endpoints independently without saving or sending
   assert.equal(fixture.counts().writes,0);
 });
 
+test('bridge restarts require a confirmed bridge, administrator session and CSRF, and run once',async t=>{
+  const fixture=await fixtureBridge(), legacy=await fixtureBridge({terminationOptions:false});
+  t.after(()=>Promise.all([fixture.close(),legacy.close()]));
+  const {app,runtime,incoming,seed,signIn}=await launch({bridges:[fixture.config,{...legacy.config,id:'old'}]});
+  t.after(()=>app.close());
+  await seed({username:'restart-admin',admin:true});await seed({username:'restart-viewer'});
+  const admin=await signIn('restart-admin'),viewer=await signIn('restart-viewer');
+  await eventually(()=>runtime.bridges.get('lab').has('terminate'));
+  const post=(headers,payload,bridge='lab')=>incoming({method:'POST',path:'/admin/bridges/'+bridge+'/restart',headers,payload});
+  const payload={operationId:uuid(),confirmBridge:'lab',exitCode:75,reason:'Fixture maintenance'};
+  assert.equal((await post(viewer,payload)).statusCode,403);
+  assert.equal((await post({cookie:admin.cookie},payload)).statusCode,403);
+  for(const extra of [{confirmBridge:'old'},{exitCode:256},{exitCode:-1},{exitCode:1.5},{reason:'a'.repeat(513)}]){
+    assert.equal((await post(admin,{...payload,...extra})).statusCode,400);
+  }
+  await post(admin,{operationId:uuid(),confirmBridge:'old'},'old');
+  assert.deepEqual(legacy.terminations,[]);
+  assert.deepEqual(fixture.terminations,[]);
+  assert.equal((await post(admin,payload)).json().outcome,'confirmed');
+  assert.equal((await post(admin,payload)).json().outcome,'confirmed');
+  assert.deepEqual(fixture.terminations,[{exitCode:75,reason:'Fixture maintenance'}]);
+  assert.equal((await post(admin,{operationId:uuid(),confirmBridge:'lab'})).json().outcome,'confirmed');
+  assert.deepEqual(fixture.terminations[1],{exitCode:0});
+});
+
 test('HTTP, WS and MQTT accept optional trust anchors or per-connection disabled verification',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'wui-connection-tls-'));t.after(()=>rm(directory,{recursive:true,force:true}));
   const key=join(directory,'key.pem'),cert=join(directory,'cert.pem');

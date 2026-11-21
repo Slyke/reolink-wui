@@ -64,7 +64,7 @@ export class Bridge {
   private apiChannel?: ApiChannel;
   private priority: EventSource[] = [];
   private readonly http?: Link;
-  private readonly bridgeVersion = { v1: false, inventory: false, media: false, enrollment: false, callbacks: false, rtspSettings: false, deviceOptions: false, ftpDestination: false, talk: false, privacyMaskEditing: false, previewNotifications: false, settings: undefined as SettingsGroup[] | undefined };
+  private readonly bridgeVersion = { v1: false, terminate: false, detectionZones: false, inventory: false, media: false, enrollment: false, callbacks: false, rtspSettings: false, deviceOptions: false, ftpDestination: false, talk: false, privacyMaskEditing: false, previewNotifications: false, settings: undefined as SettingsGroup[] | undefined };
   private scanning?: Promise<boolean>;
   private inventoryFailed = false;
   private readonly mediaStreams = new Map<string, string[]>();
@@ -397,7 +397,7 @@ export class Bridge {
     throw new Failure('OUTCOME_UNKNOWN', 502, 'unknown');
   }
 
-  has(feature: 'v1' | 'media' | 'enrollment' | 'callbacks' | 'rtspSettings' | 'deviceOptions' | 'ftpDestination' | 'privacyMaskEditing' | 'talk') {
+  has(feature: 'v1' | 'terminate' | 'detectionZones' | 'media' | 'enrollment' | 'callbacks' | 'rtspSettings' | 'deviceOptions' | 'ftpDestination' | 'privacyMaskEditing' | 'talk') {
     return this.bridgeVersion[feature];
   }
 
@@ -593,11 +593,13 @@ export class Bridge {
     const reportedSettings = contract.settings;
     this.bridgeVersion.settings = ok ? settingsGroups.filter(group => Array.isArray(reportedSettings) && reportedSettings.includes(group)) : undefined;
     this.bridgeVersion.v1 = ok;
+    this.bridgeVersion.terminate = ok && contract.terminate === true && contract.terminationOptions === true;
     this.bridgeVersion.previewNotifications = ok && contract.previewNotifications === true;
     this.bridgeVersion.inventory = ok && contract.inventory === true;
     this.bridgeVersion.media = ok && this.config.http?.relay === true && contract.media === true;
     this.bridgeVersion.enrollment = ok && contract.enrollment === true;
     this.bridgeVersion.talk = ok && contract.talk === true;
+    this.bridgeVersion.detectionZones = ok && contract.detectionZones === true;
     this.bridgeVersion.privacyMaskEditing = ok && contract.privacyMaskEditing === true;
     this.bridgeVersion.ftpDestination = ok && contract.ftpDestination === true;
     this.bridgeVersion.deviceOptions = ok && contract.deviceOptions === true;

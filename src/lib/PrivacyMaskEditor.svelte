@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { api, errorText, fetchPreview, operationId, outcomeText, t, type Outcome } from './api.js';
+  import { maskFrame } from './mask-frame.js';
+  import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
   import { dismissOnBackdrop } from './dialog.js';
   import { useWorkspace } from './workspace.js';
   import type { Camera } from './models.js';
@@ -26,14 +27,8 @@
     if(cached && !refresh){src=URL.createObjectURL(cached);return;}
     const request=new AbortController();controller=request;loading=true;
     try{
-      const readFrame=(fresh:boolean)=>fetchPreview({path:base+'/preview'+(fresh?'?refresh=true':''),signal:request.signal});
-      const response=await readFrame(refresh).catch(reason=>{
-        if(refresh || !camera.capabilities.bridgePreview || request.signal.aborted)throw reason;
-        return readFrame(true);
-      });
-      if(!response.image)throw Error();
-      if(request.signal.aborted)return;
-      workspace.lastFrames.set(camera.id,response.image);src=URL.createObjectURL(response.image);
+      const image=await maskFrame({base,camera,cache:workspace.lastFrames,fresh:refresh,signal:request.signal});
+      if(!request.signal.aborted)src=URL.createObjectURL(image);
     }catch(err){if(!request.signal.aborted){imageError=errorText(err);if(cached)src=URL.createObjectURL(cached);}}
     finally{if(controller===request)loading=false;}
   }

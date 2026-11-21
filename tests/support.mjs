@@ -136,7 +136,7 @@ export const fixtureBroker = async () => {
   return { client, url, start, stop, close };
 };
 
-export const fixtureBridge = async ({ previewCameras = [], capture = false, websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, manageAccounts = true, fixedCameras = [], enrollmentTargets, enrollmentAddress } = {}) => {
+export const fixtureBridge = async ({ previewCameras = [], capture = false, websocket = false, recordings = false, recordingCount = 1, metadataPages = false, previewNotifications = false, apiEvents = false, token = serviceToken, namePrefix = '', imageSettings = true, recordingSettings = true, manageAccounts = true, fixedCameras = [], enrollmentTargets, enrollmentAddress, terminate = true, terminationOptions = terminate } = {}) => {
   const previewRequests = [], recordingRequests = [];
   let previewJpeg = jpeg, previewRevision = 0;
   let led = false;
@@ -185,6 +185,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let mediaClosed = 0;
   const correlations = [];
   const requests = [];
+  const terminations = [];
   const callbacks = [];
   const controls = { ...caps.baichuan.controls };
   if (!imageSettings) delete controls.image;
@@ -372,8 +373,14 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.method === 'GET' && req.url.startsWith('/api/enrollments/') && enrolled.has(req.url.split('/').at(-1))) {
       return res.end(JSON.stringify({status:'active',camera_id:'alpha'}));
     }
+    if (terminate && req.url === '/api/terminate' && req.method === 'POST') {
+      const body = await read(req);
+      terminations.push(body);
+      res.statusCode = 202;
+      return res.end(JSON.stringify({ok:true,status:'terminating',exitCode:body.exitCode,correlation_id:req.headers['x-correlation-id']}));
+    }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, talk:true, privacyMaskEditing:imageSettings, ftpDestination:imageSettings, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
+      version:1, terminate, terminationOptions, talk:true, detectionZones:imageSettings, privacyMaskEditing:imageSettings, ftpDestination:imageSettings, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
       mediaFileCameras:inventory, previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -412,6 +419,20 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.url.endsWith('/rotation') && req.method === 'GET') return res.end(JSON.stringify({status:rotationStates.get(cameraId) ?? 'not-started'}));
     if (req.url.startsWith('/api/cameras/'+cameraId+'/options/')) {
       const group=req.url.split('/').at(-1);
+      if(['motionZone','personZone','petZone','vehicleZone','faceZone'].includes(group)){
+        if(!imageSettings || !['motionZone','personZone'].includes(group)){
+          res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_UNSUPPORTED'}));
+        }
+        const width=8,height=4;
+        let cells=deviceOptions.get(req.url)??'1'.repeat(width*height);
+        const revision=()=>createHash('sha256').update(group+cells).digest('hex');
+        if(req.method==='PUT'){
+          const {fields}=await read(req);
+          if(fields.expectedRevision!==revision()){res.statusCode=409;return res.end(JSON.stringify({errorKey:'API_DETECTION_ZONE_CHANGED'}));}
+          cells=fields.cells;deviceOptions.set(req.url,cells);
+        }
+        return res.end(JSON.stringify({fields:{},zone:{cells,width,height,revision:revision()},outcome:'confirmed',correlation_id:req.headers['x-correlation-id']}));
+      }
       if(group==='ftpDestination'){
         if(req.method==='GET' && ftpReadFailures>0){ftpReadFailures--;res.statusCode=502;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_READ_FAILED'}));}
         if(cameraId!=='alpha'){res.statusCode=422;return res.end(JSON.stringify({errorKey:'API_DEVICE_OPTIONS_UNSUPPORTED'}));}
@@ -711,7 +732,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       id:'lab', label:'Fixture bridge', cameraIds:['alpha','beta'], commands:'http', events:'mqtt', ...(capture && {capture:'mqtt'}),
       http:{url:root,token:token}, mqtt:{url:broker.url,baseTopic}, callbacks:{fixture:root+'/callback'}
     },
-    correlations, requests, previewRequests, recordingRequests,
+    correlations, requests, terminations, previewRequests, recordingRequests,
     holdMediaUntil: gate => { mediaStartGate = gate; },
     delayNextPreset: () => {delayNextPreset = true;},
     setPresetList: entries => { presets.clear(); for (const [id,name] of entries) presets.set(id,name); },

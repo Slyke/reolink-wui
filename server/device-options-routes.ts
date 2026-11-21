@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { isOptionGroup, optionPermission, optionValue, readOptionView, validOptionChange } from '../shared/device-options.js';
+import { isZoneGroup,zoneChange } from '../shared/detection-zones.js';
 import { privacyMaskChanges,sameAreas } from '../shared/privacy-masks.js';
 import { correlationPattern } from '../shared/urls.js';
 import { record } from './bridge-channels.js';
@@ -18,6 +19,7 @@ export function deviceOptionsRoutes({api,path,runtime}:{api:FastifyInstance;path
     const {row,bridge}=await runtime.camera({request,id,permission:optionPermission(group,'read')});
     if(group==='tracking')await runtime.camera({request,id,permission:'ptz.read'});
     if(!bridge.has('deviceOptions') || !bridge.hasDisplay(row.routeId))throw new Failure('UNSUPPORTED',422);
+    if(isZoneGroup(group) && !bridge.has('detectionZones'))throw new Failure('UNSUPPORTED',422);
     const response=await bridge.api({path:'/cameras/'+row.routeId+'/options/'+group,stableId:row.remote_id,correlation:request.id,signal:AbortSignal.timeout(21_000)});
     const body=record(await jsonResponse({response}));
     if(response.status===422 && body.errorKey==='API_DEVICE_OPTIONS_UNSUPPORTED')return {fields:{}};
@@ -33,8 +35,11 @@ export function deviceOptionsRoutes({api,path,runtime}:{api:FastifyInstance;path
     if(group==='tracking')await runtime.camera({request,id,permission:'ptz.write',mutate:true});
     if(!bridge.has('deviceOptions') || !bridge.hasDisplay(row.routeId))throw new Failure('UNSUPPORTED',422);
     const simple=z.record(z.string(),optionValue).refine(value=>validOptionChange(group,value));
-    const fieldSchema=group==='privacy'?z.union([privacyMaskChanges,simple]):simple;
+    const zone=isZoneGroup(group);
+    if(zone && !bridge.has('detectionZones'))throw new Failure('UNSUPPORTED',422);
+    const fieldSchema=zone?zoneChange:group==='privacy'?z.union([privacyMaskChanges,simple]):simple;
     const {operationId,fields}=input({schema:z.strictObject({operationId:uuid,fields:fieldSchema}),value:request.body});
+    const requestedZone=zone?zoneChange.parse(fields):undefined;
     const masks=group==='privacy' && 'maskAreas' in fields?privacyMaskChanges.parse(fields):undefined;
     if(masks && !bridge.has('privacyMaskEditing'))throw new Failure('UNSUPPORTED',422);
     const result=await runtime.ops.run({id:operationId,actor:session.account.id,resource:row.id,action:'settings.options.'+group,correlation:request.id,input:fields,serialized:true,
@@ -43,11 +48,14 @@ export function deviceOptionsRoutes({api,path,runtime}:{api:FastifyInstance;path
         const body=record(await jsonResponse({response}));
         const bridgeCorrelationId=typeof body.correlation_id==='string' && correlationPattern.test(body.correlation_id)?body.correlation_id:undefined;
         const observed=readOptionView(group,body);
-        if(response.ok && body.outcome==='confirmed' && observed && (masks
-          ? !!observed.privacyMasks && observed.fields.maskEnabled?.value===masks.maskEnabled && sameAreas(observed.privacyMasks.areas,masks.maskAreas)
-          : Object.entries(fields).every(([key,value])=>observed.fields[key]?.value===value)))
-          return {outcome:'confirmed',bridgeCorrelationId,data:observed};
-        const reasons={API_DEVICE_OPTIONS_INVALID:'BAD_INPUT',API_PRIVACY_MASKS_CHANGED:'PRIVACY_MASKS_CHANGED',API_DEVICE_OPTIONS_UNSUPPORTED:'UNSUPPORTED',API_DEVICE_OPTIONS_REJECTED:'CAMERA_OPTION_REJECTED',
+        if(response.ok && body.outcome==='confirmed' && observed){
+          let verified:boolean;
+          if(requestedZone)verified=observed.zone?.cells===requestedZone.cells;
+          else if(masks)verified=!!observed.privacyMasks && observed.fields.maskEnabled?.value===masks.maskEnabled && sameAreas(observed.privacyMasks.areas,masks.maskAreas);
+          else verified=Object.entries(fields).every(([key,value])=>observed.fields[key]?.value===value);
+          if(verified)return {outcome:'confirmed',bridgeCorrelationId,data:observed};
+        }
+        const reasons={API_DETECTION_ZONE_CHANGED:'DETECTION_ZONE_CHANGED',API_DEVICE_OPTIONS_INVALID:'BAD_INPUT',API_PRIVACY_MASKS_CHANGED:'PRIVACY_MASKS_CHANGED',API_DEVICE_OPTIONS_UNSUPPORTED:'UNSUPPORTED',API_DEVICE_OPTIONS_REJECTED:'CAMERA_OPTION_REJECTED',
           API_READ_BUSY:'COMMAND_BUSY',API_DISPLAY_BUSY:'COMMAND_BUSY',API_CAMERA_IDENTITY_CHANGED:'CAMERA_UNKNOWN',API_DEVICE_OPTIONS_READ_FAILED:'CAMERA_OPTION_READ_FAILED'} as const;
         const key=typeof body.errorKey==='string' && Object.hasOwn(reasons,body.errorKey)?body.errorKey as keyof typeof reasons:undefined;
         return key?{outcome:'rejected',reason:reasons[key],bridgeCorrelationId}:{outcome:'unverified',reason:'CAMERA_OPTION_UNVERIFIED',bridgeCorrelationId};

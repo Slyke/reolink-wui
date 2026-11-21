@@ -1,3 +1,4 @@
+import { zoneTypes,zoneGroups } from '../shared/detection-zones.js';
 import { optionPermission,type OptionGroup } from '../shared/device-options.js';
 import { z } from 'zod';
 import { aiClasses, recordingKinds, settingsGroups, type Permission, type SettingsGroup } from '../shared/access.js';
@@ -217,6 +218,15 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     discovered: !!caps,
     imageOrientation,
     talk: grant.has('audio.talk') && bridge.has('talk') && bridge.hasDisplay(remote),
+    detectionZones: {
+      available:bridge.has('detectionZones') && bridge.hasDisplay(remote),
+      types:zoneGroups.flatMap(group=>{
+        const type=zoneTypes[group];
+        if(type!=='motion' && !Object.hasOwn(ctrls,'ai_'+type))return [];
+        const read=grant.has(optionPermission(group,'read')),write=grant.has(optionPermission(group,'write'));
+        return read ? [{group,type,write}] : [];
+      })
+    },
     ftpDestination: bridge.has('ftpDestination') && !!deviceOptionAccess('ftp'),
     events: grant.has('events'),
     recordings: grant.has('recordings.view') && bridge.hasStorage(remote),

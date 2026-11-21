@@ -38,6 +38,8 @@ The bridge identifies a physical camera by its reported serial number, with MAC 
 
 Configure the inventory scan interval under **Settings → Private bridges**. It defaults to 10 seconds and accepts 1 through 86400. The **Refreshed at** timestamp in Settings records the last manual inventory refresh.
 
+In **Settings → Private bridges**, the **Restart bridge** button beside **Refresh inventory** opens a confirmation for that bridge's name and ID. Administrators can enter a reason and an exit code from 0 to 255. A successful response means that the bridge accepted the exit request. Its supervisor handles startup.
+
 Configure each bridge's **Event source priority** in its selected **Bridge connections** section under **Settings → Private bridges**. The priority editor follows the bridge selector and never applies to other bridges. Preferences are saved as an ordered array such as `["ws", "mqtt", "api"]` in the WUI database. The first connected source supplies events and camera state. Selected standby feeds stay connected, and an earlier source takes over again when it recovers. Reorder, add, or remove sources in the WUI and save to apply the change immediately.
 
 New bridges default to `["ws", "mqtt", "api"]` when HTTP is configured. Available sources depend on the configured endpoints. Existing file-based `events` preferences are imported into the database once during upgrade, including the earlier primary/secondary object and string forms. Subsequent WUI changes take precedence across restarts.

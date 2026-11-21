@@ -39,7 +39,6 @@
 <SettingsDisclosure title={t('media-retention')} managed ontoggle={open=>{expanded=open;if(open)void refresh();}}>
   {#if view}
     <form class="stack" onsubmit={event=>{event.preventDefault();void save();}}>
-      <p class="muted">{t('retention-explanation')}</p>
       {#if !view.support}<p class="notice">{t(view.unavailable?'retention-offline':'retention-upgrade')}</p>{/if}
       <div class="form-grid">
         {#each kinds as kind}

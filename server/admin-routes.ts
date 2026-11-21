@@ -17,6 +17,7 @@ import { eventSourcesSchema } from './config.js';
 import { historyConnectionInput, historyStorageInput } from '../shared/history.js';
 import { bridgeConnections } from './bridge-configuration.js';
 import { record } from './bridge-channels.js';
+import { jsonResponse } from './net.js';
 import { sendOutcome } from './camera-routes.js';
 
 const object = z.strictObject;
@@ -58,7 +59,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
         connections: bridgeConnections(bridge.config),
         eventSources: bridge.eventSources, availableEventSources: bridge.availableEventSources,
         refreshedAt: bridgeRows.find(row => row.id === bridge.config.id)?.refreshed_at,
-        enrollment: bridge.has('enrollment'), callbacks: !!bridge.config.callbacks && bridge.has('callbacks')
+        restart: bridge.has('terminate'), enrollment: bridge.has('enrollment'), callbacks: !!bridge.config.callbacks && bridge.has('callbacks')
       })),
       cameras: cameras.flatMap(row => {
         const bridge = runtime.bridges.get(row.bridge_id);
@@ -271,6 +272,32 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
       }
     });
     return sendOutcome({ reply, value });
+  });
+
+  api.post<{ Params:{bridge:string} }>(root + '/bridges/:bridge/restart', async (request,reply) => {
+    const {account} = await runtime.admin({request,mutate:true});
+    const bridge = getBridge({id:request.params.bridge});
+    const {operationId:id,confirmBridge,exitCode,reason} = input({schema:object({
+      operationId, confirmBridge:key, exitCode:z.int().min(0).max(255).default(0), reason:z.string().max(512).optional()
+    }),value:request.body});
+    if (confirmBridge !== bridge.config.id) throw new Failure('BAD_INPUT',400);
+    const payload = {exitCode,...(reason === undefined ? {} : {reason})};
+    const value = await runtime.ops.run({
+      id, actor:account.id, resource:'bridge:'+bridge.config.id, action:'bridge.restart', input:payload, correlation:request.id,
+      execute:async () => {
+        if (!bridge.has('terminate')) throw new Failure('UNSUPPORTED',422);
+        const response = await bridge.api({path:'/terminate',method:'POST',data:payload,correlation:request.id});
+        const body = record(await jsonResponse({response}).catch(() => undefined));
+        if (response.status === 202 && body.ok === true && body.status === 'terminating' && body.exitCode === exitCode && body.correlation_id === request.id) {
+          return {outcome:'confirmed',bridgeCorrelationId:request.id};
+        }
+        if (response.status >= 400 && response.status < 500) {
+          return {outcome:'rejected',reason:response.status === 404 ? 'UNSUPPORTED' : 'COMMAND_REJECTED'};
+        }
+        return {outcome:'unknown',reason:'OUTCOME_UNKNOWN'};
+      }
+    });
+    return sendOutcome({reply,value});
   });
 
   const callbackData = (callbacks: unknown, mapping: Map<string,string>) => (

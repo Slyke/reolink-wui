@@ -7,6 +7,7 @@
   import SearchSelect from '$lib/SearchSelect.svelte';
   import type { SettingsGroup } from '../../../../../shared/access.js';
   import SettingsDisclosure from '$lib/SettingsDisclosure.svelte';
+  import CameraDetectionZones from '$lib/CameraDetectionZones.svelte';
   import PrivacyMaskEditor from '$lib/PrivacyMaskEditor.svelte';
   import CameraFtp from '$lib/CameraFtp.svelte';
   import CameraOptions from '$lib/CameraOptions.svelte';
@@ -28,6 +29,7 @@
   let error = $state('');
   type Panel = { refresh: () => Promise<unknown>; working: () => boolean };
   let lights = $state<Panel>(), orientation = $state<Panel>(), detectionSettings = $state<Panel>(), recordingSettings = $state<Panel>();
+  let zones = $state<Panel>();
   let picture = $state<Panel>(), sound = $state<Panel>(), mic = $state<Panel>(), privacy = $state<Panel>();
   let tracking = $state<Panel>(), siren = $state<Panel>(), delivery = $state<Panel>(), ftp = $state<Panel>();
   let refreshed = $state(false);
@@ -40,7 +42,7 @@
   let display = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let network = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let rotation = $state<{ setStatus: (status: string) => void }>();
-  const panels = $derived([lights,orientation,detectionSettings,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,ftp,schedule,retention,playback,encoding,clock,display,network]);
+  const panels = $derived([lights,orientation,detectionSettings,zones,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,ftp,schedule,retention,playback,encoding,clock,display,network]);
   const camera = $derived(cameras.find(item => item.id === selected));
   const admin = $derived(workspace.current().user.admin);
   function visible(groups:readonly SettingsGroup[]) {
@@ -104,7 +106,7 @@
   {@const csrf = workspace.current().csrf}
   {@const showOrientation = visible(['image']) || !!caps.imageOrientation}
   {@const live = admin || visible(lightGroups) || showOrientation || caps.encoding.read || caps.encoding.write || caps.display.read || caps.options.picture || caps.options.sound || caps.options.privacy}
-  {@const detection = visible(detectionGroups) || caps.alerts.read || caps.alerts.write || caps.options.tracking || caps.options.siren || caps.options.delivery}
+  {@const detection = caps.detectionZones.types.length || visible(detectionGroups) || caps.alerts.read || caps.alerts.write || caps.options.tracking || caps.options.siren || caps.options.delivery}
   {@const connectivity = caps.network.read || caps.network.write || caps.clock.read || caps.clock.write}
   {@const accounts = caps.cameraUsers || caps.rotate}
   {@const recordings = admin || visible(['recording_schedule','time_lapse']) || caps.options.recordingAudio}
@@ -136,6 +138,7 @@
     {#if detection}
       <SettingsDisclosure title={t('settings-detection-alerts')}>
         <SettingsPanel bind:this={detectionSettings} {camera} {base} {csrf} {online} groups={detectionGroups} showAlerts/>
+        {#if caps.detectionZones.types.length}<CameraDetectionZones bind:this={zones} {base} {csrf} {camera} {online}/>{/if}
         {#if caps.options.tracking}<CameraOptions bind:this={tracking} {base} {csrf} {online} group="tracking" access={caps.options.tracking}/>{/if}
         {#if caps.options.delivery}<CameraOptions bind:this={delivery} {base} {csrf} {online} group="push" linked={['email']} title="device-delivery-title" access={caps.options.delivery}/>{/if}
         {#if caps.options.delivery}<CameraFtp bind:this={ftp} {base} {csrf} {online} available={caps.ftpDestination} access={caps.options.delivery}/>{/if}

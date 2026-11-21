@@ -1,3 +1,4 @@
+import { zoneView } from './detection-zones.js';
 import { privacyMaskView } from './privacy-masks.js';
 import { z } from 'zod';
 import type { Permission } from './access.js';
@@ -16,6 +17,7 @@ export const optionTypes = {
   sound:{speakerVolume:volume,talkVolume:volume,doorbellVolume:volume},
   recordingAudio:{mainAudio:z.boolean(),subAudio:z.boolean(),thirdAudio:z.boolean()},
   privacy:{maskEnabled:z.boolean()},
+  motionZone:{}, personZone:{}, vehicleZone:{}, petZone:{}, faceZone:{},
   tracking:{autoTracking:z.boolean()},
   siren:{sirenOnEvent:z.boolean()},
   email:{emailEnabled:z.boolean()}, push:{pushEnabled:z.boolean()}, ftp:{ftpEnabled:z.boolean()}
@@ -23,6 +25,7 @@ export const optionTypes = {
 export type OptionGroup=keyof typeof optionTypes;
 export const isOptionGroup=(key:string):key is OptionGroup=>Object.hasOwn(optionTypes,key);
 const section = {picture:'settings.image',threshold:'settings.image',sound:'settings.audio',recordingAudio:'settings.audio',privacy:'settings.privacy',
+  motionZone:'settings.motion', personZone:'settings.ai', vehicleZone:'settings.ai', petZone:'settings.ai', faceZone:'settings.ai',
   tracking:'settings.ai',siren:'alerts',push:'settings.delivery',email:'settings.delivery',ftp:'settings.delivery'} as const;
 export function optionPermission(group:OptionGroup,kind:'read'|'write'):Permission {return `${section[group]}.${kind}`;}
 export const optionValue=z.union([z.boolean(),z.int(),z.string().max(40)]);
@@ -33,7 +36,7 @@ const descriptor=z.union([
   z.strictObject({value:z.string().max(40),choices:z.array(z.string().max(40)).min(1).max(24)}).refine(o=>o.choices.includes(o.value))
 ]);
 export type OptionDescriptor=z.infer<typeof descriptor>;
-export const optionView=z.object({fields:z.record(z.string(),descriptor),privacyZones:z.int().min(0).optional(),privacyMasks:privacyMaskView.optional()});
+export const optionView=z.object({fields:z.record(z.string(),descriptor),privacyZones:z.int().min(0).optional(),privacyMasks:privacyMaskView.optional(),zone:zoneView.optional()});
 export type OptionView=z.infer<typeof optionView>;
 function allowed(group:OptionGroup,key:string,value:OptionValue) {
   const schema=(optionTypes[group] as Record<string,z.ZodType>)[key];

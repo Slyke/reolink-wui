@@ -1,5 +1,6 @@
 <script lang="ts">
   import { t } from '$lib/api.js';
+  import BridgeRestart from '$lib/BridgeRestart.svelte';
   import BridgeConnections from '$lib/BridgeConnections.svelte';
   import { minInventoryIntervalSeconds, maxInventoryIntervalSeconds } from '../../../../../../shared/upstreams.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
@@ -49,7 +50,10 @@
               {/if}
             </div>
             <span class="pill" data-status={bridge.connected ? 'online' : 'offline'}>{t(bridge.connected ? 'online' : 'offline')}</span>
-            <button disabled={admin.busy()} onclick={() => admin.mutate({ suffix: '/bridges/' + bridge.id + '/sync', body: {}, announce: false })}>{t('sync')}</button>
+            <div class="row">
+              <button disabled={admin.busy()} onclick={() => admin.mutate({ suffix: '/bridges/' + bridge.id + '/sync', body: {}, announce: false })}>{t('sync')}</button>
+              <BridgeRestart {bridge}/>
+            </div>
           </div>
         </li>
       {/each}
