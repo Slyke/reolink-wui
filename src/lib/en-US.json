@@ -974,7 +974,6 @@
   "reolink-wui-network-reload": "Reload network settings",
   "reolink-wui-network-no-wifi": "The camera has not reported configurable Wi-Fi.",
   "reolink-wui-playback-preferences": "Playback preferences",
-  "reolink-wui-managed-by-wui": "Managed by the WUI",
   "reolink-wui-camera-user-list": "Users and passwords",
   "reolink-wui-settings-live-image": "Live view and image",
   "reolink-wui-settings-detection-alerts": "Detection and alerts",

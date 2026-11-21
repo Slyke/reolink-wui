@@ -274,7 +274,6 @@ details.panel > summary:hover { color: var(--color-start-ink); }
 details.panel[open] > summary { margin-bottom: var(--space-3); color: var(--color-mid-ink); }
 .settings-disclosure > summary { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); list-style: none; }
 .settings-disclosure > summary :is(h2,h3,h4,h5) { margin: 0; }
-.settings-disclosure > summary .managed-setting { margin-inline-start:auto; color:var(--color-text-muted); font-size:.82em; font-weight:normal; }
 .settings-disclosure .settings-disclosure { min-width: 0; }
 .settings-disclosure > summary::-webkit-details-marker { display: none; }
 .settings-disclosure > summary::after { content: ''; width: .55rem; height: .55rem; margin-inline-end: .35rem; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(-45deg); }

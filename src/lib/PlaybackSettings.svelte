@@ -56,7 +56,7 @@
   onMount(() => { void load(); });
 </script>
 
-<SettingsDisclosure title={t('playback-preferences')} managed>
+<SettingsDisclosure title={t('playback-preferences')}>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   {#if message}<p role="status">{message}</p>{/if}
   {#if loaded}

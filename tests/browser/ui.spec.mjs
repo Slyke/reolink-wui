@@ -889,8 +889,8 @@ for (const mode of ['browser','proxy']) {
       await expect(recordingCategory).not.toHaveAttribute('open','');
       await sectionSummary('Recording and storage').click();
       const retentionSummary=sectionSummary('SD media retention');
-      await expect(retentionSummary).not.toContainText('Managed by the WUI');
-      await expect(sectionSummary('Playback preferences')).toContainText('Managed by the WUI');
+      await expect(sectionSummary('Playback preferences')).toHaveText('Playback preferences');
+      await expect(page.getByText('Managed by the WUI',{exact:true})).toHaveCount(0);
       await retentionSummary.click();
       const retentionDays=page.getByRole('spinbutton',{name:'Delete time-lapse files after (days)'});
       await expect(retentionDays).toHaveValue('');
