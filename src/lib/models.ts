@@ -15,7 +15,7 @@ export type BridgeSummary = {
   eventSources: EventSource[]; availableEventSources: EventSource[];
 };
 export type CameraSummary = { id: string; bridge: string; label: string };
-export type Account = { id: string; label: string; username?: string; admin: number; enabled: number };
+export type Account = { id: string; label: string; username?: string; admin: number; enabled: number; types: (import('../../shared/sign-in.js').AccountType | 'legacy')[] };
 
 export const cameraStatus = (camera: Camera) => camera.availability.stale ? 'stale'
   : (camera.availability.online === undefined ? 'waiting' : (camera.availability.online ? 'online' : 'offline'));

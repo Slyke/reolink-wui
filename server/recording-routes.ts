@@ -3,7 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Bridge } from './bridge.js';
 import type { Runtime } from './runtime.js';
-import { input } from './runtime.js';
+import { input, uuid } from './runtime.js';
+import { sendOutcome } from './camera-routes.js';
 import { Failure } from './errors.js';
 import { jsonResponse, responseBytes } from './net.js';
 import { audit } from './db.js';
@@ -136,9 +137,38 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
   });
   api.get<{ Params: { id: string } }>(root + '/storage', async request => {
     const { bridge, row } = await camera(request, request.params.id);
-    return bridgeRead({
-      bridge, stableId: row.remote_id, path: '/cameras/' + row.routeId + '/storage', correlation: request.id, schema: storageResponse, failureKey: 'STORAGE_READ_FAILED'
+    const canFormat = row.permissions.includes('storage.format');
+    const storage = await bridgeRead({
+      bridge, stableId: row.remote_id, path: '/cameras/' + row.routeId + '/storage', search: canFormat ? '?format=true' : undefined,
+      correlation: request.id, schema: storageResponse, failureKey: 'STORAGE_READ_FAILED'
     });
+    if (!canFormat) for (const card of storage.cards) delete card.formatSource;
+    return storage;
+  });
+  api.post<{ Params: {id: string} }>(root + '/storage/format', async (request, reply) => {
+    const { row, bridge, session } = await runtime.camera({ request, id: request.params.id, permission: 'storage.format', mutate: true });
+    if (!bridge.hasStorage(row.routeId)) throw new Failure('UNSUPPORTED', 422);
+    const { operationId, ...selection } = input({schema: object({operationId: uuid, slot: z.number().int().nonnegative().max(0xffffffff),
+      source: recordingId, confirm: z.literal(true)}), value: request.body});
+    const value = await runtime.ops.run({id: operationId, actor: session.account.id, resource: row.id, action: 'storage.format',
+      correlation: request.id, input: selection, serialized: true, execute: async () => {
+        const response = await bridge.api({path:'/cameras/'+row.routeId+'/storage/format', stableId:row.remote_id, data:selection,
+          correlation:request.id, signal:AbortSignal.timeout(40_000)});
+        const body = record(await jsonResponse({response,limit:16_384}).catch(()=>({})));
+        const bridgeCorrelationId = typeof body.correlation_id === 'string' && correlationPattern.test(body.correlation_id) ? body.correlation_id : undefined;
+        if (response.status === 202 && body.outcome === 'acknowledged' && body.slot === selection.slot) {
+          previews.clearCamera(row.id);
+          return {outcome:'unverified', reason:'STORAGE_FORMAT_ACCEPTED', bridgeCorrelationId};
+        }
+        const rejected: Record<string,string> = {API_STORAGE_FORMAT_INVALID:'BAD_INPUT',API_STORAGE_FORMAT_UNSUPPORTED:'UNSUPPORTED',
+          API_CAMERA_IDENTITY_CHANGED:'CAMERA_UNKNOWN',API_STORAGE_FORMAT_REJECTED:'COMMAND_REJECTED',API_READ_BUSY:'COMMAND_BUSY',
+          API_STORAGE_FORMAT_CHECK_FAILED:'STORAGE_READ_FAILED',API_SCOPE_DENIED:'ACCESS_DENIED'};
+        const reason = typeof body.errorKey === 'string' ? rejected[body.errorKey] : undefined;
+        if (reason || response.status===404 || response.status===405) return {outcome:'rejected',reason:reason ?? 'UNSUPPORTED',bridgeCorrelationId};
+        previews.clearCamera(row.id);
+        return {outcome:'unknown',reason:'OUTCOME_UNKNOWN',bridgeCorrelationId};
+      }});
+    return sendOutcome({reply,value});
   });
   api.get<{ Params: { id: string } }>(root + '/recordings', async request => {
     const query = input({ schema: object({ date: recordingDate, stream: recordingStream.default('sub') }), value: request.query });

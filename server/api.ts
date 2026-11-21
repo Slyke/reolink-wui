@@ -6,6 +6,7 @@ import { wirePath, type Config } from './config.js';
 import { openDb } from './db.js';
 import { correlationPattern } from '../shared/urls.js';
 import { forwardProofHeader, samePeer, sameSecret } from './trusted-proxy.js';
+import { classifyLegacyIdentities } from './identities.js';
 import { csrfToken } from './auth.js';
 import { buildInfo, configureLogging, Failure, report } from './errors.js';
 import { Runtime, input, username, uuid } from './runtime.js';
@@ -27,6 +28,7 @@ import { enrollmentRoutes } from './enrollment-routes.js';
 export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions }) => {
   configureLogging({ logging: config.logging });
   const sql = await openDb({ config: config.database });
+  await sql.transaction(query => classifyLegacyIdentities(query, config));
   const runtime = new Runtime(config, sql);
   try {
     await runtime.start();

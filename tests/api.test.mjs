@@ -1057,6 +1057,16 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal(storage.statusCode,200,storage.body);
   assert.equal(storage.json().cards[0].totalBytes,64000000000);
   assert.equal(storage.json().cards[0].usedBytes,16000000000);
+  const selection={operationId:uuid(),slot:0,source:storage.json().cards[0].formatSource,confirm:true};
+  assert.equal(selection.source,'a'.repeat(64));
+  const format=(headers,payload) => incoming({method:'POST',path:root+'/storage/format',headers,payload});
+  assert.equal((await format(restricted,selection)).statusCode,403);
+  assert.equal((await format({cookie:privileged.cookie},selection)).statusCode,403);
+  assert.equal((await format(privileged,{...selection,confirm:false})).statusCode,400);
+  const accepted=await format(privileged,selection);
+  assert.equal(accepted.json().reason,'STORAGE_FORMAT_ACCEPTED',accepted.body);
+  assert.equal((await format(privileged,selection)).json().outcome,'unverified');
+  assert.equal((await format(privileged,{...selection,source:'b'.repeat(64)})).statusCode,409);
   assert.equal((await incoming({path:root+'/recordings?date=2026-02-30',headers:privileged})).statusCode,400);
   for (const [status, key, expected, error] of [
     [422,'API_SETTING_READ_FAILED',502,'STORAGE_READ_FAILED'],

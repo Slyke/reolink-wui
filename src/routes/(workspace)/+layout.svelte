@@ -16,7 +16,10 @@
   let drawer = $state<HTMLDialogElement>();
   let menuOpen = $state(false);
   const closeMenu = () => { if (drawer?.open) drawer.close(); };
-  afterNavigate(closeMenu);
+  afterNavigate(({ from }) => {
+    closeMenu();
+    if (from && session) void refreshSession();
+  });
 
   const refreshSession = async () => {
     try {
@@ -61,7 +64,14 @@
     const mobile = window.matchMedia('(max-width: 800px)');
     const resize = () => { if (!mobile.matches) closeMenu(); };
     mobile.addEventListener('change',resize);
-    return () => mobile.removeEventListener('change',resize);
+    const revalidate = () => { if (!document.hidden && session) void refreshSession(); };
+    const timer = window.setInterval(revalidate, 60_000);
+    document.addEventListener('visibilitychange', revalidate);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', revalidate);
+      mobile.removeEventListener('change', resize);
+    };
   });
   onDestroy(() => appearance.setAccount({}));
   const links = [

@@ -62,6 +62,10 @@ export class RecordingPreviewCache<Jpeg> {
     this.scheduleExpiry();
   }
 
+  clearCamera(camera: string) {
+    for (const [key, entry] of this.entries) if (entry.clip.startsWith(camera + '/')) this.remove(key, entry);
+  }
+
   clear() {
     clearTimeout(this.expiry);
     this.expiry = undefined;

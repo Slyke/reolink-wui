@@ -701,6 +701,19 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('link',{name:'Accounts',exact:true}).click();
       await expect(page).toHaveURL(publicOrigin+'/settings/accounts');
       await expectHover(page, page.getByRole('button',{name:'Add account'}));
+      const newAccount = page.getByRole('region',{name:'Add account'});
+      await newAccount.getByLabel('Display name').fill('Disposable fixture account');
+      await newAccount.getByLabel('Username').fill('disposable-test');
+      await newAccount.getByLabel('Password',{exact:true}).fill(localPassword);
+      await newAccount.getByRole('button',{name:'Add account'}).click();
+      const added = page.getByRole('row').filter({hasText:'Disposable fixture account'});
+      await expect(added.getByRole('cell',{name:'Local',exact:true})).toBeVisible();
+      page.once('dialog', dialog => dialog.dismiss());
+      await added.getByRole('button',{name:'Delete account'}).click();
+      await expect(added).toBeVisible();
+      page.once('dialog', dialog => dialog.accept());
+      await added.getByRole('button',{name:'Delete account'}).click();
+      await expect(added).toHaveCount(0);
 
       await page.getByRole('link',{name:'Camera grants'}).click();
       await expect(page).toHaveURL(publicOrigin+'/settings/access');
@@ -1435,6 +1448,15 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('button',{name:'Refresh',exact:true}).click();
       await expect(clockInfo).toHaveText('i');
       await expect(storagePanel.getByRole('alert')).toHaveCount(0);
+      await expect(storagePanel.getByText('64 GB',{exact:true})).toBeVisible();
+      const formatCard=storagePanel.getByRole('button',{name:'Format SD card'});
+      await expect(formatCard).toBeVisible();
+      page.once('dialog', async dialog => {
+        expect(dialog.message()).toMatch(/slot 0 on .+\?/);
+        expect(dialog.message()).toContain('slot 0');
+        await dialog.dismiss();
+      });
+      await formatCard.click();
       await expect(storagePanel.getByText('64 GB',{exact:true})).toBeVisible();
       await expect(inputDate).toHaveValue('2026-11-16');
       const sort = page.getByLabel('Sort by time',{exact:true});

@@ -2,6 +2,8 @@
   import { t } from '$lib/api.js';
   import { useAdministration } from '$lib/workspace.js';
   import { permissions, presets, type Permission } from '../../../../../../shared/access.js';
+  import ExternalIdentityFields from '$lib/ExternalIdentityFields.svelte';
+  import type { ExternalType } from '../../../../../../shared/sign-in.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
 
   const admin = useAdministration();
@@ -14,12 +16,13 @@
     items.length === picked.length && items.every(item => picked.includes(item))
   )?.[0] ?? 'custom');
   let existingSubject = $state('');
+  let identityType = $state<ExternalType>();
 
   const loadGrant = () => {
     picked = [...(data.grants.find(item => item.account_id === account && item.camera_id === camera)?.permissions ?? [])];
   };
   const linkIdentity = async () => {
-    if (await admin.mutate({ suffix: '/accounts/' + account + '/identities', body: { identity: { subject: existingSubject } } })) {
+    if (await admin.mutate({ suffix: '/accounts/' + account + '/identities', body: { identity: { type: identityType ?? data.externalTypes[0], subject: existingSubject } } })) {
       existingSubject = '';
     }
   };
@@ -41,7 +44,7 @@
   </div>
   {#if account && data.external}
     <form class="row" onsubmit={event => { event.preventDefault(); void linkIdentity(); }}>
-      <label>{t('external-subject')}<input autocomplete="off" required bind:value={existingSubject} /></label>
+      <ExternalIdentityFields types={data.externalTypes} bind:type={identityType} bind:subject={existingSubject} />
       <button disabled={admin.busy()}>{t('account-external')}</button>
     </form>
   {/if}

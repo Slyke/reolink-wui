@@ -103,7 +103,48 @@ const migrations = [
     source TEXT NOT NULL, next_check BIGINT NOT NULL DEFAULT 0, lease TEXT, lease_until BIGINT NOT NULL DEFAULT 0,
     last_checked TEXT, last_deleted INTEGER NOT NULL DEFAULT 0, last_skipped INTEGER NOT NULL DEFAULT 0,
     last_error TEXT, last_reference TEXT, last_cutoff TEXT, history_month TEXT, PRIMARY KEY(camera,kind)
-  );`
+  );`,
+  `CREATE TABLE typed_identities (
+    kind TEXT NOT NULL CHECK (kind IN ('oauth','headers','legacy')),
+    issuer TEXT NOT NULL, subject TEXT NOT NULL, account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    PRIMARY KEY (kind,issuer,subject)
+  );
+  INSERT INTO typed_identities(kind,issuer,subject,account_id)
+    SELECT COALESCE((SELECT CASE MIN(s.method) WHEN 'oidc' THEN 'oauth' WHEN 'proxy' THEN 'headers' END
+      FROM sessions s WHERE s.account_id=i.account_id AND s.issuer=i.issuer AND s.subject=i.subject
+      HAVING COUNT(DISTINCT s.method)=1),'legacy'),i.issuer,i.subject,i.account_id FROM identities i;
+  DROP TABLE identities;
+  ALTER TABLE typed_identities RENAME TO identities;
+  CREATE INDEX identities_account ON identities(account_id);
+  ALTER TABLE instance_settings ADD COLUMN oidc_group_policy TEXT;
+  ALTER TABLE sessions ADD COLUMN group_policy TEXT;
+  ALTER TABLE sessions ADD COLUMN group_checked BIGINT;
+  ALTER TABLE sessions ADD COLUMN group_token TEXT;`,
+  // Historical operations keep their actor UUID after an account and its access are deleted.
+  `CREATE TABLE account_independent_operations (
+    id TEXT PRIMARY KEY, actor TEXT NOT NULL, resource TEXT NOT NULL, action TEXT NOT NULL, fingerprint TEXT NOT NULL,
+    outcome TEXT NOT NULL, reason TEXT, correlation TEXT NOT NULL, bridge_correlation TEXT, started BIGINT NOT NULL,
+    reconcile_group TEXT, camera_status INTEGER CHECK (camera_status BETWEEN 0 AND 65535)
+  );
+  INSERT INTO account_independent_operations SELECT id,actor,resource,action,fingerprint,outcome,reason,correlation,
+    bridge_correlation,started,reconcile_group,camera_status FROM operations;
+  DROP TABLE operations;
+  ALTER TABLE account_independent_operations RENAME TO operations;
+  CREATE INDEX operations_resource ON operations(resource,action,outcome);
+  CREATE INDEX operations_verify ON operations(resource,reconcile_group,outcome);
+  CREATE TABLE account_independent_audit (
+    id TEXT PRIMARY KEY, actor TEXT, resource TEXT NOT NULL, action TEXT NOT NULL, outcome TEXT NOT NULL,
+    operation TEXT, correlation TEXT NOT NULL, bridge_correlation TEXT, created BIGINT NOT NULL
+  );
+  INSERT INTO account_independent_audit SELECT id,actor,resource,action,outcome,operation,correlation,bridge_correlation,created FROM audit;
+  DROP TABLE audit;
+  ALTER TABLE account_independent_audit RENAME TO audit;
+  CREATE TABLE account_independent_enrollments (
+    id TEXT PRIMARY KEY, bridge_id TEXT NOT NULL REFERENCES bridges(id), owner_id TEXT NOT NULL, created BIGINT NOT NULL, request TEXT
+  );
+  INSERT INTO account_independent_enrollments SELECT id,bridge_id,owner_id,created,request FROM enrollments;
+  DROP TABLE enrollments;
+  ALTER TABLE account_independent_enrollments RENAME TO enrollments;`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {

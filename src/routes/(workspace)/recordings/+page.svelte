@@ -2,7 +2,8 @@
   import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
   import { goto, replaceState } from '$app/navigation';
-  import { api, errorText, t, url } from '$lib/api.js';
+  import { useWorkspace } from '$lib/workspace.js';
+  import { api, errorText, operationId, outcomeText, type Outcome, t, url } from '$lib/api.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import type { Camera } from '$lib/models.js';
   import RecordingExport from '$lib/RecordingExport.svelte';
@@ -59,6 +60,29 @@
   let reading = $state(false);
   let cameraError = $state('');
   let storageError = $state('');
+  const workspace = useWorkspace();
+  let formatting = $state(false);
+  let formatStatus = $state<{camera: string; message: string; failed: boolean}>();
+  const formatCard = async (card: StorageInfo['cards'][number]) => {
+    const id = selected;
+    if (formatting || !card.formatSource || !camera || !confirm(t('storage-format-confirm', {slot:card.number, camera:camera.name || camera.id}))) return;
+    formatting = true;
+    formatStatus = undefined;
+    try {
+      const result = await api<Outcome>({path:'/api/v1/cameras/'+id+'/storage/format',method:'POST',csrf:workspace.current().csrf,
+        body:{operationId:operationId(),slot:card.number,source:card.formatSource,confirm:true}});
+      const accepted = result.reason === 'STORAGE_FORMAT_ACCEPTED';
+      formatStatus = {camera:id,message:outcomeText(result),failed:!accepted};
+      if (id === selected && (accepted || result.outcome === 'unknown')) {
+        controller?.abort(); listController?.abort();
+        listing = undefined; gallery = undefined;
+        previews.close(); previews = new RecordingPreviews(id,date);
+        storage = undefined; reading = false; loading = false; photosLoading = false;
+      }
+    } catch (error) {
+      formatStatus = {camera:id,message:errorText(error),failed:true};
+    } finally { formatting = false; }
+  };
   let searchError = $state('');
   let layout = $state<'grid' | 'table'>('grid');
   let pageNumber = $state(0);
@@ -343,6 +367,7 @@
 {#if camera?.capabilities.recordings}
   <section class="panel stack" aria-labelledby="card-storage">
     <h2 id="card-storage" class="panel-title">{t('storage')}</h2>
+    {#if formatStatus?.camera === selected}<p role="status" class:error={formatStatus.failed}>{formatStatus.message}</p>{/if}
     {#if storageError}<p role="alert" class="error">{storageError}</p>{/if}
     {#if storage}
       <div class="grid">
@@ -359,6 +384,9 @@
             </dl>
             {#if card.totalBytes && card.usedBytes !== null}
               <meter min="0" max={card.totalBytes} value={card.usedBytes} aria-label={t('storage-used')}></meter>
+            {/if}
+            {#if card.kind === 'sd' && card.formatSource}
+              <div class="row"><button class="danger" disabled={formatting} onclick={() => formatCard(card)}>{t('storage-format')}</button></div>
             {/if}
           </article>
         {:else}

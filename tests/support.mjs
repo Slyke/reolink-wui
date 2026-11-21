@@ -54,7 +54,7 @@ export const launch = async ({
     const id = uuid();
     const encoded = username ? await passwordHash({ password: localPassword }) : null;
     await runtime.sql.query('INSERT INTO accounts(id,label,username,password_hash,admin,enabled) VALUES ($1,$2,$3,$4,$5,1)', id, label, username ?? null, encoded, Number(admin));
-    if (issuer) await runtime.sql.query('INSERT INTO identities(issuer,subject,account_id) VALUES ($1,$2,$3)', issuer, subject, id);
+    if (issuer) await runtime.sql.query('INSERT INTO identities(kind,issuer,subject,account_id) VALUES ($1,$2,$3,$4)', 'oidc' in config.auth && config.auth.oidc.issuer.href === issuer ? 'oauth' : 'headers', issuer, subject, id);
     return id;
   };
   const signIn = async (name) => {
@@ -592,7 +592,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.url.endsWith('/settings/recording_schedule')) return res.end(JSON.stringify({values:{recording_schedule:schedule}}));
     if (req.url.endsWith('/settings/time_lapse')) return res.end(JSON.stringify({values:{time_lapse:lapse}}));
     if (req.url.endsWith('/settings/image')) return res.end(JSON.stringify({values:{image:orientation}}));
-    if (storageFailure && recordings && req.url.endsWith('/storage')) {
+    if (storageFailure && recordings && req.url.split('?')[0].endsWith('/storage')) {
       res.writeHead(storageFailure.status, {'content-type':'application/json'});
       return res.end(JSON.stringify({errorKey:storageFailure.key, correlation_id:req.headers['x-correlation-id'], secret:token}));
     }
@@ -623,8 +623,17 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       const data=png();
       res.writeHead(200,{'content-type':'image/png','content-length':data.length}); return res.end(data);
     }
-    if (recordings && req.url.endsWith('/storage')) return res.end(JSON.stringify({
-      cards:[{number:0,kind:'sd',mounted:true,formatted:true,totalBytes:64000000000,usedBytes:16000000000,freeBytes:48000000000}],
+    if (recordings && req.url.endsWith('/storage/format') && req.method === 'POST') {
+      const selection = await read(req);
+      if (selection.confirm !== true || selection.slot !== 0 || selection.source !== 'a'.repeat(64)) {
+        res.statusCode = 422; return res.end(JSON.stringify({errorKey:'API_STORAGE_FORMAT_UNSUPPORTED'}));
+      }
+      res.statusCode = 202;
+      return res.end(JSON.stringify({outcome:'acknowledged',slot:0,correlation_id:req.headers['x-correlation-id']}));
+    }
+    if (recordings && req.url.split('?')[0].endsWith('/storage')) return res.end(JSON.stringify({
+      cards:[{number:0,kind:'sd',mounted:true,formatted:true,totalBytes:64000000000,usedBytes:16000000000,freeBytes:48000000000,
+        ...(req.url.endsWith('?format=true') ? {formatSource:'a'.repeat(64)} : {})}],
       playbackAvailable,cameraTime:'2026-11-17T12:30:00',refreshedAt:new Date().toISOString(),streams:['main','sub']
     }));
     if (recordings && /\/recordings\?/.test(req.url)) {

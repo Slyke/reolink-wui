@@ -4,8 +4,11 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import * as oidc from 'openid-client';
 import { browserPath, type Config } from './config.js';
 import type { Account, Sql, Session } from './db.js';
+import { firstLoginAccount, type ExternalIdentity } from './identities.js';
+import type { GroupPolicy } from '../shared/sign-in.js';
+import { readPolicy, effectivePolicy, policyKey, userInfo, verifyGroup, recheckInterval, member, openAccessToken, sealAccessToken, type GroupProof } from './oidc-groups.js';
 import { audit } from './db.js';
-import { Failure } from './errors.js';
+import { Failure, recordError } from './errors.js';
 import { dispatcher } from './net.js';
 import { recordingReturnPath } from '../shared/urls.js';
 import { forwardProofHeader, verifiedIdentityHeader, ingressSubject, samePeer, sameSecret, subject } from './trusted-proxy.js';
@@ -61,6 +64,7 @@ export const isLocal = ({ config }: { config: Config }) => config.auth.mode === 
 
 export class Auth {
   private readonly rate = new Map<string, { count: number; until: number }>();
+  private readonly groupChecks = new Map<string, Promise<boolean>>();
   private oidcClient?: oidc.Configuration;
   private readonly agent;
   private discovering?: Promise<oidc.Configuration>;
@@ -145,18 +149,50 @@ export class Auth {
   async session({ request }: { request: FastifyRequest }) {
     const token = cookie({ request, name: sessionCookie });
     if (!token) return undefined;
-    const [account] = await this.sql.query<Session>(
-      `SELECT a.id,a.label,a.admin,a.enabled,s.expires,s.method,s.issuer,s.subject FROM sessions s JOIN accounts a ON s.account_id=a.id
-       WHERE s.id=$1 AND s.expires>$2 AND a.enabled=1
-       AND (s.method='local' OR EXISTS (SELECT 1 FROM identities i WHERE i.issuer=s.issuer AND i.subject=s.subject AND i.account_id=a.id))`,
-      hash({ value: token }), Date.now()
+    const sessionId = hash({ value: token });
+    const [row] = await this.sql.query<Session & {
+      group_policy: string | null; oidc_group_policy: string | null; group_checked: number | string | null; group_token: string | null
+    }>(
+      `SELECT a.id,a.label,a.admin,a.enabled,s.expires,s.method,s.issuer,s.subject,s.group_policy,s.group_checked,s.group_token,p.oidc_group_policy
+       FROM sessions s JOIN accounts a ON s.account_id=a.id CROSS JOIN instance_settings p
+       WHERE s.id=$1 AND s.expires>$2 AND a.enabled=1 AND p.id=1
+       AND (s.method='local' OR EXISTS (SELECT 1 FROM identities i WHERE i.kind=CASE s.method WHEN 'oidc' THEN 'oauth' ELSE 'headers' END
+         AND i.issuer=s.issuer AND i.subject=s.subject AND i.account_id=a.id))`,
+      sessionId, Date.now()
     );
-    if (!account) return undefined;
+    if (!row) return undefined;
+    const { group_policy, group_checked, group_token, oidc_group_policy, ...account } = row;
     if ((account.method === 'local' && !isLocal({ config: this.config }))
       || (account.method === 'oidc' && (!('oidc' in this.config.auth) || new URL(account.issuer ?? 'https://invalid.invalid').href !== this.config.auth.oidc.issuer.href))) return undefined;
+    if (account.method === 'oidc' && 'oidc' in this.config.auth) {
+      const policy = effectivePolicy(this.config, oidc_group_policy);
+      if (policyKey(policy) !== group_policy) return undefined;
+      if (group_policy && group_token && Date.now() - Number(group_checked) >= recheckInterval) {
+        let check = this.groupChecks.get(sessionId);
+        if (!check) {
+          check = this.recheckGroup(sessionId, token, group_token, account.subject!, policy, request.id)
+            .finally(() => this.groupChecks.delete(sessionId));
+          this.groupChecks.set(sessionId, check);
+        }
+        if (!await check) return undefined;
+      }
+    }
     if (account.method === 'proxy' && (account.subject !== this.proxyIdentity({ request }) || !('ingress' in this.config.auth)
       || account.issuer !== this.config.auth.ingress.issuer)) return undefined;
     return { token, account };
+  }
+
+  private async recheckGroup(id: string, cookie: string, encrypted: string, subject: string, policy: GroupPolicy, correlation: string) {
+    const client = await this.discover();
+    const info = await userInfo(client, openAccessToken(encrypted, cookie), subject);
+    if (!member(info.groups, policy)) {
+      await this.sql.query('DELETE FROM sessions WHERE id=$1', id);
+      recordError({ key: 'OIDC_GROUP_REQUIRED', caller: 'auth::recheckGroup', correlationId: correlation });
+      return false;
+    }
+    const updated = await this.sql.query('UPDATE sessions SET group_checked=$1 WHERE id=$2 AND group_policy=$3 AND expires>$1 RETURNING id',
+      Date.now(), id, policyKey(policy));
+    return updated.length === 1;
   }
 
   async require({ request, mutate = false }: { request: FastifyRequest; mutate?: boolean }) {
@@ -179,26 +215,36 @@ export class Auth {
     };
   }
 
-  async begin({ request, reply, account, method, identity }: {
-    request: FastifyRequest; reply: FastifyReply; account: Account; method: Session['method'];
-    identity?: { issuer: string; subject: string }
-  }) {
+  private async begin(request: FastifyRequest, reply: FastifyReply, login:
+    { method: 'local'; account: Account } | { method: 'proxy' | 'oidc'; identity: ExternalIdentity; label: string; proof?: GroupProof }) {
     const old = cookie({ request, name: sessionCookie });
-    const [signedIn] = old ? await this.sql.query<{ account_id: string }>(
-      'SELECT account_id FROM sessions WHERE id=$1 AND expires>$2', hash({ value: old }), Date.now()
-    ) : [];
-    if (signedIn && signedIn.account_id !== account.id) throw new Failure('IDENTITY_MISMATCH', 409);
     const token = randomToken();
     const { localSessionMinutes, sessionMinutes } = this.config;
-    const minutes = method === 'local' ? (localSessionMinutes ?? sessionMinutes) : sessionMinutes;
-    const seconds = minutes * 60;
-    await this.sql.transaction(async query => {
-      await query('DELETE FROM sessions WHERE expires <= $1 OR id=$2', Date.now(), old ? hash({ value: old }) : '');
-      await query('INSERT INTO sessions(id,account_id,method,issuer,subject,expires) VALUES ($1,$2,$3,$4,$5,$6)',
-        hash({ value: token }), account.id, method, identity?.issuer ?? null, identity?.subject ?? null, Date.now() + seconds * 1000);
+    const minutes = login.method === 'local' ? (localSessionMinutes ?? sessionMinutes) : sessionMinutes;
+    const proof = login.method === 'oidc' ? login.proof : undefined;
+    const now = Date.now();
+    const expires = Math.min(now + minutes * 60_000, proof?.expires ?? Infinity);
+    if (expires <= now) throw new Failure('OIDC_FAILED', 401);
+    const account = await this.sql.transaction(async query => {
+      if (login.method === 'oidc' && policyKey(await readPolicy(this.config, query)) !== (proof ? policyKey(proof.policy) : null)) {
+        throw new Failure('OIDC_GROUP_REQUIRED', 403);
+      }
+      const identity = login.method === 'local' ? undefined : login.identity;
+      const account = login.method === 'local'
+        ? (await query<Account>('SELECT id,label,admin,enabled FROM accounts WHERE id=$1 AND enabled=1', login.account.id))[0]
+        : await firstLoginAccount(query, login.identity, login.label, request.id);
+      if (!account) throw new Failure('ACCESS_DENIED', 403);
+      const oldId = old ? hash({ value: old }) : '';
+      const [previous] = old ? await query<{ account_id: string }>('SELECT account_id FROM sessions WHERE id=$1 AND expires>$2', oldId, now) : [];
+      if (previous && previous.account_id !== account.id) throw new Failure('IDENTITY_MISMATCH', 409);
+      await query('DELETE FROM sessions WHERE expires <= $1 OR id=$2', now, oldId);
+      await query('INSERT INTO sessions(id,account_id,method,issuer,subject,expires,group_policy,group_checked,group_token) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        hash({ value: token }), account.id, login.method, identity?.issuer ?? null, identity?.subject ?? null, expires,
+        proof ? policyKey(proof.policy) : null, proof ? now : null, proof?.access ? sealAccessToken(proof.access, token) : null);
       await audit({ query, actor: account.id, resource: 'session', action: 'sign-in', outcome: 'confirmed', correlation: request.id });
+      return account;
     });
-    setCookie({ reply, name: sessionCookie, value: token, seconds });
+    setCookie({ reply, name: sessionCookie, value: token, seconds: Math.ceil((expires - now) / 1000) });
     return { user: { id: account.id, label: account.label, admin: account.admin === 1 }, csrf: csrfToken({ token }) };
   }
 
@@ -215,19 +261,7 @@ export class Auth {
       await audit({ query: this.sql.query, resource: 'session', action: 'sign-in', outcome: 'rejected', correlation: request.id });
       throw new Failure('LOGIN_INVALID', 401);
     }
-    return this.begin({ request, reply, account, method: 'local' });
-  }
-
-  private async external({ request, reply, method, identity }: {
-    request: FastifyRequest; reply: FastifyReply; method: 'oidc' | 'proxy';
-    identity: { issuer: string; subject: string }
-  }) {
-    const [account] = await this.sql.query<Account>(
-      'SELECT a.id,a.label,a.admin,a.enabled FROM identities i JOIN accounts a ON i.account_id=a.id WHERE i.issuer=$1 AND i.subject=$2 AND a.enabled=1',
-      identity.issuer, identity.subject
-    );
-    if (!account) throw new Failure('IDENTITY_UNLINKED', 403);
-    return this.begin({ request, reply, account, method, identity });
+    return this.begin(request, reply, { account, method: 'local' });
   }
 
   proxy({ request, reply }: { request: FastifyRequest; reply: FastifyReply }) {
@@ -235,7 +269,7 @@ export class Auth {
     const subject = this.proxyIdentity({ request });
     if (!subject || !('ingress' in this.config.auth)) throw new Failure('NOT_AUTHENTICATED', 401);
     this.throttle({ request, name: subject, method: 'proxy' });
-    return this.external({ request, reply, method: 'proxy', identity: { issuer: this.config.auth.ingress.issuer, subject } });
+    return this.begin(request, reply, { method: 'proxy', label: subject, identity: { kind: 'headers', issuer: this.config.auth.ingress.issuer, subject } });
   }
 
   private callback() {
@@ -258,8 +292,13 @@ export class Auth {
         hash({ value: token }), state, nonce, verifier, Date.now() + 300_000, next);
     });
     setCookie({ reply, name: flowCookie, value: token, seconds: 300 });
+    const scopes = new Set(['openid']);
+    if ('oidc' in this.config.auth) for (const scope of this.config.auth.oidc.scopes) scopes.add(scope);
+    if ('oidc' in this.config.auth && this.config.auth.oidc.groupScope && (await readPolicy(this.config, this.sql.query)).requiredGroups.length) {
+      scopes.add(this.config.auth.oidc.groupScope);
+    }
     return reply.redirect(oidc.buildAuthorizationUrl(client, {
-      redirect_uri: this.callback(), scope: 'openid',
+      redirect_uri: this.callback(), scope: [...scopes].join(' '),
       code_challenge: await oidc.calculatePKCECodeChallenge(verifier), code_challenge_method: 'S256', state, nonce
     }).toString(), 303);
   }
@@ -275,11 +314,28 @@ export class Auth {
     const client = await this.discover().catch(() => { throw new Failure('OIDC_FAILED', 502); });
     const current = new URL(this.callback());
     current.search = new URL(request.url, 'http://localhost').search;
-    const claims = await oidc.authorizationCodeGrant(client, current, {
+    const tokens = await oidc.authorizationCodeGrant(client, current, {
       expectedState: flow.state, expectedNonce: flow.nonce, pkceCodeVerifier: flow.verifier, idTokenExpected: true
-    }).then(tokens => tokens.claims()).catch(() => { throw new Failure('OIDC_FAILED', 401); });
-    if (!claims || typeof claims.sub !== 'string' || claims.sub.length > 180) throw new Failure('OIDC_FAILED', 401);
-    await this.external({ request, reply, method: 'oidc', identity: { issuer: new URL(claims.iss).href, subject: claims.sub } });
+    }).catch(() => { throw new Failure('OIDC_FAILED', 401); });
+    const claims = tokens.claims();
+    if (!claims || typeof claims.sub !== 'string' || !claims.sub.length || claims.sub.length > 180) throw new Failure('OIDC_FAILED', 401);
+    const policy = await readPolicy(this.config, this.sql.query);
+    const gated = policy.requiredGroups.length > 0;
+    const metadata = client.serverMetadata();
+    let info: oidc.UserInfoResponse | undefined;
+    if (metadata.userinfo_endpoint && (gated || (!claims.name && !claims.preferred_username && metadata.scopes_supported?.includes('profile')))) {
+      try {
+        info = await userInfo(client, tokens.access_token, claims.sub);
+      } catch (error) {
+        if (gated) throw error;
+        recordError({ key: 'OIDC_FAILED', caller: 'auth::userInfo', correlationId: request.id });
+      }
+    }
+    const proof = gated ? verifyGroup(policy, claims, info, tokens.access_token, tokens.expiresIn()) : undefined;
+    const label = [info?.name, claims.name, info?.preferred_username, claims.preferred_username].find(
+      (value): value is string => typeof value === 'string' && !!value.trim() && !/[\x00-\x1f\x7f]/.test(value));
+    await this.begin(request, reply, { method: 'oidc', identity: { kind: 'oauth', issuer: new URL(claims.iss).href, subject: claims.sub },
+      label: label?.trim().slice(0,80) || claims.sub, proof });
     return reply.redirect(recordingReturnPath(flow.return_path,this.config.publicOrigin.origin) ?? '/', 303);
   }
 

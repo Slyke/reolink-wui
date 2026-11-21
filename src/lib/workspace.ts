@@ -20,6 +20,8 @@ export type AdminData = {
   grants: { account_id: string; camera_id: string; permissions: Permission[] }[];
   local: boolean;
   external: boolean;
+  externalTypes: import('../../shared/sign-in.js').ExternalType[];
+  oidcGroups?: import('../../shared/sign-in.js').GroupPolicy & { fromConfig: boolean };
   appearanceDefaults: Appearance;
   inventoryIntervalSeconds: number;
 };

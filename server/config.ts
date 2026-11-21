@@ -31,10 +31,17 @@ const ingress = object({
 });
 const forward = object({ secret: bearer, peers: z.array(peer).min(1).max(16), ca: tlsRoot });
 
+export const groupName = z.string().trim().min(1).max(255).regex(/^[^\x00-\x1f\x7f]+$/);
+export const groupList = z.array(groupName).max(256).refine(unique, 'Group names must be distinct');
+export const groupMode = z.enum(['any','all']);
 const oidc = object({
   issuer: endpoint({ secure: 'https:', plain: 'http:' }),
   clientId: z.string().min(1).max(200),
   clientSecret: bearer,
+  requiredGroups: groupList.optional(),
+  requiredGroupsMode: groupMode.default('any'),
+  scopes: z.array(z.string().regex(/^[A-Za-z0-9._:-]+$/).max(128)).max(32).default(['openid']),
+  groupScope: z.string().regex(/^[A-Za-z0-9._:-]*$/).max(128).default('groups'),
   tokenEndpointAuth: z.enum(['client_secret_basic', 'client_secret_post']).default('client_secret_basic'),
   ca: tlsRoot
 });
@@ -44,8 +51,11 @@ const auth = z.discriminatedUnion('mode', [
   object({ mode: z.literal('oidc'), oidc }),
   object({ mode: z.literal('oidc+local'), oidc }),
   object({ mode: z.literal('proxy-headers'), ingress }),
-  object({ mode: z.literal('proxy-headers+local'), ingress })
-]);
+  object({ mode: z.literal('proxy-headers+local'), ingress }),
+  object({ mode: z.literal('oidc+proxy-headers'), oidc, ingress }),
+  object({ mode: z.literal('oidc+proxy-headers+local'), oidc, ingress })
+]).refine(policy => !('oidc' in policy && 'ingress' in policy) || policy.oidc.issuer.href !== policy.ingress.issuer,
+  'Use distinct issuer identifiers for OIDC and trusted headers');
 
 const database = z.discriminatedUnion('driver', [
   object({ driver: z.literal('sqlite'), path: z.string().min(1) }),

@@ -8,11 +8,28 @@ Keep `./local-only/` (or your mounted configuration and secrets location) privat
 
 ## Identities
 
-Choose a single `auth.mode`: `local`, `oidc`, `oidc+local`, `proxy-headers` or `proxy-headers+local`. Bootstrap command works only when the database has no accounts. For an external administrator, use `npm run admin -- bootstrap external '<verified-subject>' 'Instance administrator'`. Identify an OIDC person by its verified `sub` from the configured issuer (not email or username). Administrators link verified identities from the administration screen. New accounts have no camera grants.
+Choose `local`, `oidc`, `proxy-headers` or `oidc+proxy-headers` for `auth.mode`. Append `+local` to an external mode to also allow passwords. Combined OIDC and header modes use distinct issuer identifiers.
+
+The first successful external sign-in creates a regular WUI account with zero camera grants. Later sign-ins reuse the same provider, issuer and subject. The account appears in **Settings → Accounts** and in the camera grants selector. Administrators can explicitly link another sign-in method to the same account. Matching display names and email addresses never link accounts automatically. Disabling an account blocks its linked identities. Deleting it ends its sessions and removes its identities, password, camera grants and preferences. An eligible external user can sign in again as a new account. Historical audit entries retain their actor UUID.
+
+Bootstrap the first administrator using the CLI. For example, run `npm run admin -- bootstrap oauth '<verified-sub>' 'Instance administrator'` or use `headers` and the trusted header username. The existing `external` form works with a single configured external provider. Bootstrap is available until the installation has an administrator, even if ordinary users have signed in.
 
 Set `localSessionMinutes` in `WUI_CONFIG` to control how long new password sessions last. For example, `localSessionMinutes: 10080` gives the browser cookie and server session a seven-day lifetime. It accepts whole minutes from 5 to 525600. When omitted, password sessions use `sessionMinutes` (480 minutes by default). Sign out and back in to get a session with the new lifetime.
 
-For OIDC configure `auth.oidc = { issuer, clientId, clientSecret, tokenEndpointAuth, ca }`. The exact redirection URL is `<publicOrigin><active browser API prefix>/v1/session/oidc/callback`. The discovery document, authorization endpoint, token endpoint and keys must be on the configured issuer origin. For [Authelia](https://www.authelia.com/configuration/identity-providers/openid-connect/clients/), register a confidential client with code grant, `openid` scope, `require_pkce: true`, `pkce_challenge_method: S256`, and `client_secret_basic` (or configure `client_secret_post` at both ends).
+For OIDC configure `auth.oidc = { issuer, clientId, clientSecret, tokenEndpointAuth, ca }`. The exact redirection URL is `<publicOrigin><active browser API prefix>/v1/session/oidc/callback`. The discovery document, authorization endpoint, token endpoint and keys must be on the configured issuer origin. For [Authelia](https://www.authelia.com/configuration/identity-providers/openid-connect/clients/), register a confidential client with code grant, `openid` scope, optional `profile` for display names (set `auth.oidc.scopes` to `["openid", "profile"]` on the WUI as well), `require_pkce: true`, `pkce_challenge_method: S256`, and `client_secret_basic` (or configure `client_secret_post` at both ends).
+
+Configure the OAuth group allowlist in **Settings → Accounts → OAuth access**, or pin it in the deployment configuration. For example, within `auth.oidc`:
+
+```json
+{
+  "requiredGroups": ["camera-users", "camera-operators"],
+  "requiredGroupsMode": "any"
+}
+```
+
+With `any` (the default), membership in one listed group permits OAuth sign-in. With `all`, the user must belong to every listed group. Names match exactly, including case. An empty array admits any verified OAuth identity. A configured `requiredGroups` array takes precedence over the WUI setting. Permit the `groups` scope on the identity provider when using a group rule. Set `groupScope` to another scope or an empty string if the provider supplies the `groups` claim differently.
+
+Admission is checked before creating an account or session and on protected requests. When the provider supplies a `groups` array through UserInfo, the WUI rechecks it at most once a minute per active session and bounds the session to the provider token lifetime. With groups supplied only in a signed ID token, a new sign-in is required within five minutes or at token expiry, whichever comes first. Changing the WUI rule ends existing OAuth sessions. Local and trusted-header sign-in keep their own admission rules.
 
 For trusted header modes configure `auth.ingress = { issuer, peers, secret, identityHeader: 'remote-user' }`. At ingress strip incoming identity, ingress proof and forward headers. Populate the identity exclusively from the [trusted authentication service](https://www.authelia.com/integration/trusted-header-sso/introduction/) and add `X-WUI-Ingress-Proof` with the configured secret. WUI verifies both the socket peer and secret. In proxy mode SvelteKit verifies ingress itself and forwards only the verified subject using the independent Node hop key. Do not set the adapter-node `ADDRESS_HEADER` in these modes. In combined mode permit browser access to the UI and API through the local sign-in bypass path at ingress, while still stripping identity/proof headers and leaving WUI session checks in force. Clear the old WUI session when switching accounts.
 
@@ -146,6 +163,8 @@ Open **Recordings** to select a camera, search a date in the camera's local time
 Opening a day warms timeline thumbnails across all result pages. The WUI loads a poster for each recording, then frames along the visible rail, then the remaining recorded seconds. It reads one background thumbnail at a time and pauses when the tab is hidden or the player is open. The automatic preview caches in the tab and WUI API each hold up to 32 MiB and 4,096 entries for up to 600 seconds. Authorized viewers can reuse the API cache.
 
 Moving a mouse or dragging a finger across the timeline queues the photos and video previews crossed along the rail. Earlier requests finish as the pointer moves. The current selection gets priority while the queue also processes earlier positions. A labeled nearby frame can appear while the selected frame loads. The browser keeps scanned images until you refresh, leave Recordings, or change the camera or date. This works with or without Valkey.
+
+On **Recordings → SD card and storage**, **Format SD card** appears for a supported card and a user with the per-camera format permission. The confirmation names the camera and slot. Formatting erases all files on that card and the camera may restart. Refresh storage after it is online to see its current state.
 
 On **Recordings**, open **Bulk downloads** for the selected camera and date. **Download day’s videos (ZIP)** includes each SD recording in the qualities the camera saved, with separate `main` and `sub` folders. **Download PNGs (ZIP)** reads the camera’s saved JPEG time-lapse originals. Choose **Whole day** or one of the gaps in **PNG time range**. Empty periods can have photos when the camera has a JPEG time-lapse task. Both downloads require the **Export recordings** grant.
 

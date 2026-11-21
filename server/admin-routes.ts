@@ -13,7 +13,9 @@ import { input, password, shortLabel, username, uuid, type Runtime } from './run
 import { Failure } from './errors.js';
 import { information } from './cameras.js';
 import { result } from './bridge.js';
-import { eventSourcesSchema } from './config.js';
+import { identityProvider, linkIdentity, providers } from './identities.js';
+import { readPolicy, policyKey } from './oidc-groups.js';
+import { groupList, groupMode, eventSourcesSchema } from './config.js';
 import { historyConnectionInput, historyStorageInput } from '../shared/history.js';
 import { bridgeConnections } from './bridge-configuration.js';
 import { record } from './bridge-channels.js';
@@ -23,15 +25,7 @@ import { sendOutcome } from './camera-routes.js';
 const object = z.strictObject;
 const operationId = uuid;
 const key = z.string().regex(segment);
-const external = object({ subject: z.string().regex(/^[^\x00-\x20\x7f,]{1,180}$/) });
-
-export const identityIssuer = ({ config }: { config: Runtime['config'] }) => {
-  if ('ingress' in config.auth) return config.auth.ingress.issuer;
-  if ('oidc' in config.auth) {
-    return config.auth.oidc.issuer.href;
-  }
-  throw new Failure('UNSUPPORTED', 422);
-};
+const external = object({ subject: z.string().regex(/^[^\x00-\x20\x7f,]{1,180}$/), type: z.enum(['oauth','headers']).optional() });
 
 export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path: string; runtime: Runtime }) => {
   const root = path + '/admin';
@@ -43,16 +37,22 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
   api.get(root, async request => {
     await runtime.admin({ request });
     await runtime.sync();
-    const [cameras, accounts, grants, bridgeRows, settings] = await Promise.all([
+    const [cameras, accounts, identities, grants, bridgeRows, settings, group] = await Promise.all([
       runtime.sql.query<CameraRef>('SELECT * FROM cameras ORDER BY bridge_id,remote_id'),
-      runtime.sql.query('SELECT id,label,username,admin,enabled FROM accounts ORDER BY label'),
+      runtime.sql.query<{ id: string; label: string; username: string | null; admin: number; enabled: number }>('SELECT id,label,username,admin,enabled FROM accounts ORDER BY label,id'),
+      runtime.sql.query<{ account_id: string; kind: string }>('SELECT DISTINCT account_id,kind FROM identities ORDER BY kind'),
       runtime.sql.query<{ account_id: string; camera_id: string; permissions: string }>('SELECT g.* FROM grants g JOIN accounts a ON a.id=g.account_id WHERE a.admin=0 ORDER BY g.account_id,g.camera_id'),
       runtime.sql.query<{ id: string; refreshed_at: string | null }>('SELECT id,refreshed_at FROM bridges'),
-      runtime.settings()
+      runtime.settings(), readPolicy(runtime.config, runtime.sql.query)
     ]);
+    const types = new Map<string, string[]>(accounts.map(item => [item.id, item.username ? ['local'] : []]));
+    for (const identity of identities) types.get(identity.account_id)?.push(identity.kind);
     return {
       ...settings,
-      accounts, grants: grants.map(row => ({ ...row, permissions: JSON.parse(row.permissions) })),
+      accounts: accounts.map(item => ({ ...item, types: types.get(item.id) })),
+      externalTypes: providers(runtime.config).map(item => item.kind),
+      oidcGroups: 'oidc' in runtime.config.auth ? { ...group, fromConfig: runtime.config.auth.oidc.requiredGroups !== undefined } : undefined,
+      grants: grants.map(row => ({ ...row, permissions: JSON.parse(row.permissions) })),
       permissions, presets, external: runtime.config.auth.mode !== 'local', local: isLocal({ config: runtime.config }),
       bridges: [...runtime.bridges.values()].map(bridge => ({
         id: bridge.config.id, label: bridge.config.label, connected: bridge.feedReady,
@@ -156,7 +156,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
     if (data.local && !isLocal({ config: runtime.config })) throw new Failure('UNSUPPORTED', 422);
     const value = await runtime.ops.run({
       id: data.operationId, actor: admin.account.id, action: 'account.create', resource: 'accounts',
-      correlation: request.id, input: { label: data.label, username: data.local?.username, subject: data.identity?.subject },
+      correlation: request.id, input: { label: data.label, username: data.local?.username, identity: data.identity },
       execute: async () => {
         const encoded = data.local ? await passwordHash({ password: data.local.password }) : null;
         const id = randomUUID();
@@ -165,9 +165,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
             id, data.label, data.local?.username ?? null, encoded);
           if (!inserted.length) throw new Failure('OPERATION_CONFLICT', 409);
           if (data.identity) {
-            const linked = await query('INSERT INTO identities(issuer,subject,account_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING account_id',
-              identityIssuer({ config: runtime.config }), data.identity.subject, id);
-            if (!linked.length) throw new Failure('IDENTITY_MISMATCH', 409);
+            await linkIdentity(query, { ...identityProvider(runtime.config, data.identity.type), subject: data.identity.subject }, id);
           }
         });
         return { outcome: 'confirmed', data: { id } };
@@ -180,18 +178,74 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
     const admin = await runtime.admin({ request, mutate: true });
     const id = input({ schema: uuid, value: request.params.id });
     const data = input({ schema: object({ operationId, identity: external }), value: request.body });
-    const issuer = identityIssuer({ config: runtime.config });
+    const identity = { ...identityProvider(runtime.config, data.identity.type), subject: data.identity.subject };
     const value = await runtime.ops.run({
       id: data.operationId, actor: admin.account.id, action: 'identity.link', resource: id,
-      input: [issuer, data.identity.subject], correlation: request.id,
+      input: identity, correlation: request.id,
       execute: async () => {
         await runtime.sql.transaction(async query => {
           if (!(await query('SELECT id FROM accounts WHERE id=$1', id)).length) throw new Failure('ACCESS_DENIED', 403);
-          const [linked] = await query<{ account_id: string }>(
-            'INSERT INTO identities(issuer,subject,account_id) VALUES ($1,$2,$3) ON CONFLICT (issuer,subject) DO UPDATE SET subject=excluded.subject RETURNING account_id',
-            issuer, data.identity.subject, id
-          );
-          if (linked.account_id !== id) throw new Failure('IDENTITY_MISMATCH', 409);
+          await linkIdentity(query, identity, id);
+        });
+        return { outcome: 'confirmed' };
+      }
+    });
+    return sendOutcome({ reply, value });
+  });
+
+  api.put<{ Params: { id: string } }>(root + '/accounts/:id/local', async (request, reply) => {
+    const { account } = await runtime.admin({ request, mutate: true });
+    if (!isLocal({ config: runtime.config })) throw new Failure('UNSUPPORTED', 422);
+    const id = input({ schema: uuid, value: request.params.id });
+    const data = input({ schema: object({ operationId, username, password }), value: request.body });
+    const value = await runtime.ops.run({
+      id: data.operationId, actor: account.id, action: 'account.link-local', resource: id, input: data.username, correlation: request.id,
+      execute: async () => {
+        const encoded = await passwordHash({ password: data.password });
+        await runtime.sql.transaction(async query => {
+          if ((await query('SELECT id FROM accounts WHERE username=$1', data.username)).length) throw new Failure('OPERATION_CONFLICT', 409);
+          const updated = await query('UPDATE accounts SET username=$1,password_hash=$2 WHERE id=$3 AND username IS NULL RETURNING id',
+            data.username, encoded, id);
+          if (!updated.length) throw new Failure('OPERATION_CONFLICT', 409);
+        });
+        return { outcome: 'confirmed' };
+      }
+    });
+    return sendOutcome({ reply, value });
+  });
+
+  api.delete<{ Params: { id: string } }>(root + '/accounts/:id', async (request, reply) => {
+    const { account } = await runtime.admin({ request, mutate: true });
+    const id = input({ schema: uuid, value: request.params.id });
+    const data = input({ schema: object({ operationId, confirmation: z.literal(true) }), value: request.body });
+    if (id === account.id) throw new Failure('ACCESS_DENIED', 403);
+    const value = await runtime.ops.run({
+      id: data.operationId, actor: account.id, action: 'account.delete', resource: id, input: id, correlation: request.id,
+      execute: async () => {
+        await runtime.sql.transaction(async query => {
+          // Two administrators deleting one another must not remove the last administrator.
+          const removed = await query(`DELETE FROM accounts WHERE id=$1 AND EXISTS
+            (SELECT 1 FROM accounts active WHERE active.id=$2 AND active.admin=1 AND active.enabled=1) RETURNING id`, id, account.id);
+          if (!removed.length) throw new Failure('OPERATION_CONFLICT', 409);
+        });
+        return { outcome: 'confirmed' };
+      }
+    });
+    return sendOutcome({ reply, value });
+  });
+
+  api.put(root + '/oidc-groups', async (request, reply) => {
+    const { account } = await runtime.admin({ request, mutate: true });
+    if (!('oidc' in runtime.config.auth) || runtime.config.auth.oidc.requiredGroups !== undefined) throw new Failure('UNSUPPORTED', 422);
+    const { operationId: id, ...policy } = input({ schema: object({ operationId, requiredGroups: groupList, requiredGroupsMode: groupMode }), value: request.body });
+    const value = await runtime.ops.run({
+      id, actor: account.id, action: 'oidc.groups', resource: 'accounts', input: policy, correlation: request.id,
+      execute: async () => {
+        await runtime.sql.transaction(async query => {
+          const previous = await readPolicy(runtime.config, query);
+          await query('UPDATE instance_settings SET oidc_group_policy=$1 WHERE id=1', JSON.stringify(policy));
+          if (policyKey(previous) === policyKey(policy)) return;
+          await query("DELETE FROM sessions WHERE method='oidc'");
         });
         return { outcome: 'confirmed' };
       }
