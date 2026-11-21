@@ -1,4 +1,5 @@
-import { api, url } from './api.js';
+import { api, UiError, url } from './api.js';
+import { TimelineScanQueue } from '../../shared/timeline-scan-queue.js';
 import { ScannedPhotoTimes } from '../../shared/recording-timeline.js';
 import type { TimelinePhoto } from '../../shared/recordings.js';
 import { recordingTime, type RecordingGroup } from '../../shared/recording-groups.js';
@@ -8,9 +9,22 @@ type Frame = RecordingFrame<Blob>;
 type ViewedFrame = {cache: RecordingPreviews; recording: string; src: string; offset: number; jpeg: Blob};
 type Job = { result: Promise<Frame>; controller: AbortController; readers: number };
 
+async function retryBusy<T>(signal:AbortSignal, load:() => Promise<T>):Promise<T> {
+  try { return await load(); }
+  catch (error) {
+    const status = error instanceof UiError ? error.status : error instanceof Error ? error.cause : undefined;
+    if (signal.aborted || (status !== 429 && status !== 503)) throw error;
+    await new Promise(resolve => setTimeout(resolve,500));
+    signal.throwIfAborted();
+    return load();
+  }
+}
+
 // One cache per camera on the signed-in Recordings page. Cards, table and timeline share it.
 export class RecordingPreviews extends RecordingPreviewCache<Blob> {
   private jobs = new Map<string, Job>();
+  private frames = new TimelineScanQueue<ViewedFrame>(2);
+  private lookups = new TimelineScanQueue<TimelinePhoto|null>(2);
   private scannedPhotos = new ScannedPhotoTimes();
   private photoMisses = new Map<string, number>();
 
@@ -123,7 +137,30 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
     } finally { signal.removeEventListener('abort', release); release(); }
   }
 
-  async nearestPhoto(second:number,radius:number,signal:AbortSignal) {
+  scanFrame(clip:string, offset:number, current:boolean):Promise<ViewedFrame> {
+    const viewed = this.viewedFrame(clip,offset);
+    if (viewed) return Promise.resolve(viewed);
+    if (current) {
+      const warm = this.exact(clip,offset);
+      if (warm) return this.keepViewed(clip,offset,warm);
+    }
+    return this.frames.request(clip+'/'+offset, current, async signal => {
+      const frame = await retryBusy(signal,() => this.read(clip,offset,signal));
+      return this.keepViewed(clip,offset,frame);
+    });
+  }
+
+  scanPhoto(second:number,radius:number,current:boolean) {
+    const cached = this.cachedPhoto(second,radius);
+    if (cached !== undefined) return Promise.resolve(cached);
+    return this.lookups.request(second+'/'+radius, current, async signal => {
+      const photo = await retryBusy(signal,() => this.nearestPhoto(second,radius,signal));
+      if (photo) void this.scanFrame('photo/'+photo.id,0,false).catch(() => {});
+      return photo;
+    });
+  }
+
+  private async nearestPhoto(second:number,radius:number,signal:AbortSignal) {
     const key = second+'/'+radius;
     const hit = this.cachedPhoto(second,radius);
     if (hit !== undefined) return hit;
@@ -147,6 +184,7 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
     const midnight = recordingTime(this.date + 'T00:00:00');
     const failedClips = new Set<string>();
     for (const [recording, offset] of timelineFrames(recordings, start, end, width, midnight)) {
+      await this.frames.whenIdle();
       if (signal.aborted || Date.now() >= until) return;
       if (failedClips.has(recording) || this.exact(recording, offset)) continue;
       try { await this.read(recording, offset, signal, true); }
@@ -159,11 +197,13 @@ export class RecordingPreviews extends RecordingPreviewCache<Blob> {
   }
 
   close() {
+    this.closed = true;
+    this.lookups.close();
+    this.frames.close();
     for (const job of this.jobs.values()) job.controller.abort();
     this.jobs.clear();
     this.photoMisses.clear();
     this.scannedPhotos.clear();
-    this.closed = true;
     for (const image of this.objectUrls.values()) URL.revokeObjectURL(image.src);
     this.objectUrls.clear();this.viewed.clear();
     this.clear();

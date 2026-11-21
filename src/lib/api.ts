@@ -11,7 +11,7 @@ export const url = (path: string) => buildApiUrl({
 });
 
 export class UiError extends Error {
-  constructor(readonly reason: string, readonly correlation?: string) { super(reason); }
+  constructor(readonly reason: string, readonly correlation?: string, readonly status?: number) { super(reason); }
 }
 
 export type Outcome = { id?: string; outcome: string; data?: any; reason?: string; cameraStatus?: number; correlationId?: string; bridgeCorrelationId?: string };
@@ -32,7 +32,7 @@ export const api = async <T>({ path, method = 'GET', body, csrf, image = false, 
     if (response.status === 204) return undefined as T;
     if (image && response.ok && ['image/png', 'image/jpeg'].includes(response.headers.get('content-type') ?? '')) return await response.blob() as T;
     const value = await response.json();
-    if (!response.ok && !value.id) throw new UiError(value.reason ?? value.error ?? 'INTERNAL', value.correlationId ?? response.headers.get('x-correlation-id') ?? undefined);
+    if (!response.ok && !value.id) throw new UiError(value.reason ?? value.error ?? 'INTERNAL', value.correlationId ?? response.headers.get('x-correlation-id') ?? undefined, response.status);
     return value as T;
   } catch (error) {
     if (error instanceof UiError) throw error;

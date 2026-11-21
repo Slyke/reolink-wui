@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { api } from '../../dist/server/api.js';
 import { configSchema } from '../../dist/server/config.js';
 import { passwordHash } from '../../dist/server/auth.js';
-import { fixtureBridge, eventually, localPassword, hop, uuid } from '../support.mjs';
+import { fixtureBridge, eventually, localPassword, hop, uuid, jpeg } from '../support.mjs';
 
 const reserve = async () => {
   const listener = tcp().listen(0, '127.0.0.1');
@@ -30,6 +30,72 @@ const expectHover = async (page, button) => {
   await button.hover();
   await expect.poll(background).not.toBe(resting);
 };
+
+async function checkFastTimelineDrag(page,cdp,rail,datePicker,mode) {
+  const date = '2026-11-15';
+  const hours = [6,8,10,12,14,16];
+  const photos = hours.map(hour => ({id:hour.toString(16).padStart(64,'0'),capturedAt:date+'T'+String(hour).padStart(2,'0')+':00:00'}));
+  const image = page.locator('.timeline-hover img');
+  const gallery = u => u.pathname.endsWith('/time-lapse/photos') && u.searchParams.get('date')===date;
+  const thumbnail = u => u.pathname.includes('/time-lapse/photos/') && u.pathname.endsWith('/preview') && u.searchParams.get('date')===date;
+  const held = Promise.withResolvers();
+  const requests = [], finished = [];
+  const busyPhoto = mode === 'proxy' ? photos[2].id : undefined;
+  let active = 0, peak = 0;
+  await page.route(gallery,route => route.fulfill({json:{date,photos,undatedCount:0}}));
+  await page.route(thumbnail,async route => {
+    const id = new URL(route.request().url()).pathname.split('/').at(-2);
+    const temporarilyBusy = id === busyPhoto && !requests.includes(id);
+    requests.push(id);
+    peak = Math.max(peak,++active);
+    try {
+      await held.promise;
+      if (temporarilyBusy) { await route.fulfill({status:503,body:''}); return; }
+      await route.fulfill({contentType:'image/jpeg',body:jpeg});
+      finished.push(id);
+    } finally { active--; }
+  });
+  try {
+    await datePicker.fill(date);
+    await expect(page.getByText('No video recordings for '+date+'. 6 time-lapse photos.')).toBeVisible();
+    await rail.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
+    const r = await rail.boundingBox();
+    const at = hour => ({x:r.x+r.width*hour/24,y:r.y+r.height/2});
+    const start = at(hours[0]), end = at(hours.at(-1));
+    if (mode==='browser') {
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[start]});
+      await expect.poll(()=>requests.length).toBe(1);
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[end]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    } else {
+      await page.mouse.move(start.x,start.y);
+      await expect.poll(()=>requests.length).toBe(1);
+      await page.mouse.move(end.x,end.y);
+      await page.mouse.move(0,0);
+    }
+    await expect.poll(()=>requests.length).toBe(2);
+    held.resolve();
+    await expect.poll(()=>new Set(finished).size).toBe(photos.length);
+    expect(peak).toBe(2);
+    if (mode==='browser') {
+      await expect(page.locator('.timeline-hover time')).toHaveText('16:00:00');
+      await expect(image).toBeVisible();
+    }
+    for (const hour of hours.toReversed()) {
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[at(hour)]});
+      await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+      await expect(page.locator('.timeline-hover time')).toHaveText(String(hour).padStart(2,'0')+':00:00');
+      await expect(image).toBeVisible();
+    }
+    const expectedRequests = photos.map(photo=>photo.id);
+    if (busyPhoto) expectedRequests.push(busyPhoto);
+    expect(requests.toSorted()).toEqual(expectedRequests.toSorted());
+  } finally {
+    held.resolve();
+    await page.unroute(gallery);
+    await page.unroute(thumbnail);
+  }
+}
 
 for (const mode of ['browser','proxy']) {
   test('navigate workspace, search grants and open private QR in ' + mode + ' mode', async ({ page, browser }) => {
@@ -1614,11 +1680,15 @@ for (const mode of ['browser','proxy']) {
       await expect(bubble.getByRole('button',{name:'Jump to recording'})).toHaveCount(0);
       await page.getByRole('heading',{name:'Camera recordings'}).click();
       await expect(bubble).toHaveCount(0);
+      const canShowMorningPhoto = () => page.evaluate(async src => {
+        const image = new Image();
+        image.src = src;
+        try { await image.decode(); return true; } catch { return false; }
+      },morningUrl);
+      await expect.poll(canShowMorningPhoto).toBe(true);
       await inputDate.fill('2026-11-18');
       await expect(page).toHaveURL(/date=2026-11-18/);
-      await expect.poll(()=>page.evaluate(async src=>{
-        try {return (await fetch(src)).ok;} catch {return false;}
-      },morningUrl)).toBe(false);
+      await expect.poll(canShowMorningPhoto).toBe(false);
       await expect(page.getByRole('heading',{name:'Recording timeline'})).toBeVisible();
       await rail.evaluate(el=>el.scrollIntoView({block:'center',behavior:'instant'}));
       await expect(page.getByText('No video recordings for 2026-11-18. 1 time-lapse photo.')).toBeVisible();
@@ -1629,6 +1699,7 @@ for (const mode of ['browser','proxy']) {
       await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
       await expect(bubble.locator('time')).toHaveText('10:30:00');
       await expect(bubble.locator('img')).toBeVisible();
+      await checkFastTimelineDrag(page,cdp,rail,inputDate,mode);
       await page.getByRole('heading',{name:'Camera recordings'}).click();
       bridge.setRecordingCount(3);
       await inputDate.fill('2026-11-17');

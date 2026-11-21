@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { t } from './api.js';
-  import { timelineIndex, type TimelineCapture } from '../../shared/recording-timeline.js';
+  import { timelineIndex, timelinePreview, type TimelineCapture } from '../../shared/recording-timeline.js';
   import { formatLocalTimestamp } from './dates.js';
   import type { TimelinePhoto } from '../../shared/recordings.js';
   import InfoTip from './InfoTip.svelte';
@@ -49,35 +49,33 @@
   const known = $derived(hover?.explicit ? {item:hover.explicit,time:recordingTime(hover.explicit.start),offsetMs:0}
     : hover ? index.closest(hover.raw) : undefined);
   const second = $derived(hover ? Math.floor((hover.raw-day)/1000) : -1);
-  const radius = $derived.by(() => {
-    if (!hover || !undatedCount || hover.explicit) return -1;
-    if (!known) return 86_399;
-    if ('item' in known && recordingTime(known.item.start) <= hover.raw && hover.raw < recordingTime(known.item.end)) return -1;
-    return Math.min(86_399,Math.ceil(Math.abs(known.time-hover.raw)/1000));
-  });
+  function photoRadius(raw:number, nearby:TimelineCapture|undefined, explicit?:RecordingGroup) {
+    if (!undatedCount || explicit) return -1;
+    if (!nearby) return 86_399;
+    if ('item' in nearby && recordingTime(nearby.item.start) <= raw && raw < recordingTime(nearby.item.end)) return -1;
+    return Math.min(86_399,Math.ceil(Math.abs(nearby.time-raw)/1000));
+  }
+  const radius = $derived(hover ? photoRadius(hover.raw,known,hover.explicit) : -1);
   let resolved = $state<{second:number;radius:number;photo:TimelinePhoto|null}>();
   $effect(() => {
     const at = second, distance = radius, cache = previews;
     if (at < 0 || distance < 0 || cache.cachedPhoto(at,distance)!==undefined) return;
-    const controller = new AbortController();
-    const timer = setTimeout(async () => {
-      try {
-        const photo = await cache.nearestPhoto(at,distance,controller.signal);
-        if (!controller.signal.aborted) resolved = {second:at,radius:distance,photo};
-      } catch { if (!controller.signal.aborted) resolved = {second:at,radius:distance,photo:null}; }
-    },180);
-    return () => {clearTimeout(timer);controller.abort();};
+    let showing = true;
+    void cache.scanPhoto(at,distance,true).then(photo => {
+      if (showing) resolved = {second:at,radius:distance,photo};
+    }).catch(() => { if (showing) resolved = {second:at,radius:distance,photo:null}; });
+    return () => { showing = false; };
   });
   const resolution = $derived.by(()=>{
     const photo=previews.cachedPhoto(second,radius);
     return photo!==undefined?{second,radius,photo}:resolved && second===resolved.second && radius===resolved.radius?resolved:undefined;
   });
-  const capture = $derived.by((): TimelineCapture | undefined => {
-    const photo = resolution?.photo;
-    if (!photo || !hover) return known;
+  function closestCapture(raw:number, nearby:TimelineCapture|undefined, photo?:TimelinePhoto|null):TimelineCapture|undefined {
+    if (!photo) return nearby;
     const time = recordingTime(photo.capturedAt);
-    return !known || Math.abs(time-hover.raw) < Math.abs(known.time-hover.raw) ? {photo,time} : known;
-  });
+    return !nearby || Math.abs(time-raw) < Math.abs(nearby.time-raw) ? {photo,time} : nearby;
+  }
+  const capture = $derived(hover ? closestCapture(hover.raw,known,resolution?.photo) : undefined);
   const selectedVideo = $derived(capture && 'item' in capture ? capture : undefined);
   $effect(() => {
     const id = selectedVideo?.item.id;
@@ -85,21 +83,49 @@
   });
   const position = (item: RecordingGroup) => Math.max(0, (recordingTime(item.start) - rangeStart) / span * 100);
   const width = (item: RecordingGroup) => Math.max(0, Math.min(100 - position(item), (recordingTime(item.end) - Math.max(rangeStart,recordingTime(item.start))) / span * 100));
+  function scan(raw:number,current:boolean,item?:RecordingGroup) {
+    const nearby = item ? {item,time:recordingTime(item.start),offsetMs:0} : index.closest(raw);
+    const distance = photoRadius(raw,nearby,item);
+    const at = Math.floor((raw-day)/1000);
+    const photo = distance < 0 ? null : previews.cachedPhoto(at,distance);
+    if (photo === undefined) void previews.scanPhoto(at,distance,current).catch(() => {});
+    const capture = closestCapture(raw,nearby,photo);
+    if (!capture) return;
+    const target = timelinePreview(capture);
+    if (target.photo || available) {
+      void previews.scanFrame(target.photo ? 'photo/'+target.recording : target.recording,target.offsetMs,current).catch(() => {});
+    }
+  }
+  let previousTime:number|undefined;
   const point = (raw: number, item?: RecordingGroup) => {
     const bounds = rail.getBoundingClientRect();
     if (!bounds.width || !hasMedia) return;
     const cursor = Math.max(0,Math.min(100,(raw-rangeStart)/span*100));
     const half = Math.min(50,Math.min(144,window.innerWidth * .35) / bounds.width * 100);
     hover = { raw, explicit:item, cursor, percent:Math.max(half,Math.min(100-half,cursor)) };
+    scan(raw,true,item);
   };
-  const clear = () => { pinned = false; hover = undefined; onhover(); };
+  const clear = () => { previousTime = undefined; pinned = false; hover = undefined; onhover(); };
   const leave = () => { if (!pinned) clear(); };
   const scrub = (event: PointerEvent) => {
     const bounds = rail.getBoundingClientRect();
-    if (bounds.width) point(Math.min(rangeEnd-1,rangeStart + Math.max(0,Math.min(1,(event.clientX-bounds.left)/bounds.width))*span));
+    if (!bounds.width || !hasMedia) return;
+    const timeAt = (x:number) => Math.min(rangeEnd-1,rangeStart + Math.max(0,Math.min(1,(x-bounds.left)/bounds.width))*span);
+    const raw = timeAt(event.clientX);
+    point(raw);
+    const trace = (next:number) => {
+      if (previousTime !== undefined && previousTime !== next) {
+        for (const time of index.crossed(previousTime,next,rangeStart,span/bounds.width)) scan(time,false);
+      }
+      if (next !== raw && previousTime !== next) scan(next,false);
+      previousTime = next;
+    };
+    for (const sample of event.getCoalescedEvents?.() ?? []) trace(timeAt(sample.clientX));
+    trace(raw);
   };
   const begin = (event: PointerEvent) => {
     if (event.pointerType === 'mouse' || !event.isPrimary || (event.target as Element).closest('.timeline-hover')) return;
+    previousTime = undefined;
     pinned = true;
     touchPointer = event.pointerId;
     rail.setPointerCapture(event.pointerId);
@@ -109,6 +135,7 @@
     if (touchPointer !== event.pointerId) return;
     if (event.type === 'pointerup') scrub(event);
     touchPointer = undefined;
+    previousTime = undefined;
     if (rail.hasPointerCapture(event.pointerId)) rail.releasePointerCapture(event.pointerId);
   };
   const jump = () => {
@@ -160,12 +187,9 @@
       {#if pinned}<span class="timeline-cursor" style:left={hover.cursor + '%'} aria-hidden="true"></span>{/if}
       <div class="timeline-hover stack" class:pinned style:left={hover.percent + '%'} role={pinned ? 'group' : 'tooltip'}
         aria-label={pinned ? t('recording-timeline') : undefined}>
-        {#if capture && 'photo' in capture}
-          <RecordingPreview {previews} recording={capture.photo.id} available photo eager />
-        {:else if selectedVideo}
-          {@const video = selectedVideo}
-          {@const variant = video.item.variants.find(v => recordingTime(v.start) <= video.time && video.time < recordingTime(v.end)) ?? video.item.variants[0]}
-          <RecordingPreview {previews} recording={variant.id} {available} offsetMs={Math.max(0,video.time-recordingTime(variant.start))} eager />
+        {#if capture}
+          {@const target = timelinePreview(capture)}
+          <RecordingPreview {previews} {...target} available={target.photo || available} eager />
         {:else}
           <div class="recording-preview"><span class="muted">{t(resolution ? 'recording-preview-failed' : 'loading')}</span></div>
         {/if}

@@ -26,17 +26,24 @@
     const id = cacheKey, offset = offsetKey, cache = previews, timeline = eager;
     failed = false;
     if (!available || !visible) return;
-    const controller = new AbortController();
-    const show = async (frame: { jpeg: Blob; offsetMs: number }, exact=true) => {
-      if (timeline) {
-        const shared=await cache.keepViewed(id,exact ? offset : frame.offsetMs,frame);
-        if (controller.signal.aborted) return;
-        const previous=untrack(()=>image);
-        if(previous?.owned)URL.revokeObjectURL(previous.src);
-        image=shared;
-        return;
+    if (timeline) {
+      let showing = true, exactShown = false;
+      if (!photo && !cache.exact(id,offset)) {
+        const nearby = cache.nearest(id,offset);
+        if (nearby) void cache.keepViewed(id,nearby.offsetMs,nearby).then(frame => {
+          if (showing && !exactShown) image = frame;
+        }).catch(() => {});
       }
-      if (untrack(() => image?.jpeg === frame.jpeg)) return;
+      void cache.scanFrame(id,offset,true).then(frame => {
+        exactShown = true;
+        if (showing) image = frame;
+      }).catch(() => { if (showing) failed = true; });
+      return () => { showing = false; };
+    }
+    const controller = new AbortController();
+    const showCard = async () => {
+      const frame = await cache.read(id,offset,controller.signal);
+      if (controller.signal.aborted || untrack(() => image?.jpeg === frame.jpeg)) return;
       const src = URL.createObjectURL(frame.jpeg);
       try {
         const decoded = new Image(); decoded.src = src;
@@ -44,23 +51,10 @@
         if (controller.signal.aborted) { URL.revokeObjectURL(src); return; }
       } catch (error) { URL.revokeObjectURL(src); throw error; }
       if (image?.owned) URL.revokeObjectURL(image.src);
-      image = { cache, recording: id, src, offset: frame.offsetMs, jpeg: frame.jpeg,owned:true };
+      image = { cache, recording:id, src, offset:frame.offsetMs, jpeg:frame.jpeg, owned:true };
     };
-    const hit = cache.exact(id, offset);
-    const nearby = !hit && timeline && !photo ? cache.nearest(id, offset) : undefined;
-    // Show a warm image immediately while a cold, exact hover waits for the pointer to settle.
-    const first = hit ?? nearby;
-    const display = first ? show(first,!!hit).catch(() => { if (!controller.signal.aborted && hit) failed = true; }) : Promise.resolve();
-    const fetchExact = async () => {
-      try {
-        const frame = await cache.read(id, offset, controller.signal);
-        await display;
-        if (!controller.signal.aborted) await show(frame);
-      } catch { if (!controller.signal.aborted) failed = true; }
-    };
-    const timer = !hit && timeline ? setTimeout(fetchExact, 150) : undefined;
-    if (!hit && !timeline) void fetchExact();
-    return () => { clearTimeout(timer); controller.abort(); };
+    void showCard().catch(() => { if (!controller.signal.aborted) failed = true; });
+    return () => controller.abort();
   });
   onDestroy(() => { if (image?.owned) URL.revokeObjectURL(image.src); });
 </script>

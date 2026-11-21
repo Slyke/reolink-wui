@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { nearestUndatedPhoto } from '../dist/server/nearest-photo.js';
+import { TimelineScanQueue } from '../dist/shared/timeline-scan-queue.js';
 import { timelineIndex, ScannedPhotoTimes } from '../dist/shared/recording-timeline.js';
 import { recordingTime, recordingGaps } from '../dist/shared/recording-groups.js';
 import { test } from 'node:test';
@@ -15,6 +16,35 @@ import { RecordingPreviewCache } from '../dist/shared/recording-preview-cache.js
 
 const envPg = process.env.WUI_TEST_POSTGRES;
 const dbs = [undefined, ...(envPg ? [{ driver:'postgres', url:envPg, tls:false }] : [])];
+
+test('scrub requests survive pointer changes, prioritize the current position and drain once', async () => {
+  const queue = new TimelineScanQueue(1);
+  const starts = [], gates = new Map();
+  const add = (key,current=false) => queue.request(key,current,async signal => {
+    const gate = Promise.withResolvers();
+    starts.push(key);
+    gates.set(key,gate);
+    signal.addEventListener('abort',()=>gate.reject(signal.reason),{once:true});
+    return gate.promise;
+  });
+  const first=add('first'), middle=add('middle'), last=add('last',true);
+  assert.equal(add('middle'),middle);
+  assert.deepEqual(starts,['first']);
+  gates.get('first').resolve(1);
+  assert.equal(await first,1);
+  assert.deepEqual(starts,['first','last']);
+  gates.get('last').resolve(3);
+  assert.equal(await last,3);
+  gates.get('middle').resolve(2);
+  assert.equal(await middle,2);
+  await queue.whenIdle();
+  assert.deepEqual(starts,['first','last','middle']);
+  const obsolete = [add('old-date'),add('queued-date')];
+  queue.close();
+  for (const job of obsolete) await assert.rejects(job,{name:'AbortError'});
+  await assert.rejects(add('after-close'),{name:'AbortError'});
+  assert.equal(starts.includes('queued-date'),false);
+});
 
 test('a scanned interval reuses its closest photo and leaves uncovered seconds available for lookup', () => {
   const scans=new ScannedPhotoTimes();
@@ -44,6 +74,9 @@ test('the timeline picks the covering video or nearest saved capture in camera t
   assert.equal(mixed.closest(at(10)).time,at(9)-1000);
   assert.equal(mixed.closest(at(14)).photo,b);
   assert.equal(mixed.closest(at(24)).item,later);
+  const crossed = [at(1),at(2),at(3),at(10),at(15),at(20),at(25)];
+  assert.deepEqual([...mixed.crossed(at(0),at(26),at(0),600000)],crossed);
+  assert.deepEqual([...mixed.crossed(at(26),at(0),at(0),600000)],crossed.toReversed());
   const only = timelineIndex([],[b,a]);
   assert.equal(only.closest(at(0)).photo,a);
   assert.equal(only.closest(at(59)).photo,b);

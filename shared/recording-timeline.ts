@@ -5,6 +5,13 @@ type Video = {item:RecordingGroup; start:number; end:number};
 type Photo = {photo:TimelinePhoto; start:number};
 export type TimelineCapture = {item:RecordingGroup; time:number; offsetMs:number} | {photo:TimelinePhoto; time:number};
 
+export function timelinePreview(capture:TimelineCapture) {
+  if ('photo' in capture) return {recording:capture.photo.id, offsetMs:0, photo:true};
+  const {item,time} = capture;
+  const variant = item.variants.find(v => recordingTime(v.start) <= time && time < recordingTime(v.end)) ?? item.variants[0];
+  return {recording:variant.id, offsetMs:Math.max(0,time-recordingTime(variant.start)), photo:false};
+}
+
 function after<T extends {start:number}>(items: T[], time: number) {
   let low = 0, high = items.length;
   while (low < high) {
@@ -71,7 +78,22 @@ export function timelineIndex(recordings: RecordingGroup[], photos: TimelinePhot
     }
     return best;
   };
+  // Trace the selectable rail positions between pointer events. Include captures narrower than one pixel.
+  function* crossed(from:number,to:number,origin:number,msPerPixel:number) {
+    if (from === to || !Number.isFinite(msPerPixel)) return;
+    const low = Math.min(from,to), high = Math.max(from,to);
+    const step = Math.max(1000,msPerPixel);
+    const times = new Set<number>();
+    for (let i = Math.floor((low-origin)/step)+1; origin+i*step < high; i++) times.add(origin+i*step);
+    for (const entries of [clips,stills]) {
+      for (let i = after<{start:number}>(entries,low); i < entries.length && entries[i].start < high; i++) {
+        times.add(entries[i].start);
+      }
+    }
+    yield* [...times].sort((a,b) => from < to ? a-b : b-a);
+  }
   return {
+    crossed,
     first: Math.min(clips[0]?.start ?? Infinity,stills[0]?.start ?? Infinity),
     last: Math.max(longest.at(-1)?.end ?? -Infinity,(stills.at(-1)?.start ?? -Infinity)+1),
     closest
