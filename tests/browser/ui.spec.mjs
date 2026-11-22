@@ -1420,7 +1420,7 @@ for (const mode of ['browser','proxy']) {
       await orientationPanel.getByRole('button',{name:'Rotate counterclockwise',exact:true}).click();
       await expect(orientationPanel.getByText('0°',{exact:true})).toBeVisible();
       bridge.setStorageFailure({status:422,key:'API_SETTING_READ_FAILED'});
-      await page.getByRole('link',{name:'Recordings',exact:true}).first().click();
+      await page.goto(publicOrigin+'/recordings?camera='+camera.id);
       await expect(page.getByRole('heading',{name:'SD card and storage'})).toBeVisible();
       const storagePanel=page.getByRole('region',{name:'SD card and storage'});
       await expect(storagePanel.getByRole('alert')).toContainText('The bridge could not read this camera’s storage details.');
