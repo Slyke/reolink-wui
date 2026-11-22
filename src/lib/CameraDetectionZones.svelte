@@ -175,7 +175,8 @@
 </dialog>
 <style>
   .zone-dialog{width:min(58rem,96vw);max-height:94dvh;overflow:auto}
-  .zone-stage{position:relative;display:block;width:100%;padding:0;border:1px solid var(--border);background:#16191b;overflow:hidden;touch-action:none;user-select:none;cursor:crosshair}
+  .zone-stage{position:relative;display:block;width:100%;padding:0;border:1px solid var(--border);background:#16191b;overflow:hidden;touch-action:none;user-select:none;cursor:crosshair;box-shadow:none}
+  .zone-stage:not(:disabled):is(:hover,:active){transform:none;box-shadow:none}
   .zone-stage img{display:block;width:100%;height:auto;pointer-events:none}
   .zone-stage svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
   .excluded{fill:#fb8639;fill-opacity:.6}

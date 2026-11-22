@@ -17,6 +17,8 @@ import { RecordingPreviewCache } from '../shared/recording-preview-cache.js';
 import { recordingStages, recordingMetadataResponse, recordingPhotos, recordingDate, recordingId, recordingsResponse, recordingStream, storageResponse } from '../shared/recordings.js';
 
 const object = z.strictObject;
+const mediaPreparationTimeoutMs = 125_000;
+
 const bridgeRead = async <T>({ bridge, stableId, path, search, correlation, schema, failureKey, limit, timeoutMs = 48_000, signal }: {
   bridge: Bridge; stableId: string; path: string; search?: string; correlation: string; schema: z.ZodType<T>; limit?: number; timeoutMs?: number; signal?: AbortSignal;
   failureKey: 'STORAGE_READ_FAILED' | 'RECORDING_SEARCH_FAILED'
@@ -186,7 +188,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     if (!bridge.hasRecordingMetadata(row.routeId)) throw new Failure('UNSUPPORTED',422);
     const response = await bridge.api({
       stableId: row.remote_id, path: '/cameras/' + row.routeId + '/recordings/' + id + '/metadata', search: page ? '?page=' + page : undefined,
-      correlation: request.id, signal: AbortSignal.timeout(48_000)
+      correlation: request.id, signal: AbortSignal.timeout(mediaPreparationTimeoutMs)
     });
     if (!response.ok) throw await mediaFailure({ response });
     const result = recordingMetadataResponse.safeParse(await jsonResponse({ response, limit: 8 * 1024 * 1024 }));
@@ -255,7 +257,7 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     try {
       const response = await bridge.api({
         stableId: row.remote_id, path: '/cameras/' + row.routeId + '/recordings/' + id + '/video',
-        range, correlation: request.id, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(125_000)])
+        range, correlation: request.id, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(mediaPreparationTimeoutMs)])
       });
       if (![200, 206, 416].includes(response.status)) {
         throw await mediaFailure({ response });

@@ -25,17 +25,16 @@
   let railWidth = $state(0), visibility = $state<DocumentVisibilityState>();
   let now = $state(Date.now());
   $effect(() => {
-    if (range !== 'day' || visibility !== 'visible') return;
+    if (visibility !== 'visible') return;
     now = Date.now();
     const timer = setInterval(() => { now = Date.now(); }, 30_000);
     return () => clearInterval(timer);
   });
   const futureStart = $derived.by(() => {
-    if (range !== 'day') return;
     const wallNow = clock?.cameraTime
       ? recordingTime(clock.cameraTime) + now - clock.sampledAt
       : recordingTime(formatLocalTimestamp(now).replace(' ', 'T'));
-    if (wallNow >= day && wallNow < day + 86_400_000) return (wallNow - day) / 86_400_000 * 100;
+    if (wallNow >= day && wallNow < rangeEnd) return Math.max(0, wallNow - rangeStart) / span * 100;
   });
   $effect(() => {
     if (!available || !warming || visibility !== 'visible' || !railWidth) return;

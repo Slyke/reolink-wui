@@ -827,7 +827,7 @@
   "reolink-wui-event-coordinates-disabled": "The bridge’s coordinate stream is disabled. This alert contains detection state only.",
   "reolink-wui-event-coordinates-not-sent": "No object coordinates were included in this alert.",
   "reolink-wui-recording-metadata-failed": "Recording detection metadata could not be loaded.",
-  "reolink-wui-recording-metadata-empty": "The camera did not include object coordinates in this recording.",
+  "reolink-wui-recording-metadata-empty": "No object coordinates were reported for this stream.",
   "reolink-wui-recording-metadata-unsupported": "Recording coordinates require the bridge’s recording metadata API.",
   "reolink-wui-recording-metadata-json": "Detection coordinates (JSON)",
   "reolink-wui-recording-metadata-samples": "{$count} timestamped detection samples",
