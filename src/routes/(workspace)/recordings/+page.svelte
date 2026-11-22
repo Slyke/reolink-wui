@@ -2,8 +2,8 @@
   import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
   import { goto, replaceState } from '$app/navigation';
-  import { useWorkspace } from '$lib/workspace.js';
-  import { api, errorText, operationId, outcomeText, type Outcome, t, url } from '$lib/api.js';
+  import StorageCards from '$lib/StorageCards.svelte';
+  import { api, errorText, t, url } from '$lib/api.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import type { Camera } from '$lib/models.js';
   import RecordingExport from '$lib/RecordingExport.svelte';
@@ -60,29 +60,6 @@
   let reading = $state(false);
   let cameraError = $state('');
   let storageError = $state('');
-  const workspace = useWorkspace();
-  let formatting = $state(false);
-  let formatStatus = $state<{camera: string; message: string; failed: boolean}>();
-  const formatCard = async (card: StorageInfo['cards'][number]) => {
-    const id = selected;
-    if (formatting || !card.formatSource || !camera || !confirm(t('storage-format-confirm', {slot:card.number, camera:camera.name || camera.id}))) return;
-    formatting = true;
-    formatStatus = undefined;
-    try {
-      const result = await api<Outcome>({path:'/api/v1/cameras/'+id+'/storage/format',method:'POST',csrf:workspace.current().csrf,
-        body:{operationId:operationId(),slot:card.number,source:card.formatSource,confirm:true}});
-      const accepted = result.reason === 'STORAGE_FORMAT_ACCEPTED';
-      formatStatus = {camera:id,message:outcomeText(result),failed:!accepted};
-      if (id === selected && (accepted || result.outcome === 'unknown')) {
-        controller?.abort(); listController?.abort();
-        listing = undefined; gallery = undefined;
-        previews.close(); previews = new RecordingPreviews(id,date);
-        storage = undefined; reading = false; loading = false; photosLoading = false;
-      }
-    } catch (error) {
-      formatStatus = {camera:id,message:errorText(error),failed:true};
-    } finally { formatting = false; }
-  };
   let searchError = $state('');
   let layout = $state<'grid' | 'table'>('grid');
   let pageNumber = $state(0);
@@ -201,9 +178,6 @@
   let controller: AbortController | undefined;
   let listController: AbortController | undefined;
 
-  const size = (value: number | null) => value === null ? t('empty-value') : t('storage-gb', {
-    value: new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value / 1_000_000_000)
-  });
   const search = async ({ signal }: { signal?: AbortSignal } = {}) => {
     listController?.abort();
     const current = new AbortController();
@@ -250,7 +224,7 @@
     if (!camera?.capabilities.recordings) { reading = false; return; }
     try {
       const started = Date.now();
-      const next = await api<StorageInfo>({ path: '/api/v1/cameras/' + selected + '/storage', signal: current.signal });
+      const next = await api<StorageInfo>({ path: '/api/v1/cameras/' + selected + '/storage?format=false', signal: current.signal });
       if (current.signal.aborted) return;
       clockSample = {started,received:Date.now()};
       storage = next;
@@ -366,33 +340,15 @@
 
 {#if camera?.capabilities.recordings}
   <section class="panel stack" aria-labelledby="card-storage">
-    <h2 id="card-storage" class="panel-title">{t('storage')}</h2>
-    {#if formatStatus?.camera === selected}<p role="status" class:error={formatStatus.failed}>{formatStatus.message}</p>{/if}
+    <div class="row between panel-title">
+      <h2 id="card-storage">{t('storage')}</h2>
+      {#if camera.capabilities.storageFormat}
+        <a href={'/settings/cameras?camera=' + encodeURIComponent(camera.id) + '#sd-card-settings'}>{t('storage-settings')}</a>
+      {/if}
+    </div>
     {#if storageError}<p role="alert" class="error">{storageError}</p>{/if}
     {#if storage}
-      <div class="grid">
-        {#each storage.cards as card (card.number)}
-          <article class="panel stack">
-            <div class="row between">
-              <h3>{t('storage-' + card.kind)}</h3>
-              <span class="pill" data-status={card.mounted && card.formatted ? 'online' : 'offline'}>{t(card.mounted && card.formatted ? 'storage-ready' : 'storage-unavailable')}</span>
-            </div>
-            <dl class="event-metadata">
-              <dt>{t('storage-total')}</dt><dd>{size(card.totalBytes)}</dd>
-              <dt>{t('storage-used')}</dt><dd>{size(card.usedBytes)}</dd>
-              <dt>{t('storage-free')}</dt><dd>{size(card.freeBytes)}</dd>
-            </dl>
-            {#if card.totalBytes && card.usedBytes !== null}
-              <meter min="0" max={card.totalBytes} value={card.usedBytes} aria-label={t('storage-used')}></meter>
-            {/if}
-            {#if card.kind === 'sd' && card.formatSource}
-              <div class="row"><button class="danger" disabled={formatting} onclick={() => formatCard(card)}>{t('storage-format')}</button></div>
-            {/if}
-          </article>
-        {:else}
-          <p class="muted">{t('storage-empty')}</p>
-        {/each}
-      </div>
+      <StorageCards cards={storage.cards}/>
     {:else if reading}
       <p role="status">{t('loading')}</p>
     {/if}

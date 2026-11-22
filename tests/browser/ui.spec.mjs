@@ -918,7 +918,7 @@ for (const mode of ['browser','proxy']) {
       await page.getByRole('button',{name:'Save retention settings'}).click();
       await expect(page.getByText('Retention settings saved.')).toBeVisible();
       await retentionSummary.click();
-      const settingsRefresh = page.getByRole('button',{name:/^Refresh/});
+      const settingsRefresh = page.getByRole('button',{name:'Refresh settings',exact:true});
       await expect(settingsRefresh).toHaveCount(1);
       const brightness = page.getByRole('spinbutton',{name:'Brightness',exact:true});
       await sectionSummary('Detection and alerts').click();
@@ -1427,7 +1427,7 @@ for (const mode of ['browser','proxy']) {
       await expect(page.locator('.recording-card time').first()).toHaveAttribute('datetime',/^2026-11-16/);
       bridge.setStorageFailure(undefined);
       let driftSeconds=3600;
-      await page.route('**'+prefix+'/v1/cameras/*/storage',async route=>{
+      await page.route('**'+prefix+'/v1/cameras/*/storage?format=false',async route=>{
         const response=await route.fetch();
         const cameraTime=await page.evaluate(seconds=>{
           const now=new Date();
@@ -1449,15 +1449,37 @@ for (const mode of ['browser','proxy']) {
       await expect(clockInfo).toHaveText('i');
       await expect(storagePanel.getByRole('alert')).toHaveCount(0);
       await expect(storagePanel.getByText('64 GB',{exact:true})).toBeVisible();
-      const formatCard=storagePanel.getByRole('button',{name:'Format SD card'});
-      await expect(formatCard).toBeVisible();
-      page.once('dialog', async dialog => {
-        expect(dialog.message()).toMatch(/slot 0 on .+\?/);
-        expect(dialog.message()).toContain('slot 0');
-        await dialog.dismiss();
-      });
-      await formatCard.click();
-      await expect(storagePanel.getByText('64 GB',{exact:true})).toBeVisible();
+      await expect(storagePanel.getByRole('button',{name:'Format SD card'})).toHaveCount(0);
+      const storageLink=storagePanel.getByRole('link',{name:'SD card settings'});
+      const storageHref=await storageLink.getAttribute('href');
+      expect(storageHref).toBe('/settings/cameras?camera='+camera.id+'#sd-card-settings');
+      const settingsTab=await page.context().newPage();
+      try {
+        await settingsTab.route('**'+prefix+'/v1/cameras/*/storage?format=true',async route=>{
+          const response=await route.fetch();
+          const data=await response.json();
+          delete data.cards[0].formatSource;
+          await route.fulfill({response,json:data});
+        },{times:1});
+        await settingsTab.goto(publicOrigin+storageHref);
+        const cardSettings=settingsTab.getByRole('region',{name:'SD card and storage'});
+        const formatCard=cardSettings.getByRole('button',{name:'Format SD card'});
+        await expect(cardSettings.getByText('64 GB',{exact:true})).toBeVisible();
+        await expect(formatCard).toBeDisabled();
+        await expect(formatCard).toHaveAccessibleDescription(/bridge hasn’t confirmed formatting support/);
+        await cardSettings.getByRole('button',{name:'Refresh storage'}).click();
+        await expect(formatCard).toBeEnabled();
+        const writes=[];
+        settingsTab.on('request',req=>{if(req.method()==='POST' && req.url().endsWith('/storage/format'))writes.push(req.postDataJSON());});
+        settingsTab.once('dialog',async dialog=>{expect(dialog.message()).toMatch(/slot 0 on .+\?/);await dialog.dismiss();});
+        await formatCard.click();
+        expect(writes).toHaveLength(0);
+        settingsTab.once('dialog',dialog=>dialog.accept());
+        await formatCard.click();
+        await expect(cardSettings.getByRole('status')).toContainText('The camera accepted the format request');
+        expect(writes).toHaveLength(1);
+        expect(writes[0]).toMatchObject({slot:0,confirm:true,source:'a'.repeat(64)});
+      } finally {await settingsTab.close();}
       await expect(inputDate).toHaveValue('2026-11-16');
       const sort = page.getByLabel('Sort by time',{exact:true});
       const firstClip = page.locator('.recording-card time').first();

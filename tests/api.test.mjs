@@ -1059,8 +1059,17 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal(storage.json().cards[0].usedBytes,16000000000);
   const selection={operationId:uuid(),slot:0,source:storage.json().cards[0].formatSource,confirm:true};
   assert.equal(selection.source,'a'.repeat(64));
+  const plain=await incoming({path:root+'/storage?format=false',headers:privileged});
+  assert.equal(plain.statusCode,200);
+  assert.equal(plain.json().cards[0].formatSource,undefined);
+  assert.equal((await incoming({path:root+'/storage?format=true',headers:restricted})).statusCode,403);
   const format=(headers,payload) => incoming({method:'POST',path:root+'/storage/format',headers,payload});
   assert.equal((await format(restricted,selection)).statusCode,403);
+  const formatter=await seed({username:'card-formatter'});
+  const formatOnly=await signIn('card-formatter');
+  await runtime.sql.query('INSERT INTO grants VALUES ($1,$2,$3)',formatter,camera.id,JSON.stringify(['view','storage.format']));
+  assert.equal((await incoming({path:root+'/storage?format=true',headers:formatOnly})).json().cards[0].formatSource,selection.source);
+  assert.equal((await incoming({path:root+'/recordings?date=2026-11-17',headers:formatOnly})).statusCode,403);
   assert.equal((await format({cookie:privileged.cookie},selection)).statusCode,403);
   assert.equal((await format(privileged,{...selection,confirm:false})).statusCode,400);
   const accepted=await format(privileged,selection);
@@ -1081,6 +1090,7 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.deepEqual(failure.json().details,{upstreamStatus:status,bridgeCorrelationId:failure.json().correlationId});
     assert.ok(!failure.body.includes(serviceToken));
   }
+  fixture.setStorageFailure(undefined);
   const search=await incoming({path:root+'/recordings?date=2026-11-17&stream=sub',headers:privileged});
   assert.equal(search.statusCode,200,search.body);
   const recording=search.json().recordings[0];
@@ -1094,6 +1104,10 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
   assert.equal((await incoming({path:gallery+day,headers:restricted})).statusCode,403);
   assert.equal((await incoming({path:gallery+'?date=2026-02-30',headers:privileged})).statusCode,400);
   await runtime.sql.query('UPDATE grants SET permissions=$1 WHERE account_id=$2 AND camera_id=$3',JSON.stringify(['view','recordings.view']),viewer,camera.id);
+  assert.equal((await incoming({path:root+'/storage?format=true',headers:restricted})).statusCode,403);
+  const viewerStorage=await incoming({path:root+'/storage',headers:restricted});
+  assert.equal(viewerStorage.statusCode,200,viewerStorage.body);
+  assert.equal(viewerStorage.json().cards[0].formatSource,undefined);
   const photoList=(await incoming({path:gallery+day,headers:restricted})).json();
   assert.deepEqual(photoList.photos.map(p=>p.capturedAt),['2026-11-17T09:15:00','2026-11-17T12:45:00']);
   assert.equal((await incoming({path:exportPath+'photos',headers:restricted})).statusCode,403);

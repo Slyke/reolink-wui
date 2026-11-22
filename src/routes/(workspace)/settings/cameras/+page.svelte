@@ -13,6 +13,7 @@
   import CameraOptions from '$lib/CameraOptions.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
   import MediaRetention from '$lib/MediaRetention.svelte';
+  import CameraStorage from '$lib/CameraStorage.svelte';
   import PlaybackSettings from '$lib/PlaybackSettings.svelte';
   import CameraEncoding from '$lib/CameraEncoding.svelte';
   import CameraClock from '$lib/CameraClock.svelte';
@@ -29,7 +30,7 @@
   let error = $state('');
   type Panel = { refresh: () => Promise<unknown>; working: () => boolean };
   let lights = $state<Panel>(), orientation = $state<Panel>(), detectionSettings = $state<Panel>(), recordingSettings = $state<Panel>();
-  let zones = $state<Panel>();
+  let zones = $state<Panel>(), storage = $state<Panel>();
   let picture = $state<Panel>(), sound = $state<Panel>(), mic = $state<Panel>(), privacy = $state<Panel>();
   let tracking = $state<Panel>(), siren = $state<Panel>(), delivery = $state<Panel>(), ftp = $state<Panel>();
   let refreshed = $state(false);
@@ -42,7 +43,7 @@
   let display = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let network = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let rotation = $state<{ setStatus: (status: string) => void }>();
-  const panels = $derived([lights,orientation,detectionSettings,zones,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,ftp,schedule,retention,playback,encoding,clock,display,network]);
+  const panels = $derived([lights,orientation,detectionSettings,zones,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,ftp,schedule,storage,retention,playback,encoding,clock,display,network]);
   const camera = $derived(cameras.find(item => item.id === selected));
   const admin = $derived(workspace.current().user.admin);
   function visible(groups:readonly SettingsGroup[]) {
@@ -109,7 +110,7 @@
   {@const detection = caps.detectionZones.types.length || visible(detectionGroups) || caps.alerts.read || caps.alerts.write || caps.options.tracking || caps.options.siren || caps.options.delivery}
   {@const connectivity = caps.network.read || caps.network.write || caps.clock.read || caps.clock.write}
   {@const accounts = caps.cameraUsers || caps.rotate}
-  {@const recordings = admin || visible(['recording_schedule','time_lapse']) || caps.options.recordingAudio}
+  {@const recordings = admin || caps.recordings || caps.storageFormat || visible(['recording_schedule','time_lapse']) || caps.options.recordingAudio}
   {#key camera.id}
     {#if live}
       <SettingsDisclosure title={t('settings-live-image')} open>
@@ -158,7 +159,11 @@
       </SettingsDisclosure>
     {/if}
     {#if recordings}
-      <SettingsDisclosure title={t('settings-recording-storage')}>
+      <SettingsDisclosure title={t('settings-recording-storage')} open={page.url.hash === '#sd-card-settings'}
+        ontoggle={open => { if (open) void storage?.refresh(); }}>
+        {#if caps.recordings || caps.storageFormat}
+          <CameraStorage bind:this={storage} {base} {csrf} cameraName={camera.name || camera.id} canFormat={caps.storageFormat}/>
+        {/if}
         {#if scheduleAccess && (scheduleAccess.read || scheduleAccess.write || scheduleAccess.unavailable)}
           <CameraRecordingSchedule bind:this={schedule} {base} {csrf} access={scheduleAccess} {online} freshSettings={caps.freshSettings}/>
         {/if}

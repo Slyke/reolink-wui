@@ -57,8 +57,8 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
   const previews = new RecordingPreviewCache<Buffer>();
   const stopWatching = runtime.observeBridgeChanges(() => previews.clear());
   api.addHook('onClose', async () => { stopWatching(); previews.clear(); });
-  const camera = async (request: Parameters<Runtime['camera']>[0]['request'], id: string) => {
-    const result = await runtime.camera({ request, id, permission: 'recordings.view' });
+  const camera = async (request: Parameters<Runtime['camera']>[0]['request'], id: string, permission: 'recordings.view' | 'storage.format' = 'recordings.view') => {
+    const result = await runtime.camera({ request, id, permission });
     if (!result.bridge.hasStorage(result.row.routeId)) throw new Failure('UNSUPPORTED', 422);
     return result;
   };
@@ -136,8 +136,9 @@ export const recordingRoutes = ({ api, path, runtime }: { api: FastifyInstance; 
     return reply.type('image/jpeg').send(jpeg);
   });
   api.get<{ Params: { id: string } }>(root + '/storage', async request => {
-    const { bridge, row } = await camera(request, request.params.id);
-    const canFormat = row.permissions.includes('storage.format');
+    const { format } = input({ schema: object({ format: z.enum(['true', 'false']).optional() }), value: request.query });
+    const { bridge, row } = await camera(request, request.params.id, format === 'true' ? 'storage.format' : 'recordings.view');
+    const canFormat = format !== 'false' && row.permissions.includes('storage.format');
     const storage = await bridgeRead({
       bridge, stableId: row.remote_id, path: '/cameras/' + row.routeId + '/storage', search: canFormat ? '?format=true' : undefined,
       correlation: request.id, schema: storageResponse, failureKey: 'STORAGE_READ_FAILED'
