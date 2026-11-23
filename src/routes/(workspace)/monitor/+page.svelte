@@ -3,7 +3,7 @@
   import { MediaQuery } from 'svelte/reactivity';
   import { page } from '$app/state';
   import { api, errorText, t, UiError, url } from '$lib/api.js';
-  import { cameraStatus, type Camera, type CameraEvent } from '$lib/models.js';
+  import { currentCameraId, cameraStatus, type Camera, type CameraEvent } from '$lib/models.js';
   import { matchesPreviewAlert } from '../../../../shared/playback.js';
   import { defaultEventRetention, maxFeedGapReports, type FeedGap } from '../../../../shared/events.js';
   import { useWorkspace } from '$lib/workspace.js';
@@ -80,7 +80,7 @@
       if (generation !== loadSequence) return;
       inventory = response.inventory;
       cameras = response.cameras;
-      const requested = page.url.searchParams.get('camera');
+      const requested = currentCameraId(cameras,page.url.searchParams.get('camera'));
       if (!cameras.some(item => item.id === selected)) {
         selected = cameras.find(item => item.id === requested)?.id ?? cameras[0]?.id ?? '';
       }

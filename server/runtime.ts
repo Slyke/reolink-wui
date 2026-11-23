@@ -186,23 +186,36 @@ export class Runtime {
         const key = owner + '/' + remote;
         const hardware = bridge.hardware(publicId);
         let row = known.get(key);
-        if (!row || (hardware && !row.hardware_source)) {
+        const uid = hardware?.source === 'uid' ? hardware.value : null;
+        if (!row || (hardware && (!row.hardware_source || (uid && (row.verified_uid !== uid || row.hardware_source !== 'uid'))))) {
           row = await this.sql.transaction(async query => {
             const [current] = await query<CameraRef>('SELECT * FROM cameras WHERE bridge_id=$1 AND remote_id=$2',owner,remote);
-            if (current && (!hardware || current.hardware_source)) return current;
+            if (current) {
+              if (uid && current.verified_uid && current.verified_uid !== uid) throw new Failure('BRIDGE_UNAVAILABLE',502);
+              if (hardware && (!current.hardware_source || (uid && (current.verified_uid !== uid || current.hardware_source !== 'uid')))) {
+                const [updated] = await query<CameraRef>('UPDATE cameras SET hardware_source=$1, verified_uid=COALESCE($2,verified_uid) WHERE id=$3 RETURNING *',hardware.source,uid,current.id);
+                return updated;
+              }
+              return current;
+            }
             if (hardware) {
-              // Adopt the pre-upgrade row once, retaining its UUID and original history bucket.
+              // Coordinate a UID upgrade using a verified binding or a serial observed on the same camera.
+              // A reused configured name can only adopt a row that has never claimed a hardware identity.
               const [bound] = await query<CameraRef>(
-                'UPDATE cameras SET history_key=COALESCE(history_key,remote_id),remote_id=$1,hardware_source=$2'
-                + ' WHERE bridge_id=$3 AND remote_id=$4 AND hardware_source IS NULL RETURNING *',
-                remote,hardware.source,owner,current ? remote : hardware.previous);
+                'UPDATE cameras SET history_key=COALESCE(history_key,remote_id),remote_id=$1,hardware_source=$2,verified_uid=$3'
+                + ' WHERE id=(SELECT id FROM cameras WHERE bridge_id=$4 AND (verified_uid=$3'
+                + " OR (verified_uid IS NULL AND hardware_source='serial' AND remote_id=$5)"
+                + ' OR (verified_uid IS NULL AND hardware_source IS NULL AND remote_id=$6))'
+                + ' ORDER BY CASE WHEN verified_uid=$3 THEN 0 WHEN remote_id=$5 THEN 1 ELSE 2 END LIMIT 1) RETURNING *',
+                remote,hardware.source,uid,owner,uid ? hardware.serial ?? null : null,hardware.previous);
               if (bound) return bound;
             }
             const id = randomUUID();
             const [reserved] = hardware ? [] : await query('SELECT id FROM cameras WHERE bridge_id=$1 AND history_key=$2',owner,remote);
             const [created] = await query<CameraRef>(
-              'INSERT INTO cameras(id,bridge_id,remote_id,preview_interval_ms,hardware_source,history_key) VALUES($1,$2,$3,2000,$4,$5) RETURNING *',
-              id,owner,remote,hardware?.source ?? null, hardware || reserved ? id : remote);
+              'INSERT INTO cameras(id,bridge_id,remote_id,preview_interval_ms,hardware_source,history_key,verified_uid) VALUES($1,$2,$3,2000,$4,$5,$6)'
+              + ' ON CONFLICT(bridge_id,remote_id) DO UPDATE SET remote_id=excluded.remote_id RETURNING *',
+              id,owner,remote,hardware?.source ?? null, hardware || reserved ? id : remote,uid);
             return created;
           });
         }
@@ -348,8 +361,15 @@ export class Runtime {
   async views({ account }: { account: Account }) {
     await this.sync();
     const rows = await this.orderedCameraRows(account, this.sql.query);
+    const previous = new Map<string,string[]>();
+    const aliases = await this.sql.query<{ id: string; camera_id: string }>('SELECT id,camera_id FROM camera_aliases');
+    for (const alias of aliases) {
+      const ids = previous.get(alias.camera_id) ?? [];
+      ids.push(alias.id);
+      previous.set(alias.camera_id,ids);
+    }
     return rows.map(({ row, bridge, remote }) => ({
-      id: row.id, ...information({ state: bridge.state(remote) }),
+      id: row.id, previousIds: previous.get(row.id), ...information({ state: bridge.state(remote), camera: row, serial: bridge.hardware(remote)?.serial }),
       availability: available({ bridge, remote }),
       previewIntervalMs: row.preview_interval_ms, previewPush: bridge.previewPush(remote), refreshOnAlert: row.preview_refresh_on_alert,
       capabilities: capabilities({ bridge, remote, grant: new Set(row.permissions), proxy: !!row.rtsp_proxy })

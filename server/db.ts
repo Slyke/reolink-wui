@@ -144,7 +144,13 @@ const migrations = [
   );
   INSERT INTO account_independent_enrollments SELECT id,bridge_id,owner_id,created,request FROM enrollments;
   DROP TABLE enrollments;
-  ALTER TABLE account_independent_enrollments RENAME TO enrollments;`
+  ALTER TABLE account_independent_enrollments RENAME TO enrollments;`,
+  `ALTER TABLE cameras ADD COLUMN verified_uid TEXT;
+  CREATE UNIQUE INDEX cameras_verified_uid ON cameras(bridge_id,verified_uid) WHERE verified_uid IS NOT NULL;
+  CREATE TABLE camera_aliases (
+    id TEXT PRIMARY KEY, camera_id TEXT NOT NULL REFERENCES cameras(id) ON DELETE CASCADE, history_key TEXT NOT NULL
+  );
+  CREATE INDEX camera_aliases_owner ON camera_aliases(camera_id);`
 ];
 
 const openSqlite = ({ path }: { path: string }): Sql => {
@@ -247,7 +253,7 @@ export const openDb = async ({ config }: { config: Config['database'] }) => {
 };
 
 export type CameraRef = {
-  id: string; bridge_id: string; remote_id: string; hardware_source: string | null; history_key: string | null; rtsp_proxy: string | null;
+  id: string; bridge_id: string; remote_id: string; hardware_source: string | null; verified_uid: string | null; history_key: string | null; rtsp_proxy: string | null;
   preview_interval_ms: number; preview_refresh_on_alert: PreviewAlert; ptz_preferences: string | null; ptz_intent: string | null;
 };
 export type CameraAccess = CameraRef & { permissions: Permission[] };
@@ -257,6 +263,10 @@ export type Session = Account & {
 };
 
 export const camerasFor = async ({ sql, account, id }: { sql: Pick<Sql,'query'>; account: Account; id?: string }): Promise<CameraAccess[]> => {
+  if (id) {
+    const [alias] = await sql.query<{ camera_id: string }>('SELECT camera_id FROM camera_aliases WHERE id=$1', id);
+    if (alias) id = alias.camera_id;
+  }
   if (account.admin === 1) {
     const rows = await sql.query<CameraRef>(
       id ? 'SELECT * FROM cameras WHERE id=$1' : 'SELECT * FROM cameras ORDER BY id', ...(id ? [id] : [])

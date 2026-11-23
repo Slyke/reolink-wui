@@ -20,7 +20,7 @@
   let lookupGeneration = 0;
   const useAddress = $derived(addressLookup && !namedTarget);
   const labelMatches = $derived(!!identified && (!uid || uid.toUpperCase() === identified.uid.toUpperCase())
-    && (!serial || serial.toUpperCase() === identified.serial?.toUpperCase()));
+    && (!serial || (identified.serial ? serial.toUpperCase() === identified.serial.toUpperCase() : !!uid)));
   let ssid = $state(''), password = $state(''), code = $state('');
   let wifiDialog: QrDialogHandle, identityDialog: QrDialogHandle;
   let video: HTMLVideoElement;
@@ -146,7 +146,7 @@
         const value = await api<Outcome>({
           path: '/api/v1/enrollments', method: 'POST', csrf,
           body: { operationId: id, bridge, target: camera?.target ?? target, address: camera?.address, port: camera?.port,
-            uid: camera?.uid ?? (uid || undefined), serial: camera?.serial ?? (serial || undefined), method, enableRtsp: canEnableRtsp && enableRtsp ? true : undefined, confirmation: confirmed }
+            uid: camera?.uid ?? (uid || undefined), serial: camera ? camera.serial || undefined : serial || undefined, method, enableRtsp: canEnableRtsp && enableRtsp ? true : undefined, confirmation: confirmed }
         });
         progress = value.data;
         message = outcomeText(value);

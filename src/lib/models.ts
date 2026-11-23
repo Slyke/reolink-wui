@@ -4,6 +4,18 @@ import type { EventSource } from '../../shared/events.js';
 import type { BridgeConnections } from '../../shared/bridges.js';
 
 export type Camera = Awaited<ReturnType<Runtime['views']>>[number];
+
+export function currentCameraId(cameras: Camera[], id: string | null) {
+  return cameras.find(camera => id !== null && camera.previousIds?.includes(id))?.id ?? id;
+}
+
+export function savedCameraPreference(prefix: string, camera: Camera) {
+  for (const id of [camera.id,...(camera.previousIds ?? [])]) {
+    const value = localStorage.getItem(prefix + id);
+    if (value !== null) return value;
+  }
+  return null;
+}
 export type Caps = ReturnType<typeof capabilities>;
 export type CameraDetail = ReturnType<typeof visibleState>;
 export type { CameraEvent } from '../../server/cameras.js';

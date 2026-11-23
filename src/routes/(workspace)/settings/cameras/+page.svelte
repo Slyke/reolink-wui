@@ -2,7 +2,7 @@
   import { page } from '$app/state';
   import { onMount, tick } from 'svelte';
   import { api, errorText, t } from '$lib/api.js';
-  import { cameraStatus, type Camera } from '$lib/models.js';
+  import { currentCameraId, cameraStatus, type Camera } from '$lib/models.js';
   import { useWorkspace } from '$lib/workspace.js';
   import SearchSelect from '$lib/SearchSelect.svelte';
   import type { SettingsGroup } from '../../../../../shared/access.js';
@@ -55,7 +55,7 @@
     try {
       cameras = (await api<{ cameras: Camera[] }>({ path: '/api/v1/cameras' })).cameras;
       if (!cameras.some(item => item.id === selected)) {
-        const requested = page.url.searchParams.get('camera');
+        const requested = currentCameraId(cameras,page.url.searchParams.get('camera'));
         selected = cameras.find(item => item.id === requested)?.id ?? cameras[0]?.id ?? '';
       }
       error = '';
@@ -92,6 +92,8 @@
       label: item.name ?? t('camera-generic', { index: index + 1 }),
       detail: item.model
     }))} />
+    {#if camera?.deviceUid}<div class="row"><span class="muted">{t('uid')}</span><span>{camera.deviceUid}</span></div>{/if}
+    {#if camera?.hardwareSerial}<div class="row"><span class="muted">{t('serial')}</span><span>{camera.hardwareSerial}</span></div>{/if}
   {:else if !busy && !error}
     <p class="muted">{t('no-cameras')}</p>
   {:else if busy}

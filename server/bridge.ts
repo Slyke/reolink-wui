@@ -56,7 +56,7 @@ export class Bridge {
   private lastFeed?: EventSource;
   private readonly recent = new Map<string, { source: EventSource; expires: number }>();
   private inventoryIds?: Map<string, string>;
-  private hardwareInventory = new Map<string, { source: string; previous: string }>();
+  private hardwareInventory = new Map<string, { source: string; previous: string; serial?: string }>();
   private inventoryIdentitySupport = false;
   private readonly allowed = new Set<string>();
   private readonly broker?: BrokerChannel;
@@ -298,17 +298,17 @@ export class Bridge {
     return camera;
   }
 
-  hardware(camera: string): { value: string; source: string; previous: string } | undefined {
+  hardware(camera: string): { value: string; source: string; previous: string; serial?: string } | undefined {
     const wire = this.wireId(camera);
     if (!wire) return;
     const entry = this.hardwareInventory.get(camera);
     const snapshot = this.state(camera).get('info');
     const source = entry?.source ?? snapshot?.identity_source;
-    if (source === 'serial' || source === 'mac') return { value: wire, source, previous: entry?.previous ?? camera };
+    if (source === 'uid' || source === 'serial' || source === 'mac') return { value: wire, source, previous: entry?.previous ?? camera, serial: entry?.serial };
     // Pin existing installations before their bridge is upgraded. Its old wire guard still expects the alias.
     for (const section of ['onvif','baichuan']) {
       const raw = record(snapshot?.[section]).serial_number;
-      if (typeof raw !== 'string') continue;
+      if (typeof raw !== 'string' || /^\d+$/.test(raw.trim())) continue;
       const value = raw.trim().toUpperCase();
       if (segment.test(value) && !/^(UNKNOWN|NONE|NULL|DEFAULT|NA|12345678|01234567|00000001|0+|F+)$/.test(value)) {
         return { value, source: 'serial', previous: wire };
@@ -525,12 +525,14 @@ export class Bridge {
         typeof item.id === 'string' && this.inScope(item.id)
       )).slice(0, 128);
       const ids = new Map<string,string>();
-      const hardware = new Map<string,{ source: string; previous: string }>();
+      const hardware = new Map<string,{ source: string; previous: string; serial?: string }>();
       for (const camera of cameras) {
         if ('identitySource' in camera) {
           if (camera.stableId === null) continue;
-          if (camera.identitySource !== 'serial' && camera.identitySource !== 'mac') throw new Failure('BRIDGE_UNAVAILABLE',502);
+          if (camera.identitySource === 'uid' && (typeof camera.stableId !== 'string' || !/^[A-Z0-9]{8,40}$/.test(camera.stableId))) throw new Failure('BRIDGE_UNAVAILABLE',502);
+          if (camera.identitySource !== 'uid' && camera.identitySource !== 'serial' && camera.identitySource !== 'mac') throw new Failure('BRIDGE_UNAVAILABLE',502);
           hardware.set(camera.id, { source: camera.identitySource,
+            serial: typeof camera.hardwareSerial === 'string' && segment.test(camera.hardwareSerial) ? camera.hardwareSerial : undefined,
             previous: typeof camera.previousId === 'string' && segment.test(camera.previousId) ? camera.previousId : camera.id });
         }
         const stable = camera.stableId ?? camera.id;

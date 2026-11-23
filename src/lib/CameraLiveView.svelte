@@ -5,7 +5,7 @@
   import CameraPtz from './CameraPtz.svelte';
   import CameraPresetShortcuts from './CameraPresetShortcuts.svelte';
   import { dismissOnBackdrop } from './dialog.js';
-  import type { Camera } from './models.js';
+  import { savedCameraPreference, type Camera } from './models.js';
   import { useWorkspace } from './workspace.js';
 
   import { isLiveStream, liveStreams, type LiveStream as Quality } from '../../shared/playback.js';
@@ -42,17 +42,17 @@
   let resumePreview: (() => void) | undefined;
 
   let stream = $state<Quality>('main');
-  const preference = () => 'reolink-wui-live-stream-' + workspace.current().user.id + '-' + camera.id;
+  const preference = () => 'reolink-wui-live-stream-' + workspace.current().user.id + '-';
   function quality(requested?: string | null): Quality | undefined {
     let saved: string | null = null;
-    try { saved = localStorage.getItem(preference()); } catch { /* Browser storage is optional. */ }
+    try { saved = savedCameraPreference(preference(),camera); } catch { /* Browser storage is optional. */ }
     const available = camera.capabilities.media;
     return [requested, saved, ...liveStreams].find((q): q is Quality => isLiveStream(q) && available.includes(q));
   }
   function selectQuality(value: Quality) {
     if (value === stream || !camera.capabilities.media.includes(value)) return;
     stream = value;
-    try { localStorage.setItem(preference(), value); } catch { /* The URL still carries the selection. */ }
+    try { localStorage.setItem(preference() + camera.id, value); } catch { /* The URL still carries the selection. */ }
     if (linked) setLink?.(true,value);
     if (playback) void startLive();
   }

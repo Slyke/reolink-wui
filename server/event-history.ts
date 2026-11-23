@@ -48,6 +48,29 @@ trim(KEYS[2], keep, age, now)
 `;
 const readEvents = sortedEvents + `
 local keep, age, now = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+-- Consolidate confirmed former identities atomically. A second reader can safely retry.
+if #KEYS > 2 then
+  local sources = {KEYS[1]}
+  for i = 3, #KEYS do
+    if redis.call('EXISTS', KEYS[i]) == 1 then
+      upgrade(KEYS[i])
+      table.insert(sources, KEYS[i])
+    end
+  end
+  if #sources > 1 then
+    upgrade(KEYS[1])
+    local args = {KEYS[1], #sources}
+    for _, key in ipairs(sources) do table.insert(args, key) end
+    table.insert(args, 'AGGREGATE')
+    table.insert(args, 'MIN')
+    redis.call('ZUNIONSTORE', unpack(args))
+    redis.call('SADD', KEYS[2], KEYS[1])
+    for i = 2, #sources do
+      redis.call('DEL', sources[i])
+      redis.call('SREM', KEYS[2], sources[i])
+    end
+  end
+end
 trim(KEYS[1], keep, age, now)
 return {keep, redis.call('ZRANGE', KEYS[1], -tonumber(ARGV[4]), -1)}
 `;
@@ -142,12 +165,25 @@ class HistoryCache {
     this.memory.set(camera, events);
   }
 
-  async read(camera: string) {
-    if (this.countLimit === 0) return { limit: 0, events: [] };
-    if (!this.client) return { limit: this.limit, events: [...(this.memory.get(camera) ?? [])] };
+  async read(camera: string, aliases: string[] = []) {
+    const previous = [...new Set(aliases)].filter(key => key !== camera);
+    if (!this.client) {
+      let events = this.memory.get(camera) ?? [];
+      const merged = previous.flatMap(key => this.memory.get(key) ?? []);
+      if (merged.length) {
+        const unique = new Map([...events,...merged].map(event => [event.id,event]));
+        events = this.limit ? [...unique.values()].sort((a,b) => a.observedAt - b.observedAt).slice(-this.limit) : [];
+        this.memory.set(camera,events);
+        for (const key of previous) this.memory.delete(key);
+      }
+      return { limit: this.limit, events: [...events] };
+    }
+    if (this.countLimit === 0 && !previous.length) return { limit: 0, events: [] };
     try {
+      const keys = [this.eventKey(camera)];
+      if (previous.length) keys.push(this.indexKey, ...previous.map(key => this.eventKey(key)));
       const [limit, events] = await this.client.eval(
-        readEvents, 1, this.eventKey(camera), this.countLimit, this.ageLimit, Date.now(), maxEventRetention
+        readEvents, keys.length, ...keys, this.countLimit, this.ageLimit, Date.now(), maxEventRetention
       ) as [number, string[]];
       return { limit: limit < 0 ? null : limit, events: events.map(serialized => JSON.parse(serialized) as CameraEvent) };
     } catch { throw unavailable(); }
@@ -284,9 +320,9 @@ export class EventHistory {
 
   setLimit({ limit }: { limit: number }) { return this.setOptions({ limit }); }
   add(entry: { camera: string; entry: CameraEvent }) { this.cache.add(entry); }
-  async read({ camera }: { camera: string }) {
+  async read({ camera, aliases = [] }: { camera: string; aliases?: string[] }) {
     const cache = await this.serialize(async () => { await this.refresh(); return this.cache; });
-    return cache.read(camera);
+    return cache.read(camera,aliases);
   }
   async close() { await this.changes; this.cache.close(); }
 }

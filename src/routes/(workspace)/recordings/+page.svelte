@@ -5,7 +5,7 @@
   import StorageCards from '$lib/StorageCards.svelte';
   import { api, errorText, t, url } from '$lib/api.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
-  import type { Camera } from '$lib/models.js';
+  import { currentCameraId, savedCameraPreference, type Camera } from '$lib/models.js';
   import RecordingExport from '$lib/RecordingExport.svelte';
   import RecordingPlayer from '$lib/RecordingPlayer.svelte';
   import RecordingPreview from '$lib/RecordingPreview.svelte';
@@ -19,7 +19,7 @@
 
   const fieldId = $props.id();
   let cameras = $state<Camera[]>([]);
-  const linkedCamera = $derived(page.url.searchParams.get('camera'));
+  const linkedCamera = $derived(currentCameraId(cameras,page.url.searchParams.get('camera')));
   const linkedDate = $derived(recordingDate.safeParse(page.url.searchParams.get('date')).data);
   const linkedClip = $derived(page.url.searchParams.get('recording'));
   const linkedStream = $derived(recordingStream.safeParse(page.url.searchParams.get('stream')).data);
@@ -96,7 +96,7 @@
   });
   const openedFromList = () => 'recordingFromList' in page.state && page.state.recordingFromList === true;
   const savedStream = (): Recording['stream'] => {
-    try { return localStorage.getItem('reolink-wui-recording-stream-' + selected) === 'main' ? 'main' : 'sub'; }
+    try { return camera && savedCameraPreference('reolink-wui-recording-stream-',camera) === 'main' ? 'main' : 'sub'; }
     catch { return 'sub'; }
   };
   const openClip = async (group: RecordingGroup, quality: Recording['stream'], offset: number) => {

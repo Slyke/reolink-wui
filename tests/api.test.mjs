@@ -814,6 +814,26 @@ for (const eventHistory of historyBackends) test('camera rename preserves histor
   const [replacement] = await runtime.sql.query("SELECT * FROM cameras WHERE bridge_id='lab' AND remote_id='REPLACEMENT'");
   assert.notEqual(replacement.id,camera.id);
   assert.equal((await incoming({path:'/cameras/'+replacement.id+'/events',headers})).statusCode,403);
+  const deviceUid = '952700TEST000001';
+  const identified = {identitySource:'uid',hardwareSerial:'SERIAL-ONE',previousId:'garage'};
+  await fixture.reportInventory(['garage'],{garage:deviceUid},{garage:identified});
+  await sync();
+  const [pinned] = (await incoming({path:'/cameras',headers})).json().cameras;
+  assert.equal(pinned.id,camera.id);
+  assert.equal(pinned.deviceUid,deviceUid);
+  assert.equal(pinned.hardwareSerial,'SERIAL-ONE');
+  assert.equal(pinned.previewIntervalMs,7654);
+  assert.deepEqual(await history(),['before','after']);
+  const former = uuid();
+  await runtime.sql.query('INSERT INTO camera_aliases(id,camera_id,history_key) VALUES($1,$2,$3)',former,camera.id,former);
+  const [event] = (await incoming({path:'/cameras/'+camera.id+'/events',headers})).json().events;
+  runtime.history.add({camera:'lab/'+former,entry:{...event,id:uuid(),observedAt:event.observedAt-5000,event:{...event.event,type:'older'}}});
+  assert.deepEqual((await incoming({path:'/cameras/'+former+'/events',headers})).json().events.map(entry=>entry.event.type),['older','before','after']);
+  await fixture.reportInventory(['garage','moving'],{garage:'952700OTHER00001',moving:deviceUid},
+    {garage:{identitySource:'uid',previousId:'garage'},moving:{...identified,previousId:'moving'}});
+  await sync();
+  assert.deepEqual((await incoming({path:'/cameras',headers})).json().cameras.map(item=>item.id),[camera.id]);
+
 });
 for (const eventHistory of historyBackends) test('camera history limits, restart and authorization: '+eventHistory.backend, async t => {
   const bridge = await fixtureBridge();
@@ -854,6 +874,15 @@ for (const eventHistory of historyBackends) test('camera history limits, restart
   assert.equal((await limit(first,2)).statusCode, 200);
   assert.deepEqual((await read(first,alpha)).json().events.map(item => item.event.type), ['three','four']);
   assert.equal((await read(first,beta)).json().events.length,1);
+
+  const alias = uuid();
+  await first.runtime.sql.query('INSERT INTO camera_aliases(id,camera_id,history_key) VALUES($1,$2,$3)',alias,alpha,alias);
+  const newest = (await read(first,alpha)).json().events.at(-1);
+  first.runtime.history.add({camera:'lab/'+alias,entry:{...newest,id:uuid(),observedAt:newest.observedAt+1,event:{...newest.event,type:'recovered'}}});
+  await eventually(async () => (await read(first,alpha)).json().events.at(-1)?.event.type === 'recovered');
+  assert.deepEqual((await read(first,alias)).json().events.map(item=>item.event.type),['four','recovered']);
+  assert.deepEqual((await first.runtime.history.read({camera:'lab/'+alias})).events,[]);
+  assert.equal((await read(first,alias,ungranted)).statusCode,403);
 
   await first.app.close();
   closed = true;

@@ -298,7 +298,7 @@
   "reolink-wui-enrollment": "Enroll a device",
   "reolink-wui-enrollment-copy": "Connect the camera to the local network. You can scan its label or enter the printed identifiers to check them against the camera.",
   "reolink-wui-uid": "Device UID",
-  "reolink-wui-serial": "Hardware serial",
+  "reolink-wui-serial": "Hardware serial number",
   "reolink-wui-scan": "Scan label",
   "reolink-wui-stop-scan": "Stop scanning",
   "reolink-wui-enrollment-qr": "Show device ID QR",

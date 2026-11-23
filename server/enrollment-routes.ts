@@ -118,7 +118,8 @@ export const enrollmentRoutes = ({ api, path, runtime }: { api: FastifyInstance;
     if (!result.success || result.data.address !== query.address || (query.port !== undefined && result.data.port !== query.port)) {
       throw new Failure('ENROLLMENT_IDENTIFY_FAILED', 502);
     }
-    return result.data;
+    // Earlier bridges returned a volatile decimal firmware number in their serial field.
+    return { ...result.data, serial: result.data.serial && /^\d+$/.test(result.data.serial) ? null : result.data.serial };
   });
   api.post(enrollments, async (request, reply) => {
     const { account } = await runtime.admin({ request, mutate: true });

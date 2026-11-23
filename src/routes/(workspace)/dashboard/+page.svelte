@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { afterNavigate, goto } from '$app/navigation';
   import { api, errorText, t, UiError, url } from '$lib/api.js';
-  import { cameraStatus, type Camera } from '$lib/models.js';
+  import { currentCameraId, cameraStatus, type Camera } from '$lib/models.js';
   import { useWorkspace } from '$lib/workspace.js';
   import { matchesPreviewAlert, type LiveStream } from '../../../../shared/playback.js';
   import type { InventoryState } from '../../../../shared/upstreams.js';
@@ -19,7 +19,7 @@
   let previewTags = $state<Record<string,string>>({});
   let frameRequests = $state<Record<string, number>>({});
   let reconnect = $state(0);
-  const linkedCamera = $derived(page.url.searchParams.get('camera'));
+  const linkedCamera = $derived(currentCameraId(cameras,page.url.searchParams.get('camera')));
   const linkedStream = $derived(page.url.searchParams.get('stream'));
   afterNavigate(({from,to}) => {
     if (from?.url.pathname !== to?.url.pathname || to?.url.searchParams.has('camera')) return;

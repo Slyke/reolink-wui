@@ -40,7 +40,7 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
   });
   api.get<{ Params: { id: string } }>(cameras + '/:id', async request => {
     const { row, bridge, grant } = await runtime.camera({ request, id: request.params.id, permission: 'view' });
-    return { id: row.id, ...information({ state: bridge.state(row.routeId) }), ...visibleState({ bridge, remote: row.routeId, grant }) };
+    return { id: row.id, ...information({ state: bridge.state(row.routeId), camera: row, serial: bridge.hardware(row.routeId)?.serial }), ...visibleState({ bridge, remote: row.routeId, grant }) };
   });
   api.get<{ Params: { id: string } }>(cameras + '/:id/capabilities', async request => {
     const { row, bridge, grant } = await runtime.camera({ request, id: request.params.id, permission: 'view' });
@@ -49,7 +49,9 @@ export const cameraRoutes = ({ api, path, runtime }: { api: FastifyInstance; pat
 
   api.get<{ Params: { id: string } }>(cameras + '/:id/events', async request => {
     const { row } = await runtime.camera({ request, id: request.params.id, permission: 'events' });
-    return runtime.history.read({ camera: row.bridge_id + '/' + (row.history_key ?? row.remote_id) });
+    const aliases = await runtime.sql.query<{ history_key: string }>('SELECT history_key FROM camera_aliases WHERE camera_id=$1',row.id);
+    return runtime.history.read({ camera: row.bridge_id + '/' + (row.history_key ?? row.remote_id),
+      aliases: aliases.map(alias => row.bridge_id + '/' + alias.history_key) });
   });
 
   api.post<{ Params: { id: string } }>(cameras + '/:id/ptz', async (request, reply) => {

@@ -65,12 +65,14 @@ const range = (value: unknown) => {
   return min !== undefined && max !== undefined && min <= max ? { min, max } : undefined;
 };
 
-export const information = ({ state }: { state: Map<string, Envelope> }) => {
+export const information = ({ state, camera, serial }: { state: Map<string, Envelope>; serial?: string; camera?: { verified_uid: string | null; hardware_source: string | null; remote_id: string } }) => {
   const info = state.get('info');
   const native = record(info?.baichuan);
   const onvif = record(info?.onvif);
   return {
     name: displayText(record(info?.display).name) ?? displayText(native.name ?? onvif.name),
+    deviceUid: camera?.verified_uid ?? undefined,
+    hardwareSerial: serial ?? (camera?.hardware_source === 'serial' && !/^\d+$/.test(camera.remote_id) ? camera.remote_id : undefined),
     model: displayText(native.model ?? onvif.model),
     hardware: displayText(native.hardware ?? onvif.hardware_id),
     firmware: displayText(native.firmware ?? onvif.firmware)
