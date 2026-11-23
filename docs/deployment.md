@@ -145,16 +145,19 @@ The startup JSON5 file supplies database connections, default bridge endpoints, 
 
 ## Container
 
-Build the local image with the six deployment metadata values. Use the same artifact in both services.
+Run `./build.sh` from the repository with Git, jq and Podman or Docker installed. Use the same image for the API and UI. Keep registry settings in a trusted `local-only/.build.env` file.
 
-```sh
-docker build -t reolink-wui:dev \
-  --build-arg BUILD_VERSION=0.1.0 --build-arg BUILD_HASH=unknown \
-  --build-arg BUILD_DATE="$(date -u +%FT%TZ)" --build-arg GIT_SHA=unknown \
-  --build-arg GIT_DIRTY=false --build-arg CI_RUN_ID=local .
+```bash
+BUILD_USERNAME=your-team
+BUILD_APP_NAME=reolink-wui
+BUILD_VERSION=v0.1.0
+BUILDER_BIN=podman
+# MIRROR_DOMAIN=registry.example.com
 ```
 
-Supply real commit values in CI and tag the image with both version and short hash. The example Compose file uses a shared loopback network namespace for proxy mode and publishes only the UI to the local machine. Give the unprivileged application user access to the mounted config and SQLite directory. Compose 2.24+ accepts an optional `.env` for secret references. This directory, real configs, database dumps and generated keys are outside the image and build context.
+Run `./build.sh --build-only` to build an image tagged with the version and short Git hash. After testing it, use `./build.sh --push-only` from the same revision to publish the inspected image ID under the commit and version tags. The default `./build.sh` builds and publishes in one run. An optional config path and mirror hostname follow the mode. Authenticate the builder to each registry first. For local Compose use, tag the tested image as `reolink-wui:dev`.
+
+The example Compose file uses a shared loopback network namespace for proxy mode and publishes only the UI to the local machine. Give the unprivileged application user access to the mounted config and SQLite directory. Compose 2.24+ accepts an optional `.env` for secret references. This directory, real configs, database dumps and generated keys are outside the image and build context.
 
 ## SD-card recordings and orientation
 
