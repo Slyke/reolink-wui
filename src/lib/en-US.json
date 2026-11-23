@@ -199,6 +199,8 @@
   "reolink-wui-brightness": "Brightness",
   "reolink-wui-seconds": "Duration (seconds)",
   "reolink-wui-sensitivity": "Sensitivity",
+  "reolink-wui-motion-sensitivity-help": "Higher values detect smaller changes in the picture. 1 is least sensitive and 50 is most sensitive.",
+  "reolink-wui-ai-sensitivity-help": "Higher values make the camera more likely to report this detection type. 0 is least sensitive and 100 is most sensitive.",
   "reolink-wui-delay": "Delay (seconds)",
   "reolink-wui-person": "Person",
   "reolink-wui-vehicle": "Vehicle",

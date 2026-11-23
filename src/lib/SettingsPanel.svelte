@@ -3,6 +3,7 @@
   import { aiClasses, type AiClass, type SettingsGroup, type TimeLapse } from '../../shared/access.js';
   import { api, errorText, operationId, outcomeText, t, type Outcome } from './api.js';
   import TimeLapseEditor from './TimeLapseEditor.svelte';
+  import InfoTip from './InfoTip.svelte';
   import type { Camera } from './models.js';
 
   let { camera, base, csrf, online, groups, showAlerts=false }: { camera: Camera; base: string; csrf: string; online: boolean; groups:readonly SettingsGroup[]; showAlerts?:boolean } = $props();
@@ -18,6 +19,7 @@
   type Field = 'brightness' | 'motionSensitivity' | 'aiSensitivity' | 'aiDelay';
   type ReadSettings = { group: SettingsGroup; fresh: boolean; alert?: boolean };
 
+  const fieldId = $props.id();
   const capabilities = $derived(camera.capabilities.settings);
   const shown = $derived(groups.filter(group => capabilities[group]?.read || capabilities[group]?.write || capabilities[group]?.unavailable));
   const bounds = $derived(capabilities.spotlight?.range as { min: number; max: number } | undefined);
@@ -210,14 +212,21 @@
                 event.preventDefault();
                 if (sensitivity !== undefined) void change({ group, fields: { setting: 'motion_detection', sensitivity } });
               }}>
-                <label>{t('sensitivity')}
-                  <input type="number" min="1" max="50" value={displayed({ field: 'motionSensitivity', reported: motion?.sensitivity })}
+                <div class="field">
+                  <div class="field-heading">
+                    <label for={fieldId + '-motion-sensitivity'}>{t('sensitivity')}</label>
+                    <InfoTip label={t('sensitivity')} text={t('motion-sensitivity-help')} />
+                  </div>
+                  <input id={fieldId + '-motion-sensitivity'} type="number" min="1" max="50" value={displayed({ field: 'motionSensitivity', reported: motion?.sensitivity })}
                     readonly={reading || busy} oninput={event => edit({ field: 'motionSensitivity', input: event.currentTarget })} />
-                </label>
+                </div>
                 <button disabled={disabled || sensitivity === undefined}>{t('save')}</button>
               </form>
             {:else if motion?.sensitivity !== undefined}
-              <p>{t('sensitivity')} · {motion.sensitivity}</p>
+              <div class="field-heading">
+                <span>{t('sensitivity')} · {motion.sensitivity}</span>
+                <InfoTip label={t('sensitivity')} text={t('motion-sensitivity-help')} />
+              </div>
             {/if}
           {:else if group === 'image'}
             {#if values.image?.image}
@@ -268,12 +277,19 @@
               <fieldset class="stack ai-settings">
                 <legend>{t('ai-class-settings', { name })}</legend>
                 {#if allowSensitivity}
-                  <label>{t('ai-class-sensitivity', { name })}
-                    <input type="number" min="0" max="100" value={displayed({ field: 'aiSensitivity', reported: ai?.sensitivity })}
+                  <div class="field">
+                    <div class="field-heading">
+                      <label for={fieldId + '-ai-sensitivity'}>{t('ai-class-sensitivity', { name })}</label>
+                      <InfoTip label={t('ai-class-sensitivity', { name })} text={t('ai-sensitivity-help')} />
+                    </div>
+                    <input id={fieldId + '-ai-sensitivity'} type="number" min="0" max="100" value={displayed({ field: 'aiSensitivity', reported: ai?.sensitivity })}
                       readonly={reading || busy} oninput={event => edit({ field: 'aiSensitivity', input: event.currentTarget })} />
-                  </label>
+                  </div>
                 {:else if ai?.sensitivity !== undefined}
-                  <p>{t('sensitivity')} · {ai.sensitivity}</p>
+                  <div class="field-heading">
+                    <span>{t('ai-class-sensitivity', { name })} · {ai.sensitivity}</span>
+                    <InfoTip label={t('ai-class-sensitivity', { name })} text={t('ai-sensitivity-help')} />
+                  </div>
                 {/if}
                 {#if allowDelay}
                   <label>{t('ai-class-delay', { name })}

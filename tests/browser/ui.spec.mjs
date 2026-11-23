@@ -950,6 +950,9 @@ for (const mode of ['browser','proxy']) {
       const sensitivity = page.getByRole('spinbutton',{name:'Sensitivity',exact:true});
       await expect(brightness).toHaveValue('5');
       await expect(sensitivity).toHaveValue('40');
+      await page.getByRole('button',{name:'Information about Sensitivity',exact:true}).click();
+      await expect(page.getByRole('tooltip')).toContainText('1 is least sensitive and 50 is most sensitive');
+      await page.keyboard.press('Escape');
       const settingsSummary = sectionSummary('Live view and image');
       await brightness.fill('21');
       await settingsSummary.click();
@@ -1276,6 +1279,9 @@ for (const mode of ['browser','proxy']) {
       await expect.poll(() => bridge.requests.at(-1)).toEqual({setting:'ai_detection',class:'pet',delay_seconds:3});
       await detectionType.selectOption('person');
       await expect(page.getByRole('spinbutton',{name:'Person sensitivity'})).toHaveValue('76');
+      await page.getByRole('button',{name:'Information about Person sensitivity',exact:true}).click();
+      await expect(page.getByRole('tooltip')).toContainText('0 is least sensitive and 100 is most sensitive');
+      await page.keyboard.press('Escape');
       await expect(page.getByRole('spinbutton',{name:'Person delay (seconds)'})).toHaveValue('2');
       await sectionSummary('Playback preferences').click();
       const source = page.getByRole('combobox',{name:'Video source'});
