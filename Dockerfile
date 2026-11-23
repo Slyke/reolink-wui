@@ -23,6 +23,11 @@ ARG BUILD_DATE=unknown
 ARG GIT_SHA=unknown
 ARG GIT_DIRTY=false
 ARG CI_RUN_ID=local
+
+# Podman includes active build arguments in RUN cache keys. Refresh the image
+# metadata even when this revision produces identical application files.
+RUN test -n "$BUILD_HASH" && test -n "$BUILD_VERSION" && test -n "$BUILD_DATE" \
+    && test -n "$GIT_SHA" && test -n "$GIT_DIRTY" && test -n "$CI_RUN_ID"
 ENV APP_BUILD_HASH=${BUILD_HASH} \
     APP_VERSION=${BUILD_VERSION} \
     APP_BUILD_DATE=${BUILD_DATE} \
