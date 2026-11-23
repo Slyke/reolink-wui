@@ -25,6 +25,8 @@ In a second shell use the same `WUI_FORWARD_SECRET` and start the UI with `HOST=
 
 See the [deployment guide](./docs/deployment.md) for TLS, service layout, identity providers, storage, and backup. The deployment guide also covers [enrollment and callbacks](./docs/deployment.md#enrollment-and-callbacks), [camera playback](./docs/deployment.md#camera-playback), and [event history](./docs/deployment.md#event-history). The [compatibility matrix](./docs/compatibility.md) describes what requires an updated bridge and what has been verified.
 
+The [WUI API reference](./docs/api-reference.md) covers browser requests and responses, SSE and upstream bridge calls.
+
 ## Checks
 
 ```sh
@@ -35,4 +37,4 @@ npx playwright install chromium
 npm run test:browser                    # checks both layouts with the built app
 ```
 
-To run the same database suite against PostgreSQL, set `WUI_TEST_POSTGRES` to a connection string for a disposable loopback test database. The suite applies migrations and inserts fixtures there. Set `WUI_TEST_VALKEY` to a disposable Valkey URL to test retained events across app restarts. Set `WUI_TEST_RTSP` to a synthetic RTSP stream to test the proxy playback path. To use an installed Chromium instead of downloading one, set `WUI_TEST_CHROMIUM` to its executable path. The sibling bridge tests run with `cargo test --locked -- --include-ignored` on a host with Mosquitto and FFmpeg. To also exercise this WUI against the real bridge with mock camera endpoints, set `WUI_TEST_PROJECT` to this checkout and `WUI_TEST_NODE` to the absolute Node 24 executable before running the bridge tests.
+To run the same database suite against PostgreSQL, set `WUI_TEST_POSTGRES` to a connection string for a disposable loopback test database. The suite applies migrations and inserts fixtures there. Set `WUI_TEST_VALKEY` to a disposable Valkey URL to test retained events across app restarts. Set `WUI_TEST_RTSP` to a synthetic RTSP stream to test the proxy playback path. To use an installed Chromium instead of downloading one, set `WUI_TEST_CHROMIUM` to its executable path. The sibling bridge tests run with `cargo test --locked -- --include-ignored` on a host with Mosquitto and FFmpeg. To also exercise this WUI against the real bridge with mock camera endpoints, set `WUI_TEST_PROJECT` to this checkout and `WUI_TEST_NODE` to the absolute Node 24 executable before running the bridge tests. The cross-service checks create, update and remove a callback through the WUI, compare its body with the MQTT event, switch among WebSocket, MQTT and HTTP SSE, and match browser events against retained history. They also verify camera commands, snapshots and live media.
