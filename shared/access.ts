@@ -8,7 +8,7 @@ export const settingsGroups = ['spotlight', 'leds', 'motion', 'ai', 'image', 're
 export type SettingsGroup = typeof settingsGroups[number];
 
 export const permissions = [
-  'view', 'events', 'media.live', 'capture', 'recordings.view', 'recordings.export', 'storage.format', 'audio.talk',
+  'view', 'events', 'media.live', 'capture', 'recordings.view', 'recordings.export', 'storage.format', 'audio.talk', 'device.firmware.read', 'device.firmware.update',
   'ptz.read', 'ptz.write', 'settings.spotlight.read', 'settings.spotlight.write',
   'settings.leds.read', 'settings.leds.write', 'settings.audio.read', 'settings.audio.write', 'settings.privacy.read', 'settings.privacy.write', 'settings.delivery.read', 'settings.delivery.write', 'settings.motion.read', 'settings.motion.write',
   'settings.ai.read', 'settings.ai.write', 'settings.image.read', 'settings.image.write',

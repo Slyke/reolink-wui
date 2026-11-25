@@ -14,6 +14,7 @@ import { retentionRoutes } from './retention-routes.js';
 import { recordingRoutes } from './recording-routes.js';
 import { liveRoutes } from './live.js';
 import { encodingRoutes } from './encoding-routes.js';
+import { firmwareRoutes } from './firmware-routes.js';
 import { clockRoutes } from './clock-routes.js';
 import { talkRoutes } from './talk-routes.js';
 import { ftpRoutes } from './ftp-routes.js';
@@ -119,6 +120,7 @@ export const api = async ({ config, tls }: { config: Config; tls?: ServerOptions
   displayRoutes({ api: app, path, runtime });
   encodingRoutes({ api: app, path, runtime });
   clockRoutes({ api: app, path, runtime });
+  firmwareRoutes({ api: app, path, runtime });
   adminRoutes({ api: app, path, runtime });
   bridgeSettingsRoutes({ api: app, path, runtime });
   enrollmentRoutes({ api: app, path, runtime });

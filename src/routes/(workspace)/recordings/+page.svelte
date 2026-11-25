@@ -6,6 +6,7 @@
   import { api, errorText, t, url } from '$lib/api.js';
   import { formatLocalTimestamp } from '$lib/dates.js';
   import { currentCameraId, savedCameraPreference, type Camera } from '$lib/models.js';
+  import RecordingHotspots from '$lib/RecordingHotspots.svelte';
   import RecordingExport from '$lib/RecordingExport.svelte';
   import RecordingPlayer from '$lib/RecordingPlayer.svelte';
   import RecordingPreview from '$lib/RecordingPreview.svelte';
@@ -389,6 +390,9 @@
           warming={!recording} recordings={timelineVideos} photos={timelinePhotos} {undatedCount} date={listedDate} available={Boolean(camera.capabilities.recordingPreview)}
           playable={playbackAvailable} {highlighted} onhover={hover} onselect={select} />
       {/key}
+    {/if}
+    {#if camera.capabilities.recordings && playbackAvailable && listing}
+      {#key camera.id+'/'+listing.date}<RecordingHotspots {camera} date={listing.date} groups={listing.recordings}/>{/key}
     {/if}
     {#if loading || (photosLoading && !timelineVideos.length && !timelinePhotos.length)}
       <p role="status">{t('recordings-searching')}</p>

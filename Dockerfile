@@ -34,6 +34,7 @@ ENV APP_BUILD_HASH=${BUILD_HASH} \
     APP_GIT_SHA=${GIT_SHA} \
     APP_GIT_DIRTY=${GIT_DIRTY} \
     APP_CI_RUN_ID=${CI_RUN_ID} \
+    BODY_SIZE_LIMIT=128M \
     NODE_ENV=production
 LABEL org.opencontainers.image.source="https://github.com/Slyke/reolink-wui" \
       org.opencontainers.image.title="reolink-wui" \

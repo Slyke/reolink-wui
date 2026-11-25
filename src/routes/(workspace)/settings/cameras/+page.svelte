@@ -9,6 +9,7 @@
   import SettingsDisclosure from '$lib/SettingsDisclosure.svelte';
   import CameraDetectionZones from '$lib/CameraDetectionZones.svelte';
   import PrivacyMaskEditor from '$lib/PrivacyMaskEditor.svelte';
+  import CameraFirmware from '$lib/CameraFirmware.svelte';
   import CameraFtp from '$lib/CameraFtp.svelte';
   import CameraOptions from '$lib/CameraOptions.svelte';
   import SettingsPanel from '$lib/SettingsPanel.svelte';
@@ -30,6 +31,7 @@
   let error = $state('');
   type Panel = { refresh: () => Promise<unknown>; working: () => boolean };
   let lights = $state<Panel>(), orientation = $state<Panel>(), detectionSettings = $state<Panel>(), recordingSettings = $state<Panel>();
+  let firmware = $state<Panel>();
   let zones = $state<Panel>(), storage = $state<Panel>();
   let picture = $state<Panel>(), sound = $state<Panel>(), mic = $state<Panel>(), privacy = $state<Panel>();
   let tracking = $state<Panel>(), siren = $state<Panel>(), delivery = $state<Panel>(), ftp = $state<Panel>();
@@ -43,7 +45,7 @@
   let display = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let network = $state<{ refresh: () => Promise<void>; working: () => boolean }>();
   let rotation = $state<{ setStatus: (status: string) => void }>();
-  const panels = $derived([lights,orientation,detectionSettings,zones,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,ftp,schedule,storage,retention,playback,encoding,clock,display,network]);
+  const panels = $derived([lights,orientation,detectionSettings,firmware,zones,recordingSettings,picture,sound,mic,privacy,tracking,siren,delivery,ftp,schedule,storage,retention,playback,encoding,clock,display,network]);
   const camera = $derived(cameras.find(item => item.id === selected));
   const admin = $derived(workspace.current().user.admin);
   function visible(groups:readonly SettingsGroup[]) {
@@ -139,9 +141,9 @@
       </SettingsDisclosure>
     {/if}
     {#if detection}
-      <SettingsDisclosure title={t('settings-detection-alerts')}>
+      <SettingsDisclosure title={t('settings-detection-alerts')} open={page.url.hash==='#detection-zones'}>
         <SettingsPanel bind:this={detectionSettings} {camera} {base} {csrf} {online} groups={detectionGroups} showAlerts/>
-        {#if caps.detectionZones.types.length}<CameraDetectionZones bind:this={zones} {base} {csrf} {camera} {online}/>{/if}
+        {#if caps.detectionZones.types.length}<CameraDetectionZones bind:this={zones} {base} {csrf} {camera} {online} linked={page.url.hash==='#detection-zones'}/>{/if}
         {#if caps.options.tracking}<CameraOptions bind:this={tracking} {base} {csrf} {online} group="tracking" access={caps.options.tracking}/>{/if}
         {#if caps.options.delivery}<CameraOptions bind:this={delivery} {base} {csrf} {online} group="push" linked={['email']} title="device-delivery-title" access={caps.options.delivery}/>{/if}
         {#if caps.options.delivery}<CameraFtp bind:this={ftp} {base} {csrf} {online} available={caps.ftpDestination} access={caps.options.delivery}/>{/if}
@@ -174,6 +176,9 @@
         {#if admin}<MediaRetention bind:this={retention} {base} {csrf}/>{/if}
       </SettingsDisclosure>
     {/if}
-    {#if !(live || detection || connectivity || accounts || recordings)}<p class="panel muted">{t('settings-empty')}</p>{/if}
+    {#if caps.firmware?.read}
+      <CameraFirmware bind:this={firmware} {base} {csrf} cameraName={camera.name??camera.id} writable={caps.firmware.write}/>
+    {/if}
+    {#if !(live || detection || connectivity || accounts || recordings || caps.firmware?.read)}<p class="panel muted">{t('settings-empty')}</p>{/if}
   {/key}
 {/if}

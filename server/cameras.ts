@@ -232,6 +232,7 @@ export const capabilities = ({ bridge, remote, grant, proxy = false }: {
     ftpDestination: bridge.has('ftpDestination') && !!deviceOptionAccess('ftp'),
     events: grant.has('events'),
     recordings: grant.has('recordings.view') && bridge.hasStorage(remote),
+    firmware: { read:grant.has('device.firmware.read') && bridge.hasFirmware(remote), write:grant.has('device.firmware.update') && bridge.hasFirmware(remote) },
     storageFormat: grant.has('storage.format') && bridge.hasStorage(remote),
     recordingExport: grant.has('recordings.export') && grant.has('recordings.view') && bridge.hasRecordings(remote),
     timeLapsePhotos: grant.has('recordings.view') && bridge.hasTimeLapsePhotos(remote),

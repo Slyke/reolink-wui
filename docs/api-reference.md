@@ -1100,6 +1100,12 @@ HTTP/1.1 204 No Content
 
 Recording reads use `recordings.view`. Downloading or exporting also requires `recordings.export`. The storage-format grant is `storage.format`. Dates and time-of-day queries refer to the camera’s local clock. Recording and photo IDs come from their respective list endpoints.
 
+#### Camera firmware
+
+`GET /api/v1/cameras/{camera}/firmware?check=true` requires `device.firmware.read`. It returns the model, exact hardware revision, installed version, update permission, current source identifier and the camera's online update offer. Omit `check` to read the installed state without contacting the update service.
+
+`POST /api/v1/cameras/{camera}/firmware` requires `device.firmware.update` and the usual origin and CSRF token. Supply `operationId`, the last read's `source`, and `confirm=true` as query parameters. For a local package also set `file` to the original filename and send the package as an octet-stream body of at most 128 MiB. An empty body starts the camera's offered online upgrade. The WUI verifies the installed version on reconnect. In proxy deployments, configure the external proxy and the Node UI's `BODY_SIZE_LIMIT` to allow the package size. The container defaults to 128 MiB.
+
 #### `GET /api/v1/cameras/{camera}/storage`
 
 `format=true` explicitly requests format-capable cards. `format=false` omits the formatting reference. With no query, the WUI includes it when the user has the format grant.

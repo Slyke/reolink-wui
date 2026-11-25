@@ -9,7 +9,7 @@
   import type { DetectionZone, ZoneGroup } from '../../shared/detection-zones.js';
   import type { OptionView } from '../../shared/device-options.js';
 
-  let {camera,base,csrf,online}:{camera:Camera;base:string;csrf:string;online:boolean}=$props();
+  let {camera,base,csrf,online,linked=false}:{camera:Camera;base:string;csrf:string;online:boolean;linked?:boolean}=$props();
   const workspace=useWorkspace(),title=$props.id(),instructions=title+'-instructions';
   let dialog:HTMLDialogElement;
   let stage=$state<HTMLButtonElement>(null!);
@@ -50,7 +50,15 @@
     }catch(err){if(!request.signal.aborted)error=errorText(err);}
     finally{if(reading===request)busy=false;}
   }
-  function onToggle(open:boolean){expanded=open;if(open && !loaded && !busy)void refresh();}
+  let openedLink=false;
+  async function onToggle(open:boolean){
+    expanded=open;
+    if(!open)return;
+    if(!loaded && !busy)await refresh();
+    if(linked && !openedLink && expanded && zone && detector?.group==='motionZone'){
+      openedLink=true;show();
+    }
+  }
   function releaseFrame(){preview?.abort();if(src)URL.revokeObjectURL(src);src='';}
   async function frame(fresh=false){
     preview?.abort();imageError='';
@@ -117,7 +125,7 @@
   }
 </script>
 
-<SettingsDisclosure title={t('detection-zones')} ontoggle={onToggle}>
+<SettingsDisclosure title={t('detection-zones')} open={linked} ontoggle={onToggle}>
   {#if !access.available}<p class="muted">{t('zone-update')}</p>
   {:else if detector}
     <label>{t('zone-detector')}
