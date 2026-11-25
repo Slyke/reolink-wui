@@ -1,3 +1,4 @@
+import { maxCameraReadRetries } from '../shared/bridges.js';
 import { readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import JSON5 from 'json5';
@@ -108,6 +109,7 @@ function withoutAdminToken<T>(value: T): T {
 }
 
 const bridgeFields = object({
+  cameraReadRetries: z.number().int().min(0).max(maxCameraReadRetries).optional(),
   id,
   label: z.string().min(1).max(80),
   cameraIds: z.array(id).max(128).refine(unique).default([]),

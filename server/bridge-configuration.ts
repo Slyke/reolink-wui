@@ -2,7 +2,8 @@ import type { BridgeConnections } from '../shared/bridges.js';
 import type { BridgeConfig } from './config.js';
 import { record } from './bridge-channels.js';
 
-export const bridgeConnections = (config: BridgeConfig): BridgeConnections => ({
+export const bridgeConnections = (config: BridgeConfig, effectiveCameraReadRetries?: number): BridgeConnections => ({
+  cameraReadRetries: config.cameraReadRetries, effectiveCameraReadRetries,
   id: config.id, label: config.label, cameraIds: [...config.cameraIds], commands: config.commands, capture: config.capture,
   ...(config.http ? { http: {
     url: config.http.url.href, ca: config.http.ca, rejectUnauthorized: config.http.rejectUnauthorized, relay: config.http.relay,

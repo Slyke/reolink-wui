@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BridgeConnections } from '../../shared/bridges.js';
+  import { defaultCameraReadRetries, maxCameraReadRetries, type BridgeConnections } from '../../shared/bridges.js';
   import InfoTip from './InfoTip.svelte';
   import ConnectionTls from './ConnectionTls.svelte';
   import type { BridgeTest } from '../../shared/bridges.js';
@@ -20,6 +20,9 @@
   let id = $state(initial()?.id ?? 'bridge-' + crypto.randomUUID().slice(0,8)), label = $state(initial()?.label ?? '');
   let cameraIds = $state(initial()?.cameraIds.join(', ') ?? '');
   let commands = $state<'http' | 'mqtt' | 'none'>(initial() ? initial()?.commands ?? 'none' : 'http');
+  const initialRetries = () => initial()?.cameraReadRetries ?? initial()?.effectiveCameraReadRetries ?? defaultCameraReadRetries;
+  let readRetries = $state(initialRetries());
+  let retriesEdited = $state(false);
   let httpEnabled = $state(initial() ? Boolean(initial()?.http) : true);
   let wsEnabled = $state(Boolean(initial()?.ws)), mqttEnabled = $state(Boolean(initial()?.mqtt));
   let httpUrl = $state(initial()?.http?.url ?? ''), httpToken = $state('');
@@ -42,6 +45,7 @@
   });
   const connection = () => ({
       id, label, cameraIds: ids(cameraIds),
+      ...(httpEnabled && (retriesEdited || configuration?.cameraReadRetries !== undefined) ? {cameraReadRetries:readRetries} : {}),
       ...(commands !== 'none' ? { commands } : {}),
       ...(mqttEnabled && capture ? { capture: 'mqtt' } : {}),
       ...(httpEnabled ? { http: {
@@ -96,6 +100,16 @@
       <label>{t('bridge-http-token')}<input type="password" bind:value={httpToken} autocomplete="new-password"
         required={!configuration?.http?.tokenConfigured} placeholder={configuration?.http?.tokenConfigured ? t('secret-saved') : ''} disabled={busy} /></label>
       <label class="check"><input type="checkbox" bind:checked={relay} disabled={busy} />{t('bridge-enable-relay')}</label>
+      {#if !configuration?.http || configuration.effectiveCameraReadRetries !== undefined || configuration.cameraReadRetries !== undefined}
+        <div class="field"><div class="field-heading"><label for={fieldId + '-retries'}>{t('bridge-camera-read-retries')}</label>
+          <InfoTip label={t('bridge-camera-read-retries')} text={t('bridge-camera-read-retries-help')} /></div>
+          <input id={fieldId + '-retries'} type="number" min="0" max={maxCameraReadRetries} step="1" required bind:value={readRetries}
+            oninput={() => retriesEdited = true} disabled={busy} />
+        </div>
+        {#if configuration?.cameraReadRetries !== undefined && configuration.effectiveCameraReadRetries !== configuration.cameraReadRetries}
+          <p class="muted">{t('bridge-camera-read-retries-pending')}</p>
+        {/if}
+      {/if}
       <ConnectionTls secure={httpUrl.toLowerCase().startsWith('https:')} bind:ca={httpCa} bind:verify={httpVerify} disabled={busy} />
     {/if}
   </fieldset>

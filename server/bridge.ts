@@ -1,3 +1,4 @@
+import { maxCameraReadRetries } from '../shared/bridges.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Agent } from 'undici';
@@ -82,6 +83,7 @@ export class Bridge {
   private userCameras = new Set<string>();
   private storageCameras = new Set<string>();
   private httpState?: boolean;
+  cameraReadRetries?: number;
   private interruption?: BridgeInterruption;
   private coversCamera(source: EventSource, camera: string) {
     return source !== 'mqtt' || !this.config.mqtt?.cameraIds || this.config.mqtt.cameraIds.includes(camera);
@@ -592,6 +594,8 @@ export class Bridge {
   private updateContract(contract: Envelope) {
     const previous = JSON.stringify([this.bridgeVersion, [...this.mediaStreams], [...this.previewCameras], [...this.recordingCameras], [...this.recordingPreviewCameras], [...this.recordingMetadataCameras], [...this.storageCameras], [...this.timeLapsePhotoCameras], [...this.mediaFileCameras], [...this.userCameras], [...this.networkCameras], [...this.displayCameras], [...this.clockCameras], [...this.encodingCameras]]);
     const ok = contract.version === 1;
+    const retries = contract.cameraReadRetries;
+    this.cameraReadRetries = ok && typeof retries === 'number' && Number.isInteger(retries) && retries >= 0 && retries <= maxCameraReadRetries ? retries : undefined;
     const reportedSettings = contract.settings;
     this.bridgeVersion.settings = ok ? settingsGroups.filter(group => Array.isArray(reportedSettings) && reportedSettings.includes(group)) : undefined;
     this.bridgeVersion.v1 = ok;
@@ -647,7 +651,21 @@ export class Bridge {
   private async checkHttp(link: Link) {
     try {
       const response = await this.api({ path: '/contract', signal: AbortSignal.timeout(2000) });
-      if (response.ok) return this.updateContract(record(await jsonResponse({ response })));
+      if (response.ok) {
+        const ready = this.updateContract(record(await jsonResponse({ response })));
+        const desired = this.config.cameraReadRetries;
+        if (ready && this.cameraReadRetries !== undefined && desired !== undefined && desired !== this.cameraReadRetries) {
+          try {
+            const applied = await this.api({ path: '/settings/camera-read-retries', method: 'PUT', data: {retries:desired}, signal: AbortSignal.timeout(3000) });
+            const result = record(await jsonResponse({response:applied}));
+            if (!applied.ok || result.retries !== desired) throw new Error('Camera read retry setting was not accepted');
+            this.cameraReadRetries = desired;
+          } catch {
+            recordError({key:'BRIDGE_UNAVAILABLE', caller:'bridge::applyReadRetries', context:{bridge:this.config.id, retries:desired}});
+          }
+        }
+        return ready;
+      }
       await response.body?.cancel();
       this.updateContract({});
       if (response.status !== 404) return false;

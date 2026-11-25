@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -24,24 +25,33 @@ const bridgeRead = async <T>({ bridge, stableId, path, search, correlation, sche
   failureKey: 'STORAGE_READ_FAILED' | 'RECORDING_SEARCH_FAILED'
 }) => {
   const deadline = AbortSignal.timeout(timeoutMs);
-  const response = await bridge.api({ path, stableId, search, correlation, signal: signal ? AbortSignal.any([signal,deadline]) : deadline });
-  if (!response.ok) {
-    const body = record(await jsonResponse({ response, limit: 16_384 }).catch(() => ({})));
-    const details = {
-      upstreamStatus: response.status,
-      bridgeCorrelationId: typeof body.correlation_id === 'string' && correlationPattern.test(body.correlation_id)
-        ? body.correlation_id : undefined
-    };
-    if (response.status === 422 && body.errorKey === 'API_MEDIA_UNSUPPORTED') {
-      throw new Failure('UNSUPPORTED', 422, undefined, details);
+  const readSignal = signal ? AbortSignal.any([signal,deadline]) : deadline;
+  for (let attempt = 0; ; attempt++) {
+    const response = await bridge.api({ path, stableId, search, correlation, signal: readSignal });
+    if (!response.ok) {
+      const body = record(await jsonResponse({ response, limit: 16_384 }).catch(() => ({})));
+      if (attempt === 0 && failureKey === 'STORAGE_READ_FAILED' &&
+          ((bridge.cameraReadRetries === undefined && response.status === 502 && body.errorKey === 'API_STORAGE_READ_FAILED') ||
+           (response.status === 503 && body.errorKey === 'API_READ_BUSY'))) {
+        await delay(1250,undefined,{signal:readSignal});
+        continue;
+      }
+      const details = {
+        upstreamStatus: response.status,
+        bridgeCorrelationId: typeof body.correlation_id === 'string' && correlationPattern.test(body.correlation_id)
+          ? body.correlation_id : undefined
+      };
+      if (response.status === 422 && body.errorKey === 'API_MEDIA_UNSUPPORTED') {
+        throw new Failure('UNSUPPORTED', 422, undefined, details);
+      }
+      // Older bridges use 422 for a failed device read even when recording search is available.
+      const status = [503, 504].includes(response.status) ? response.status : 502;
+      throw new Failure(failureKey, status, undefined, details);
     }
-    // Older bridges use 422 for a failed device read even when recording search is available.
-    const status = [503, 504].includes(response.status) ? response.status : 502;
-    throw new Failure(failureKey, status, undefined, details);
+    const parsed = schema.safeParse(await jsonResponse({ response, limit }).catch(() => undefined));
+    if (!parsed.success) throw new Failure(failureKey, 502);
+    return parsed.data;
   }
-  const parsed = schema.safeParse(await jsonResponse({ response, limit }).catch(() => undefined));
-  if (!parsed.success) throw new Failure(failureKey, 502);
-  return parsed.data;
 };
 
 const mediaFailure = async ({ response }: { response: Response }) => {

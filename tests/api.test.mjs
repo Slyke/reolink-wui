@@ -1119,7 +1119,12 @@ test('SD recordings enforce camera grants, serve byte ranges and verify image-se
     assert.deepEqual(failure.json().details,{upstreamStatus:status,bridgeCorrelationId:failure.json().correlationId});
     assert.ok(!failure.body.includes(serviceToken));
   }
-  fixture.setStorageFailure(undefined);
+  fixture.setStorageFailure({status:502,key:'API_STORAGE_READ_FAILED',once:true});
+  const exhausted=await incoming({path:root+'/storage?format=false',headers:privileged});
+  assert.equal(exhausted.statusCode,502,exhausted.body);
+  const recovered=await incoming({path:root+'/storage?format=false',headers:privileged});
+  assert.equal(recovered.statusCode,200,recovered.body);
+  assert.equal(recovered.json().cards[0].mounted,true);
   const search=await incoming({path:root+'/recordings?date=2026-11-17&stream=sub',headers:privileged});
   assert.equal(search.statusCode,200,search.body);
   const recording=search.json().recordings[0];
@@ -1501,9 +1506,12 @@ test('multiple bridge connections persist, retain secrets and isolate cameras an
   assert.deepEqual((await callbacks('remote')).map(item=>item.id),['remote-only']);
   assert.deepEqual((await callbacks('lab')).map(item=>item.id),['local-only']);
   const update=config=>first.incoming({method:'PUT',path:'/admin/bridges/remote',headers,payload:{operationId:uuid(),configuration:config}});
-  const editable={...b.config,id:'remote',label:'Remote bridge',events:undefined,http:{url:b.config.http.url}};
+  const editable={...b.config,id:'remote',label:'Remote bridge',cameraReadRetries:0,events:undefined,http:{url:b.config.http.url}};
+  assert.equal((await update({...editable,cameraReadRetries:11})).statusCode,400);
   assert.equal((await update({...editable,id:'different-bridge'})).statusCode,400);
   assert.equal((await update(editable)).json().outcome,'confirmed');
+  assert.equal(b.cameraReadRetries(),0);
+  assert.equal(a.cameraReadRetries(),2);
   const sources=await first.incoming({method:'PUT',path:'/admin/bridges/remote/event-sources',headers,
     payload:{operationId:uuid(),sources:['mqtt','api','ws']}});
   assert.equal(sources.statusCode,200,sources.body);
@@ -1515,10 +1523,12 @@ test('multiple bridge connections persist, retain secrets and isolate cameras an
   for(const response of edits) assert.equal(response.json().outcome,'confirmed',response.body);
   const [row]=await first.runtime.sql.query('SELECT connection_config FROM bridges WHERE id=$1','remote');
   assert.equal(JSON.parse(row.connection_config).http.token,nextToken);
+  assert.equal(JSON.parse(row.connection_config).cameraReadRetries,0);
   assert.equal(JSON.parse(row.connection_config).label,'Remote bridge edited');
   assert.equal(first.runtime.bridges.get('lab'),original);
   assert.equal((await update({...editable,label:'Remote bridge edited',http:{url:b.config.http.url,token:b.config.http.token}})).json().outcome,'confirmed');
   await first.app.close();apps.splice(apps.indexOf(first),1);
+  b.setCameraReadRetries(2);
   const second=await launch({bridges:[a.config],database});apps.push(second);
   assert.equal(second.runtime.bridges.size,2);
   const saved=second.runtime.bridges.get('remote');
@@ -1526,6 +1536,9 @@ test('multiple bridge connections persist, retain secrets and isolate cameras an
   assert.equal(saved.config.http.token,b.config.http.token);
   assert.deepEqual(saved.eventSources,['mqtt','api','ws']);
   await eventually(()=>saved.feedReady);
+  await saved.check();
+  assert.equal(b.cameraReadRetries(),0);
+  assert.equal(saved.cameraReadRetries,0);
   assert.equal(a.counts().writes,0);assert.equal(b.counts().writes,0);
 });
 

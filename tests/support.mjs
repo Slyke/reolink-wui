@@ -178,6 +178,7 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
   let mediaStartGate;
   let playbackFailure;
   let storageFailure;
+  let cameraReadRetries = 2;
   const ai = { ai_person:{sensitivity:76,delay_seconds:2}, ai_pet:{sensitivity:60,delay_seconds:0} };
   let lose = false;
   let ptzFailure;
@@ -380,8 +381,14 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
       res.statusCode = 202;
       return res.end(JSON.stringify({ok:true,status:'terminating',exitCode:body.exitCode,correlation_id:req.headers['x-correlation-id']}));
     }
+    if (req.method === 'PUT' && req.url === '/api/settings/camera-read-retries') {
+      const {retries}=await read(req);
+      if (!Number.isInteger(retries) || retries<0 || retries>10) { res.statusCode=400; return res.end('{}'); }
+      cameraReadRetries=retries;
+      return res.end(JSON.stringify({retries}));
+    }
     if (req.url === '/api/contract') return res.end(JSON.stringify({
-      version:1, terminate, terminationOptions, talk:true, detectionZones:imageSettings, privacyMaskEditing:imageSettings, ftpDestination:imageSettings, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
+      version:1, cameraReadRetries, terminate, terminationOptions, talk:true, detectionZones:imageSettings, privacyMaskEditing:imageSettings, ftpDestination:imageSettings, deviceOptions:imageSettings, displayCameras:inventory, encodingCameras:inventory, clockCameras:inventory, rtspSettings:true, networkCameras:inventory, userCameras:inventory, settings:['leds','spotlight','motion','ai',...(imageSettings?['image']:[]),...(recordingSettings?['recording_schedule','time_lapse']:[])], eventStream:apiEvents, media:true, mediaCameras:{alpha:['main','sub','third'], beta:['main']},
       mediaFileCameras:inventory, previewNotifications, recordingMetadataCameras:recordings?['alpha','beta']:[], previewCameras, recordingPreviewCameras:recordings?['alpha','beta']:[], timeLapsePhotoCameras:recordings?['alpha','beta']:[], storageCameras:recordings?['alpha','beta']:[], recordingsCameras:recordings&&playbackAvailable?['alpha','beta']:[], enrollment:!!enrollmentTargets, inventory:true, callbacks:true
     }));
     if (req.url === '/api/inventory') {
@@ -593,8 +600,10 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     if (req.url.endsWith('/settings/time_lapse')) return res.end(JSON.stringify({values:{time_lapse:lapse}}));
     if (req.url.endsWith('/settings/image')) return res.end(JSON.stringify({values:{image:orientation}}));
     if (storageFailure && recordings && req.url.split('?')[0].endsWith('/storage')) {
-      res.writeHead(storageFailure.status, {'content-type':'application/json'});
-      return res.end(JSON.stringify({errorKey:storageFailure.key, correlation_id:req.headers['x-correlation-id'], secret:token}));
+      const failure = storageFailure;
+      if (failure.once) storageFailure = undefined;
+      res.writeHead(failure.status, {'content-type':'application/json'});
+      return res.end(JSON.stringify({errorKey:failure.key, correlation_id:req.headers['x-correlation-id'], secret:token}));
     }
     if (req.url.endsWith('/media/capabilities')) {
       return res.end(JSON.stringify({source:(cameraId==='alpha'?'a':'b').repeat(64),video:cameraId==='alpha',timeLapse:true,cameraTime:'2026-11-20T12:00:00'}));
@@ -751,6 +760,8 @@ export const fixtureBridge = async ({ previewCameras = [], capture = false, webs
     setRecordingCount: value => { recordingCount = value; },
     setLegacyClock: value => { legacyClock=value; },
     setStorageFailure: value => { storageFailure = value; },
+    setCameraReadRetries: value => { cameraReadRetries = value; },
+    cameraReadRetries: () => cameraReadRetries,
     setRecordingFailure: value => { playbackFailure = value; },
     setPreviewNotifications: value => { previewNotifications = value; },
     announcePreview: (camera_id='alpha', transport) => {

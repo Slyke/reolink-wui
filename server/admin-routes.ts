@@ -56,7 +56,7 @@ export const adminRoutes = ({ api, path, runtime }: { api: FastifyInstance; path
       permissions, presets, external: runtime.config.auth.mode !== 'local', local: isLocal({ config: runtime.config }),
       bridges: [...runtime.bridges.values()].map(bridge => ({
         id: bridge.config.id, label: bridge.config.label, connected: bridge.feedReady,
-        connections: bridgeConnections(bridge.config),
+        connections: bridgeConnections(bridge.config, bridge.cameraReadRetries),
         eventSources: bridge.eventSources, availableEventSources: bridge.availableEventSources,
         refreshedAt: bridgeRows.find(row => row.id === bridge.config.id)?.refreshed_at,
         restart: bridge.has('terminate'), enrollment: bridge.has('enrollment'), callbacks: !!bridge.config.callbacks && bridge.has('callbacks')
