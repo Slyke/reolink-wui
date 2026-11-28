@@ -99,7 +99,7 @@
   {#if checking}<p role="status">{t('firmware-checking')}</p>
   {:else if offered!==undefined}<p role="status">{t(offered===null?'firmware-check-unsupported':offered?'firmware-available':'firmware-no-offer')}</p>{/if}
   {#if writable && view?.canInstall}
-    <div class="row">
+    <div class="row firmware-upload">
       <label>{t('firmware-package')}<input type="file" accept=".pak,.paks" bind:this={fileInput} onchange={choose} disabled={busy}/></label>
       <button class="danger" disabled={!file || busy || !!waiting} onclick={()=>install(true)}>{t('firmware-install-file')}</button>
     </div>
@@ -108,3 +108,7 @@
     {#if reference}<InfoTip label={t('firmware-reference')} text={reference}/>{/if}</p>{/if}
   {#if waiting}<button disabled={busy} onclick={()=>refresh()}>{t('firmware-refresh-installed')}</button>{/if}
 </SettingsDisclosure>
+
+<style>
+  .firmware-upload { align-items: flex-end; }
+</style>
